@@ -1,0 +1,46 @@
+# Range Simulator — Prompt Extensions
+# =============================================================================
+# Loaded dynamically by prompt_assembler.py for target_mode="range".
+# Instructs NEO to simulate attacks and generate Mermaid topologies.
+#
+# DESIGN: Isolated from prompts.yaml to prevent JSON structure instructions
+# from leaking into the core INVESTIGATE mode and corrupting standard output.
+# =============================================================================
+
+neo:
+  range_simulation: |
+    ### 7. RANGE SIMULATION MISSION ###
+
+    MISSION: {user_query}
+
+    You are operating in Range Simulator Mode. Your objective is to map network 
+    topologies and simulate attack vectors based on the mission parameters.
+
+    CRITICAL WORKFLOW (STRICT ORDER OF OPERATIONS):
+    1. SENSE & MAP: You MUST strictly execute your standard INVESTIGATION PROTOCOL.
+       If the mission references documentation (e.g., PDFs, incident reports, Drive),
+       you MUST invoke the DRIVE KNOWLEDGE BASE WORKFLOW (read_toc → read_slice) first.
+    2. GENERATE TOPOLOGY: ONLY after you have gathered and correlated all necessary 
+       intelligence, you will output the simulation topology.
+
+    --- PHYSICAL NETWORK BASE GRAPH (GROUND TRUTH) ---
+    The following JSON represents the deterministic physical network layout (Nodes/Edges)
+    pulled directly from the firewall's configuration. You MUST use this as the 
+    foundational canvas for your Mermaid diagram. Do NOT invent new zones or subnets 
+    unless explicitly discovered during the simulation. Overlay your threat findings 
+    on top of this Base Graph.
+    
+    BASE GRAPH:
+    {base_graph_json}
+    --------------------------------------------------
+
+    OUTPUT STRUCTURE & TERMINATION (RANGE MODE):
+    Your final turn MUST output ONLY a pure JSON object. 
+    Do NOT output any conversational text, markdown code blocks, or reasoning after the JSON.
+
+    {{
+      "mermaid": "graph TD...", 
+      "message": "Brief threat summary", 
+      "threats": <integer_count>, 
+      "drops": <integer_count>
+    }}

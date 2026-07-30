@@ -1,0 +1,44 @@
+# Credentials & Secrets (CRITICAL)
+.env
+.env.backup
+.env.*
+!.env.example
+core/service_account.json
+**/*.json
+!package.json
+!tsconfig.json
+
+# Scratch & Temporary Files
+scratch/
+causal_threat_graph_*
+
+# Python
+__pycache__/
+*.pyc
+venv/
+env/
+
+# Logs & Temp
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+storage/audit_log.jsonl
+discord_temp.yaml
+temp_*
+
+# Cached Firewall Config (contains live security policies — NEVER commit)
+config/running_config.xml
+config/running_config.yaml
+
+# Legacy Archive (not active code — keep local, don't push)
+_legacy/
+
+# OS
+.DS_Store
+Thumbs.db
+
+!core_defense/config/*.json
+
+!certification_report.json

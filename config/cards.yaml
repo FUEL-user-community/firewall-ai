@@ -1,0 +1,701 @@
+# CORE DEFENSE — Card Definition Registry
+# ═══════════════════════════════════════════════════════════════════════
+# Declarative card definitions. Same pattern as commands.yaml.
+# Each card defines: tool chain, reasoning prompt, trigger, actions.
+#
+# Schedule types: continuous (5m) | periodic (30m) | daily | weekly
+# Severity default: normal (can be escalated by LLM or baseline)
+# ═══════════════════════════════════════════════════════════════════════
+
+cards:
+
+  # ─── CONTINUOUS CARDS (Every 5 Minutes) ─────────────────────────────
+  # Active threat hunting — time-sensitive detections
+
+  autonomous_chain_breaker:
+    id: "FT-01"
+    name: "Autonomous Chain Breaker"
+    description: "Detects zero-day factory exploit chains from sequences of LOW/MED alerts using active wargaming"
+    severity: "critical"
+    schedule: "continuous"
+    interval_seconds: 300
+    tool_chain:
+      - threat_logs
+      - test_security_policy
+      - test_routing_fib
+    reasoning_prompt: |
+      Human analysts dismiss low/informational severity alerts. An AI adversary
+      uses them as stepping stones. 
+      1. Pull threat_logs. Look for sequences of LOW/MEDIUM alerts from the same source IP.
+      2. PREDICTIVE WARGAMING: If you identify a suspicious source IP, you MUST dynamically simulate 
+         the adversary's next logical attack vector. 
+         a) Use test_routing_fib to see if the firewall has an active return route to the attacker.
+         b) Use test_security_policy to verify if the attacker's IP is allowed to reach critical 
+            internal subnets (e.g., Domain Controllers or DB servers) on lateral ports (e.g., 389, 1433, 22).
+      3. If the simulation reveals that the firewall policy WOULD ALLOW lateral movement from the 
+         attacker's IP to an internal zone, elevate the severity to CRITICAL. If the firewall drops it, 
+         downgrade to CAUTION.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary including the results of the wargame simulation",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"chain_length": N, "source_ips_flagged": N}
+      }
+    actions:
+      - label: "Contain Source (DAG)"
+        tool: "apply_dynamic_tag"
+        requires_approval: true
+        tool_args:
+          tag: "NEO-Containment-L1"
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 24
+
+  sub_30_breakout:
+    id: "FT-02"
+    name: "Sub-30 Minute Breakout Audit"
+    description: "Detects lateral movement within 5 minutes of VPN authentication"
+    severity: "critical"
+    schedule: "continuous"
+    interval_seconds: 300
+    tool_chain:
+      - auth_logs
+      - gp_history
+    reasoning_prompt: |
+      Assume breach. Measure the blast radius of compromised identities at
+      machine speed.
+      1. Query gp_history and auth_logs for VPN logins in the last 30 minutes.
+      2. For each assigned IP (user_ip_mapping), run session_filter_source.
+      3. Filter: ignore web-browsing, dns. Focus on ssh, ms-rdp, kerberos, smb.
+      4. Calculate ΔT from VPN auth to first lateral movement.
+         If ΔT < 5 minutes, flag as AI-driven breakout.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary with user identity and ΔT",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"delta_t_seconds": N, "lateral_sessions": N, "vpn_users_checked": N}
+      }
+    actions:
+      - label: "Terminate Session"
+        tool: "clear_session_id"
+        requires_approval: true
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 24
+
+  polymorphic_evasion:
+    id: "FT-03"
+    name: "Polymorphic Evasion Tracker"
+    description: "Detects AI-driven traffic mutation blinding App-ID/Content-ID"
+    severity: "critical"
+    schedule: "continuous"
+    interval_seconds: 300
+    tool_chain:
+      - app_cache_summary
+      - session_all
+      - global_counters
+      - wildfire_status
+    reasoning_prompt: |
+      The adversary is mutating C2 traffic faster than Content-ID updates.
+      1. Query session_all for sessions stuck in "unknown-tcp", "unknown-udp",
+         or "insufficient-data" states.
+      2. Cross-reference with global_counters for asymmetric routing drops or
+         application decode errors.
+      3. Check app_cache_summary for high App-ID miss rates (thrashing).
+      4. Verify wildfire_status to ensure unknown files reach the sandbox.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"unknown_sessions": N, "cache_miss_rate": N, "source_hosts": N}
+      }
+    actions:
+      - label: "Block L4"
+        tool: "clear_session_id"
+        requires_approval: true
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 24
+
+  credential_exhaustion:
+    id: "MC-03"
+    name: "Credential Exhaustion Detector"
+    description: "Rapid auth failures followed by success — credential stuffing or brute force"
+    severity: "critical"
+    schedule: "continuous"
+    interval_seconds: 300
+    tool_chain:
+      - auth_logs
+      - gp_history
+      - threat_logs
+    reasoning_prompt: |
+      Hunt for credential stuffing patterns.
+      1. Query auth_logs for rapid authentication failures (>5 in 60 seconds).
+      2. Check if failures are followed by a successful login from the same source.
+      3. Cross-reference with gp_history for VPN connections from that identity.
+      4. Check threat_logs for brute-force or credential-related signatures.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"failed_attempts": N, "success_after_failure": true/false, "source_ips": N}
+      }
+    actions:
+      - label: "Block Source IP"
+        tool: "clear_session_id"
+        requires_approval: true
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 24
+
+
+  # ─── PERIODIC CARDS (Every 30 Minutes) ──────────────────────────────
+  # Drift detection and posture monitoring
+
+  phantom_flow_audit:
+    id: "MC-01"
+    name: "Phantom Flow Audit"
+    description: "Compares security policy intent vs. actual routing reality"
+    severity: "caution"
+    schedule: "periodic"
+    interval_seconds: 1800
+    tool_chain:
+      - routing_route
+      - interface_all
+      - session_info
+    reasoning_prompt: |
+      Verify policy intent matches routing reality.
+      1. Use test_security_policy with representative source/dest pairs
+         (10.0.0.5→8.8.8.8, internal→DMZ, VPN→DC).
+      2. Use test_routing_lookup on the same destinations.
+      3. Use get_live_config to pull zone definitions.
+      4. Flag mismatches: traffic allowed by policy but unroutable,
+         or traffic routable but blocked by policy.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"mismatches_found": N, "tests_run": N}
+      }
+    actions:
+      - label: "View Full Audit"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 24
+
+  silent_drop_debugger:
+    id: "MC-02"
+    name: "Silent Drop Debugger"
+    description: "Monitors global counter drops incrementing above baseline"
+    severity: "caution"
+    schedule: "periodic"
+    interval_seconds: 1800
+    tool_chain:
+      - global_counters
+      - interface_all
+      - session_info
+    reasoning_prompt: |
+      Hunt for silent packet drops that indicate misconfiguration or attack.
+      1. Query global_counters and look for rapidly incrementing drop counters.
+      2. Check interface_all for CRC errors, input errors, or link flaps.
+      3. Compare with session_info to see if drops correlate with session exhaustion.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"total_drops": N, "drop_rate_per_sec": N, "interface_errors": N}
+      }
+    actions:
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 24
+
+  ghost_in_machine:
+    id: "MC-06"
+    name: "Ghost In The Machine"
+    description: "App-ID cache miss rate above threshold — potential evasion"
+    severity: "caution"
+    schedule: "periodic"
+    interval_seconds: 1800
+    tool_chain:
+      - session_all
+      - app_stats
+    reasoning_prompt: |
+      Detect App-ID engine exhaustion or deliberate evasion.
+      1. Query app_stats for cache hit/miss statistics.
+      2. Query session_all and count sessions with "unknown" applications.
+      3. If cache miss rate > 15% or unknown sessions > 10% of total,
+         flag as potential evasion or App-ID engine degradation.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"cache_miss_rate_pct": N, "unknown_session_pct": N}
+      }
+    actions:
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 24
+
+  ai_supply_chain:
+    id: "FT-04"
+    name: "AI Supply Chain Sentinel"
+    description: "Monitors byte ratio anomalies on AI/LLM API endpoints"
+    severity: "caution"
+    schedule: "periodic"
+    interval_seconds: 1800
+    tool_chain:
+      - session_all
+      - threat_logs
+    reasoning_prompt: |
+      Detect AI supply chain attacks via byte ratio analysis.
+      1. Use session_all to find traffic to known AI endpoints
+         (openai, anthropic, google AI, or internal LLM services).
+      2. Analyze byte ratios: normal = small upload, large download.
+         Inverted ratio (massive upload) = potential model inversion
+         or prompt injection attack.
+      3. Check threat_logs for data-filtering signatures on these flows.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"anomalous_endpoints": N, "inverted_ratio_sessions": N}
+      }
+    actions:
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 24
+
+
+  # ─── DAILY CARDS ────────────────────────────────────────────────────
+  # Posture assessments and trend analysis
+
+  app_id_integrity:
+    id: "SY-01"
+    name: "App-ID Integrity Audit"
+    description: "Identifies rules using 'application: any' and unknown app sessions"
+    severity: "normal"
+    schedule: "daily"
+    interval_seconds: 86400
+    tool_chain:
+      - session_all
+    reasoning_prompt: |
+      Audit App-ID integrity across policy and live traffic.
+      1. Use get_live_config xpath=/config/devices/entry/vsys/entry/rulebase/security
+         to pull security rules.
+      2. Count rules using "application: any" — these bypass App-ID entirely.
+      3. Use session_all to count sessions with "unknown" applications.
+      4. Score: (rules_with_app_id / total_rules) * 100 = App-ID coverage %.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "App-ID Coverage: X%",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"app_id_coverage_pct": N, "any_app_rule_count": N, "unknown_app_session_count": N}
+      }
+    actions:
+      - label: "View Full Audit"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 168
+
+  threat_prevention_gap:
+    id: "SY-02"
+    name: "Threat Prevention Gap Analysis"
+    description: "Identifies rules missing threat prevention profiles"
+    severity: "normal"
+    schedule: "daily"
+    interval_seconds: 86400
+    tool_chain:
+      - threat_logs
+    reasoning_prompt: |
+      Identify gaps in threat prevention coverage.
+      1. Use get_live_config to pull security rules and their profile settings.
+      2. Count rules that ALLOW traffic but have NO security profile group,
+         NO antivirus profile, or NO vulnerability protection profile attached.
+      3. Check threat_logs volume — low volume may indicate profiles are not inspecting.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"unprotected_rule_count": N, "total_allow_rules": N, "threat_log_volume": N}
+      }
+    actions:
+      - label: "View Full Audit"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 168
+
+  temporal_drift:
+    id: "SY-05"
+    name: "Temporal Drift Detective"
+    description: "Detects anomalies by comparing current telemetry against historical norms"
+    severity: "normal"
+    schedule: "daily"
+    interval_seconds: 86400
+    tool_chain:
+      - hardware_telemetry
+      - session_info
+      - gp_history
+    reasoning_prompt: |
+      Compare today's telemetry against historical patterns.
+      1. Run hardware_telemetry for current CPU, memory, disk.
+      2. Query session_info for current session count and throughput.
+      3. Check gp_history for VPN connection volume.
+      4. Flag any metric that deviates significantly from typical values.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"cpu_load": N, "memory_pct": N, "active_sessions": N, "vpn_connections": N}
+      }
+    actions:
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 168
+
+  absence_interpreter:
+    id: "SY-06"
+    name: "Absence Interpreter"
+    description: "Reasons about missing data — empty logs may indicate blind spots"
+    severity: "normal"
+    schedule: "daily"
+    interval_seconds: 86400
+    tool_chain:
+      - threat_logs
+      - wildfire_status
+    reasoning_prompt: |
+      Reason about what SHOULD exist but doesn't.
+      1. Check threat_logs — if empty, determine WHY:
+         - Is WildFire connected? (wildfire_status)
+         - Are there active users? (user_ip_mapping)
+         - If users are active but no threat logs exist, profiles may be detached.
+      2. Check user_ip_mapping — if empty, User-ID agents may be down.
+      3. Score the "intelligence gap" — how much visibility is the firewall missing?
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"threat_log_entries": N, "wildfire_connected": true/false, "userid_mappings": N}
+      }
+    actions:
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 168
+
+  operational_resilience:
+    id: "SY-09"
+    name: "Operational Resilience Check"
+    description: "Daily health baseline — CPU, memory, sessions, HA, licenses"
+    severity: "normal"
+    schedule: "daily"
+    interval_seconds: 86400
+    tool_chain:
+      - hardware_telemetry
+      - ha_status
+      - session_info
+      - license_info
+    reasoning_prompt: |
+      Produce a daily operational resilience assessment.
+      1. Run hardware_telemetry for CPU, memory, disk, uptime.
+      2. Check ha_status for HA sync and failover readiness.
+      3. Query session_info for session utilization vs capacity.
+      4. Check license_info for expired or expiring licenses.
+
+      Severity calibration:
+      - CRITICAL: swap > 0, CPU load/vCPU > 1.5, expired licenses
+      - CAUTION: uptime < 24h, CPU load/vCPU 0.7-1.5, HA out-of-sync
+      - NORMAL: all metrics within bounds
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"cpu_load": N, "memory_pct": N, "active_sessions": N, "session_capacity_pct": N}
+      }
+    actions:
+      - label: "View Full Report"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 168
+
+  emergent_threat_correlation:
+    id: "SY-10"
+    name: "Emergent Threat Correlation"
+    description: "Cross-correlates all data sources for hidden threat patterns"
+    severity: "normal"
+    schedule: "daily"
+    interval_seconds: 86400
+    tool_chain:
+      - threat_logs
+      - session_info
+      - auth_logs
+      - global_counters
+    reasoning_prompt: |
+      Execute systematic cross-correlation across all data sources.
+      1. Pull threat_logs, auth_logs, session_info, user_ip_mapping, global_counters.
+      2. SHARED KEY SCAN: IPs across User-ID, traffic, threat, sessions.
+      3. TEMPORAL CORRELATION: Events within 5-minute windows.
+      4. Look for: same IP in auth failure + threat log + active session.
+      5. Produce CORRELATION findings — connections across data sources.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"correlations_found": N, "sources_queried": N, "shared_ips": N}
+      }
+    actions:
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 168
+
+  ha_split_brain:
+    id: "MC-05"
+    name: "HA Split-Brain Predictor"
+    description: "Monitors HA sync, path monitoring, and routing peers for split-brain risk"
+    severity: "normal"
+    schedule: "daily"
+    interval_seconds: 86400
+    tool_chain:
+      - ha_deep_audit
+      - routing_bgp_peers
+      - routing_ospf_neighbors
+    reasoning_prompt: |
+      Predict HA split-brain conditions before they occur.
+      1. Run ha_deep_audit for sync status and path monitoring.
+      2. Check routing_bgp_peers for peer state anomalies.
+      3. Check routing_ospf_neighbors for neighbor adjacency issues.
+      4. If sync is degraded AND routing peers are flapping, split-brain risk is HIGH.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"sync_status": "in-sync|out-of-sync", "path_mon_failures": N, "bgp_peer_issues": N}
+      }
+    actions:
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 168
+
+
+  # ─── WEEKLY CARDS ───────────────────────────────────────────────────
+  # Deep posture assessments
+
+  policy_intent_reality:
+    id: "SY-04"
+    name: "Policy Intent vs. Reality"
+    description: "Compares configured security/NAT/zone policy against actual traffic patterns"
+    severity: "normal"
+    schedule: "weekly"
+    interval_seconds: 604800
+    tool_chain:
+      - session_info
+    reasoning_prompt: |
+      Deep audit of policy configuration vs. operational reality.
+      1. Pull full security rulebase, NAT rules, and zone definitions via get_live_config.
+      2. Identify rules with zero hit counts (unused rules = attack surface).
+      3. Identify overly permissive rules (any/any, application: any).
+      4. Compare zone architecture against active session zones.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"unused_rules": N, "overpermissive_rules": N, "total_rules": N}
+      }
+    actions:
+      - label: "View Full Audit"
+        type: "open_chat"
+      - label: "Schedule Follow-Up"
+        type: "open_chat"
+
+  zero_trust_posture:
+    id: "SY-08"
+    name: "Zero Trust Posture Assessment"
+    description: "Scores the firewall's Zero Trust maturity (0-100)"
+    severity: "normal"
+    schedule: "weekly"
+    interval_seconds: 604800
+    tool_chain:
+      - session_info
+    reasoning_prompt: |
+      Score the firewall's Zero Trust posture on a 0-100 scale.
+      1. Pull security rules via get_live_config.
+      2. Deductions:
+         - Rules with "application: any" → -10 per rule
+         - Rules with "service: any" → -5 per rule
+         - Rules without decryption profile → -5 per rule
+         - Rules without security profile group → -10 per rule
+         - Inter-zone rules with "source: any" → -5 per rule
+      3. Start at 100, apply deductions. Minimum 0.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "Zero Trust Score: X/100",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"zt_score": N, "any_rule_count": N, "no_decrypt_count": N, "no_profile_count": N}
+      }
+    actions:
+      - label: "View Full Audit"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 336
+
+  microsegmentation_illusion:
+    id: "MC-04"
+    name: "Micro-Segmentation Illusion"
+    description: "Validates whether micro-segmentation policy matches actual L2/L3 reality"
+    severity: "normal"
+    schedule: "weekly"
+    interval_seconds: 604800
+    tool_chain:
+      - arp_table
+      - mac_table
+      - session_all
+    reasoning_prompt: |
+      Verify micro-segmentation is real, not just policy theater.
+      1. Pull arp_table and mac_table for L2/L3 topology.
+      2. Query session_all for active inter-zone traffic.
+      3. If hosts in different "zones" share the same L2 segment (same MAC/VLAN),
+         micro-segmentation is illusory — an attacker can bypass it with L2 attacks.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"shared_l2_segments": N, "cross_zone_sessions": N}
+      }
+    actions:
+      - label: "Investigate"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 336
+
+  attack_path_simulator:
+    id: "SY-07"
+    name: "Attack Path Simulator"
+    description: "Simulates attacker movement from VPN/external entry points through policy"
+    severity: "normal"
+    schedule: "weekly"
+    interval_seconds: 604800
+    tool_chain:
+      - gp_current_users
+    reasoning_prompt: |
+      Simulate attack paths from common entry points.
+      1. Get currently connected VPN users via gp_current_users.
+      2. For each VPN user's assigned IP, use test_security_policy to simulate:
+         - VPN IP → Domain Controller (port 389, 445, 88)
+         - VPN IP → Database servers (port 1433, 3306, 5432)
+         - VPN IP → Management interfaces (port 22, 3389)
+      3. Flag any ALLOWED path as an attack vector.
+
+      OUTPUT FORMAT (JSON):
+      {
+        "triggered": true/false,
+        "severity": "critical|caution|normal",
+        "title": "short finding title",
+        "finding": "2-3 sentence summary with attack paths discovered",
+        "evidence": ["tool: key finding", ...],
+        "metrics": {"attack_paths_found": N, "users_tested": N, "critical_paths": N}
+      }
+    actions:
+      - label: "View Attack Paths"
+        type: "open_chat"
+      - label: "Mute"
+        type: "suppress"
+        duration_hours: 336

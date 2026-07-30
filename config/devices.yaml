@@ -1,0 +1,30 @@
+# ══════════════════════════════════════════════════════════════
+# Core Defense — Device Fleet Registry
+# ══════════════════════════════════════════════════════════════
+# This file declares the firewalls managed by the agent.
+# Credentials are NOT stored here — they live in your secrets backend.
+#
+# Secret key naming convention:
+#   Each device's API key is stored as: panos_api_key_{device_name}
+#   Example: device "fw-hq" → secret key "panos_api_key_fw_hq"
+#
+# To add a new firewall:
+#   1. Add an entry below
+#   2. Store its API key in your secrets backend as panos_api_key_{name}
+#   3. Restart the agent
+# ══════════════════════════════════════════════════════════════
+
+firewalls:
+  fw-hq:
+    ip: 192.168.1.254
+    label: "HQ Perimeter Firewall"
+    default: true             # Used when target_device is not specified
+
+  # Uncomment to add more firewalls:
+  # fw-lab:
+  #   ip: 10.0.0.1
+  #   label: "Lab / Test Firewall"
+  #
+  # fw-branch-01:
+  #   ip: 172.16.0.1
+  #   label: "Branch Office — Seattle"

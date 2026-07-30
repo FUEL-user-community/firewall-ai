@@ -1,0 +1,480 @@
+# PAN-OS Command Registry (Master User Config)
+# NOTE: Dangerous commands (reboot, wipe, config mode) have been stripped for Analyst Safety.
+
+# --- COMMUNITY MACROS ---
+
+hardware_telemetry:
+  description: "Deep audit of physical hardware and partition health (Community Macro)"
+  type: "macro"
+  commands:
+    - "show system info"
+    - "show system disk-space files"
+    - "show system resources"
+    - "show system software status"
+  tags: ["#core", "#sys", "#health"]
+
+vpn_comprehensive_status:
+  description: "Full audit of all VPN Phase 1, Phase 2, and Tunnel Interface states"
+  type: "macro"
+  commands:
+    - "show vpn flow"
+    - "show vpn ike-sa"
+    - "show vpn ipsec-sa"
+    - "show vpn tunnel"
+    - "show log system direction equal backward | match vpn"
+  tags: ["#vpn", "#sec"]
+
+  
+ha_deep_audit:
+  description: "Complete HA health check including sync status and path monitoring"
+  type: "macro"
+  commands:
+    - "show high-availability state"
+    - "show high-availability state-synchronization"
+    - "show high-availability path-monitoring"
+    - "show high-availability all"
+  tags: ["#sys", "#ha"]
+
+userid_infrastructure_health:
+  description: "Health check for User-ID Agents, Server Monitoring, and Group Mappings"
+  type: "macro"
+  commands:
+    - "show user server-monitor state all"
+    - "show user user-id-agent state all"
+    - "show user group list"
+    - "show user ip-user-mapping all | match count"
+  tags: ["#sec", "#user-id"]
+
+
+
+network_base:
+  description: "Basic L2/L3 connectivity check (Community Macro)"
+  type: "macro"
+  commands:
+    - "show routing route"
+  tags: ["#net", "#core"]
+  # NOTE: ARP and Interface queries moved to standalone tools (arp_table, interface_all)
+  # due to XML conversion issues with "show arp all" and "show interface all"
+
+app_telemetry:
+  description: "Application & Session layer health check (Community Macro)"
+  type: "macro"
+  commands:
+    - "show session info"
+    - "show running application setting"
+    - "show running application cache"
+  tags: ["#sec", "#core"]
+
+# --- SYSTEM & HEALTH (THE CHASSIS) ---
+
+system_info:
+  description: "Show general system health information (Serial, Model, Version)"
+  cmd: "show system info"
+  tags: ["#sys", "#core"]
+
+system_resources:
+  description: "Get management plane telemetry (CPU, Memory, System Resources)"
+  cmd: "show system resources"
+  tags: ["#sys", "#core"]
+
+software_status:
+  description: "Show running processes and daemon status"
+  cmd: "show system software status"
+  tags: ["#sys"]
+
+disk_space:
+  description: "Show percent usage of disk partitions"
+  cmd: "show system disk-space files"
+  tags: ["#sys"]
+
+logdb_quota:
+  description: "Show the maximum log file size"
+  cmd: "show system logdb-quota"
+  tags: ["#sys"]
+
+clock_status:
+  description: "Show system time and NTP status"
+  cmd: "show clock"
+  tags: ["#sys"]
+
+ntp_status:
+  description: "Show NTP synchronization status"
+  cmd: "show ntp"
+  tags: ["#sys"]
+
+license_info:
+  description: "Show installed licenses"
+  cmd: "request license info"
+  tags: ["#sys", "#core"]
+
+# --- JOBS & ADMINS ---
+
+jobs_processed:
+  description: "Show recent processed jobs"
+  cmd: "show jobs processed"
+  tags: ["#sys", "#ops"]
+
+app_stats:
+  description: "Show application statistics"
+  cmd: "show running application-cache statistics"
+  tags: ["#sys", "#core"]
+  # NOTE: Previous XML format returned 'invalid client cli' error
+
+all_jobs:
+  description: "Show all system jobs (commits, downloads, autocommits)"
+  cmd: "show jobs all"
+  tags: ["#sys", "#ops"]
+
+job_details:
+  description: "Show detailed log of a specific job ID"
+  cmd: "show jobs id {id}"
+  tags: ["#sys", "#ops"]
+
+admin_sessions:
+  description: "Show currently logged-in administrators (Management Plane Users)"
+  cmd: "show admins"
+  tags: ["#sys", "#sec", "#core"]
+
+mgmt_clients:
+  description: "Show clients connected to management plane (API/WebUI)"
+  cmd: "show management-clients"
+  tags: ["#sys", "#sec", "#core"]
+
+# --- NETWORK (THE PIPES) ---
+
+interface_all:
+  description: "Show summary of all interfaces (Link state, IP, Zone)"
+  cmd: "<show><interface>all</interface></show>"
+  tags: ["#net", "#core"]
+
+interface_details:
+  description: "Show granular stats (CRC errors, drops) for a specific interface"
+  cmd: "show interface {interface}"
+  tags: ["#net", "#troubleshoot"]
+
+interface_hardware:
+  description: "Show interface hardware details (MAC, Chipset)"
+  cmd: "<show><interface><hardware/></interface></show>"
+  tags: ["#net", "#sys"]
+
+routing_route:
+  description: "Show the active Forwarding Information Base (FIB)"
+  cmd: "show routing route"
+  tags: ["#net", "#routing"]
+
+routing_static:
+  description: "Show only Static routes"
+  cmd: "show routing route type static"
+  tags: ["#net", "#routing"]
+
+routing_bgp:
+  description: "Show only BGP routes"
+  cmd: "show routing route type bgp"
+  tags: ["#net", "#routing"]
+
+routing_bgp_peers:
+  description: "Show BGP peer status"
+  cmd: "show routing protocol bgp peer"
+  tags: ["#net", "#routing"]
+
+routing_ospf_neighbors:
+  description: "Show OSPF neighbor status"
+  cmd: "show routing protocol ospf neighbor"
+  tags: ["#net", "#routing"]
+
+arp_table:
+  description: "Show ARP table"
+  cmd: "<show><arp><entry name='all'/></arp></show>"
+  tags: ["#net", "#l2", "#core"]
+
+mac_table:
+  description: "Show MAC address table"
+  cmd: "show mac all"
+  tags: ["#net", "#l2"]
+
+global_counters:
+  description: "Show global counters (silent drops/errors)"
+  cmd: "show counter global"
+  tags: ["#net", "#troubleshoot"]
+
+global_counters_filter:
+  description: "Show global counters matching a specific string"
+  cmd: "show counter global | match {filter}"
+  tags: ["#net", "#troubleshoot"]
+
+auth_logs:
+  description: "Show authentication logs"
+  cmd: "show log system"
+  tags: ["#sys", "#sec"]
+
+clear_interface_counters:
+  description: "Reset statistics for an interface"
+  cmd: "clear counter interface {interface}"
+  tags: ["#net", "#ops"]
+
+# --- SESSION & FLOW ---
+
+session_info:
+  description: "Show session summary (Total active, Throughput)"
+  cmd: "show session info"
+  tags: ["#sec", "#core"]
+
+session_meter:
+  description: "Show session table utilization percentage"
+  cmd: "show session meter"
+  tags: ["#sec"]
+
+session_all:
+  description: "Dump all active sessions (High Load Warning)"
+  cmd: "show session all"
+  tags: ["#sec", "#troubleshoot"]
+
+session_filter_source:
+  description: "Filter active sessions by Source IP"
+  cmd: "show session all filter source {source}"
+  tags: ["#sec", "#troubleshoot"]
+
+session_filter_dest:
+  description: "Filter active sessions by Destination IP"
+  cmd: "show session all filter destination {destination}"
+  tags: ["#sec", "#troubleshoot"]
+
+session_filter_app:
+  description: "Filter active sessions by Application Name"
+  cmd: "show session all filter application {app}"
+  tags: ["#sec", "#troubleshoot"]
+
+session_details:
+  description: "Show detailed session info by ID (Flow logic, Rule, NAT)"
+  cmd: "show session id {id}"
+  tags: ["#sec", "#troubleshoot"]
+
+clear_session_id:
+  description: "Kill a specific session by ID"
+  cmd: "clear session id {id}"
+  tags: ["#sec", "#ops"]
+
+# --- VPN & TUNNELING ---
+
+vpn_flow:
+  description: "Show IPSec Tunnel status (Active/Down)"
+  cmd: "show vpn flow"
+  tags: ["#vpn", "#sec"]
+
+vpn_ike_sa:
+  description: "Show IKE SA (Phase 1) status"
+  cmd: "show vpn ike-sa"
+  tags: ["#vpn", "#sec"]
+
+vpn_ipsec_sa:
+  description: "Show IPSec SA (Phase 2) status"
+  cmd: "show vpn ipsec-sa"
+  tags: ["#vpn", "#sec"]
+
+vpn_tunnel_interface:
+  description: "Show tunnel interface status"
+  cmd: "show vpn tunnel"
+  tags: ["#vpn", "#sec"]
+
+gp_current_users:
+  description: "Show currently connected GlobalProtect users"
+  cmd: "show global-protect-gateway current-user"
+  tags: ["#vpn", "#sec"]
+
+gp_history:
+  description: "Show history of GlobalProtect connections"
+  cmd: "show global-protect-gateway previous-user"
+  tags: ["#vpn", "#sec"]
+
+test_vpn_ike:
+  description: "Force IKE Phase 1 initiation"
+  cmd: "test vpn ike-sa gateway {gateway_name}"
+  tags: ["#vpn", "#troubleshoot"]
+
+test_vpn_ipsec:
+  description: "Force IPSec Phase 2 initiation"
+  cmd: "test vpn ipsec-sa tunnel {tunnel_name}"
+  tags: ["#vpn", "#troubleshoot"]
+
+# --- USER-ID ---
+
+user_ip_mapping:
+  description: "Show all IP-to-User mappings (Network Traffic Users)"
+  cmd: "show user ip-user-mapping all"
+  tags: ["#sec", "#core"]
+
+check_user_ip:
+  description: "Check User-ID mapping for a specific IP"
+  cmd: "show user ip-user-mapping ip {ip}"
+  tags: ["#sec", "#troubleshoot"]
+
+user_group_members:
+  description: "List members of a specific User Group"
+  cmd: "show user group name {group}"
+  tags: ["#sec"]
+
+user_server_monitor:
+  description: "Show connection status to User-ID servers (AD/DC)"
+  cmd: "show user server-monitor state all"
+  tags: ["#sec", "#sys"]
+
+clear_user_cache:
+  description: "Flush User-ID cache to force re-learning"
+  cmd: "clear user-cache"
+  tags: ["#sec", "#ops"]
+
+# --- HIGH AVAILABILITY ---
+
+ha_status:
+  description: "Show high-availability status and state (Alias)"
+  cmd: "show high-availability all"
+  tags: ["#sys", "#ha"]
+
+ha_state:
+  description: "Show Active/Passive status"
+  cmd: "show high-availability state"
+  tags: ["#sys", "#ha"]
+
+ha_sync:
+  description: "Show config and session synchronization status"
+  cmd: "show high-availability state-synchronization"
+  tags: ["#sys", "#ha"]
+
+ha_path_mon:
+  description: "Show Link Monitoring status"
+  cmd: "show high-availability path-monitoring"
+  tags: ["#sys", "#ha"]
+
+# --- WILDFIRE & THREAT ---
+
+wildfire_status:
+  description: "Show WildFire cloud connection status"
+  cmd: "show wildfire status"
+  tags: ["#sec"]
+
+wildfire_disk_usage:
+  description: "Show WildFire local cache usage"
+  cmd: "show wildfire disk-usage"
+  tags: ["#sec"]
+
+test_wildfire_reg:
+  description: "Test registration with WildFire cloud"
+  cmd: "test wildfire registration"
+  tags: ["#sec", "#troubleshoot"]
+
+force_wildfire_upload:
+  description: "Force upload of logs to WildFire"
+  cmd: "request wildfire upload-log"
+  tags: ["#sec", "#troubleshoot"]
+
+url_cloud_status:
+  description: "Check Advanced URL Filtering cloud connectivity"
+  cmd: "show url-cloud status"
+  tags: ["#sec"]
+
+threat_logs:
+  description: "Show recent threat prevention logs"
+  cmd: "show log threat"
+  tags: ["#sec", "#core"]
+
+sdwan_status:
+  description: "Show SD-WAN connection and cluster status"
+  cmd: "show sdwan summary"
+  tags: ["#net"]
+
+
+list_predefined_reports:
+  description: "List all available predefined reports on the device"
+  cmd: "show report predefined"
+  tags: ["#sec", "#ops"]
+
+enable_predefined_reports:
+  description: "Enable predefined reports (Required for VM-50/Lab units)"
+  cmd: "debug predefined-default enable"
+  tags: ["#sec", "#ops"]
+
+app_cache_summary:
+  description: "Show application cache summary and active applications"
+  cmd: "show running application cache"
+  tags: ["#sec", "#core"]
+
+botnet_report:
+  description: "Generate a report on botnet activity"
+  cmd: "show report botnet"
+  tags: ["#sec"]
+
+# --- DEBUG & TESTING ---
+
+test_policy_match:
+  description: "Dry run a packet against Security Policy"
+  cmd: "test security-policy-match source {source} destination {destination} protocol {protocol} destination-port {port}"
+  tags: ["#sec", "#troubleshoot"]
+
+test_nat_match:
+  description: "Dry run a packet against NAT Policy"
+  cmd: "test nat-policy-match source {source} destination {destination} destination-port {port} protocol {protocol}"
+  tags: ["#sec", "#troubleshoot"]
+
+test_routing_lookup:
+  description: "Test routing decision for an IP"
+  cmd: "test routing fib-lookup ip {ip} virtual-router {vr_name}"
+  tags: ["#net", "#troubleshoot"]
+
+test_url_category:
+  description: "Check URL categorization"
+  cmd: "test url {url}"
+  tags: ["#sec"]
+
+view_pcap:
+  description: "View captured packets in CLI"
+  cmd: "view-pcap filter-pcap {filename}"
+  tags: ["#net", "#troubleshoot"]
+
+# --- AGENT UTILITIES ---
+
+find_command:
+  description: "Search the help database"
+  cmd: "find command keyword {term}"
+  tags: ["#core"]
+
+# --- INVESTIGATION TOOLKITS (FAST MODE) ---
+# Configuration-driven toolkit definitions for hybrid architecture
+# Used by panos/toolkits.py ToolkitRegistry
+
+toolkits:
+  health_check:
+    description: "Quick firewall health assessment"
+    mode: "fast"
+    expected_time: 18
+    keywords: ["health", "status", "check", "online", "up"]
+    tools:
+      - system_info
+      - system_resources
+      - hardware_telemetry
+      - session_info
+      - interface_all
+      - license_info
+  
+  security_audit:
+    description: "Security posture and threat assessment"
+    mode: "fast"
+    expected_time: 22
+    keywords: ["security", "threat", "attack", "breach", "intrusion"]
+    tools:
+      - threat_logs
+      - admin_sessions
+      - app_telemetry
+      - user_ip_mapping
+      - license_info
+  
+  network_diagnostic:
+    description: "Network connectivity and routing check"
+    mode: "fast"
+    expected_time: 20
+    keywords: ["network", "routing", "interface", "connectivity", "ping"]
+    tools:
+      - network_base
+      - interface_all
+      - arp_table
+      - session_info
+      - system_resources

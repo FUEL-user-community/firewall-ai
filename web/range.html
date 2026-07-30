@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Core Defense | Range BETA</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Using Mermaid.js for AI-generated diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom/dist/svg-pan-zoom.min.js"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg-base: #050505;
+            --bg-panel: #0A0A0A;
+            --border-color: #1A1A1A;
+            --border-highlight: #333;
+            --text-main: #E0E0E0;
+            --text-muted: #666;
+            --text-bright: #FFFFFF;
+            
+            --accent-neon: #34d399; /* Green for safe/normal */
+            --accent-warn: #fbbf24; /* Yellow for caution */
+            --accent-crit: #f87171; /* Red for critical/attack */
+            --accent-blue: #60a5fa; /* Blue for config */
+            
+            --font-ui: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        html, body {
+            height: 100%;
+            background: var(--bg-base);
+            color: var(--text-main);
+            font-family: var(--font-ui);
+            font-size: 14px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .app-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            height: 52px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-base);
+            flex-shrink: 0;
+        }
+
+        .header-left, .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-logo { color: var(--text-bright); }
+        
+        .brand-title {
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: var(--text-bright);
+        }
+
+        .brand-badge {
+            font-size: 10px;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            letter-spacing: 1px;
+            color: var(--accent-warn);
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 24px;
+            margin-left: 32px;
+            border-left: 1px solid var(--border-color);
+            padding-left: 32px;
+        }
+
+        .nav-link {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 13px;
+            transition: color 0.2s;
+        }
+
+        .nav-link:hover { color: var(--text-main); }
+        .nav-link.active { color: var(--text-bright); position: relative; }
+        .nav-link.active::after {
+            content: '';
+            position: absolute;
+            bottom: -16px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: var(--text-bright);
+        }
+
+        .workspace {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* Left Panel: CLI / Semantic Testing */
+        .cli-panel {
+            background: var(--bg-panel);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-title {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Live Config Toggle */
+        .toggle-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .toggle-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--accent-crit);
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 32px;
+            height: 18px;
+        }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: var(--bg-base);
+            border: 1px solid var(--border-highlight);
+            transition: .2s;
+            border-radius: 34px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 12px;
+            width: 12px;
+            left: 2px;
+            bottom: 2px;
+            background-color: var(--text-muted);
+            transition: .2s;
+            border-radius: 50%;
+        }
+        input:checked + .slider { border-color: var(--accent-crit); }
+        input:checked + .slider:before {
+            transform: translateX(14px);
+            background-color: var(--accent-crit);
+            box-shadow: 0 0 8px var(--accent-crit);
+        }
+
+        .terminal-output {
+            flex: 1;
+            padding: 16px;
+            overflow-y: auto;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .terminal-output::-webkit-scrollbar { width: 4px; }
+        .terminal-output::-webkit-scrollbar-track { background: transparent; }
+        .terminal-output::-webkit-scrollbar-thumb { background: var(--border-highlight); }
+
+        .log-entry { display: flex; flex-direction: column; gap: 4px; }
+        .log-meta { color: var(--text-muted); font-size: 10px; }
+        .log-user { color: var(--text-bright); }
+        .log-agent { color: var(--accent-blue); }
+        .log-think { color: #a855f7; font-style: italic; }
+        .log-sys { color: var(--accent-warn); }
+        .log-success { color: var(--accent-neon); }
+
+        .cli-input-area {
+            padding: 16px;
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-base);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .cli-prompt {
+            color: var(--accent-neon);
+            font-family: var(--font-mono);
+            font-weight: 700;
+        }
+
+        .cli-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-bright);
+            font-family: var(--font-mono);
+            font-size: 13px;
+            outline: none;
+        }
+        
+        .cli-input::placeholder { color: var(--text-muted); }
+
+        /* Right Panel: The Range Canvas */
+        .canvas-panel {
+            position: relative;
+            background-color: #030303;
+            /* Schematic Grid Background */
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+            background-position: center center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            padding: 32px;
+        }
+
+        /* Overlay metrics on canvas */
+        .canvas-overlay {
+            position: absolute;
+            top: 24px;
+            right: 24px;
+            display: flex;
+            gap: 16px;
+        }
+
+        .metric-box {
+            background: rgba(10, 10, 10, 0.8);
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 12px 16px;
+            min-width: 120px;
+        }
+
+        .metric-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-family: var(--font-mono);
+            margin-bottom: 4px;
+        }
+
+        .metric-value {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-bright);
+            font-family: var(--font-mono);
+        }
+
+        .metric-value.warn { color: var(--accent-warn); }
+
+        /* Diagram Container */
+        .diagram-container {
+            background: rgba(10, 10, 10, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-highlight);
+            border-radius: 8px;
+            padding: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            width: 90%;
+            height: 80%;
+            opacity: 0;
+            transform: scale(0.95);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .diagram-container.active {
+            opacity: 1;
+            transform: scale(1);
+        }
+        
+        .diagram-container .mermaid {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Customizing Mermaid SVG Colors to fit the dark theme */
+        .diagram-container svg {
+            width: 100% !important;
+            height: 100% !important;
+            max-width: none !important;
+        }
+        
+        .empty-state {
+            position: absolute;
+            text-align: center;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            align-items: center;
+        }
+        
+        .empty-state svg { opacity: 0.3; }
+
+    </style>
+</head>
+<body>
+
+    <header class="app-header">
+        <div class="header-left">
+            <div class="brand">
+                <svg class="brand-logo" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                <span class="brand-title">CORE DEFENSE</span>
+                <span class="brand-badge">BETA</span>
+            </div>
+            <nav class="nav-links">
+                <a href="index.html" class="nav-link">Defense Deck</a>
+                <a href="#" class="nav-link active">Range</a>
+                <a href="#" class="nav-link">Policies</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="workspace">
+        
+        <!-- Left CLI Panel -->
+        <aside class="cli-panel">
+            <div class="panel-header">
+                <span class="panel-title">Semantic Test CLI</span>
+            </div>
+            
+            <div class="terminal-output" id="terminal">
+                <!-- Logs injected via JS by Agent -->
+            </div>
+
+            <form class="cli-input-area" id="cliForm">
+                <span class="cli-prompt">❯</span>
+                <input type="text" class="cli-input" id="cliInput" placeholder="Initialize threat vector..." autocomplete="off">
+            </form>
+        </aside>
+
+        <!-- Right Canvas Panel -->
+        <section class="canvas-panel">
+            <!-- Metrics Overlay -->
+            <div class="canvas-overlay">
+                <div class="metric-box">
+                    <div class="metric-label">Simulated Threats</div>
+                    <div class="metric-value" id="threatCount">0</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">Topology Drops</div>
+                    <div class="metric-value warn" id="dropCount">0</div>
+                </div>
+            </div>
+
+            <!-- Empty State -->
+            <div class="empty-state" id="emptyState">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+                <span>Awaiting Scenario Generation...</span>
+            </div>
+
+            <!-- Mermaid Diagram Container -->
+            <div class="diagram-container" id="diagramContainer">
+                <div class="mermaid" id="mermaidTarget"></div>
+            </div>
+        </section>
+
+    </main>
+
+    <script>
+        // Initialize Mermaid with a dark theme that matches the UI
+        mermaid.initialize({ 
+            startOnLoad: false,
+            theme: 'base',
+            themeVariables: {
+                primaryColor: 'transparent',
+                primaryTextColor: '#E0E0E0',
+                primaryBorderColor: '#333',
+                lineColor: '#666',
+                secondaryColor: '#1A1A1A',
+                tertiaryColor: '#050505',
+                nodeBorder: '#333',
+                mainBkg: '#0A0A0A',
+                clusterBkg: 'rgba(255,255,255,0.02)',
+                clusterBorder: '#222',
+                fontSize: '13px',
+                fontFamily: 'JetBrains Mono, monospace'
+            }
+        });
+
+        // DOM Elements
+        const terminal = document.getElementById('terminal');
+        const cliForm = document.getElementById('cliForm');
+        const cliInput = document.getElementById('cliInput');
+        const diagramContainer = document.getElementById('diagramContainer');
+        const mermaidTarget = document.getElementById('mermaidTarget');
+        const emptyState = document.getElementById('emptyState');
+        
+        let commandCount = 0;
+
+        // Helper to append logs to terminal
+        function appendLog(speaker, message, styleClass) {
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second:'2-digit' });
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            
+            let speakerPrefix = '';
+            if(speaker === 'USER') speakerPrefix = 'test_usr';
+            if(speaker === 'NEO') speakerPrefix = 'nodal_agent';
+            if(speaker === 'SYS') speakerPrefix = 'system';
+
+            entry.innerHTML = `
+                <span class="log-meta">${speakerPrefix} [${time}]</span>
+                <span class="${styleClass}">${message}</span>
+            `;
+            terminal.appendChild(entry);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        cliForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = cliInput.value.trim();
+            if (!text) return;
+
+            // 1. User inputs command
+            appendLog('USER', text, 'log-user');
+            cliInput.value = '';
+            commandCount++;
+            
+            // Hide empty state if first command
+            if(commandCount === 1) {
+                emptyState.style.display = 'none';
+            }
+
+            // 2. Agent Backend Integration
+            try {
+                const key = sessionStorage.getItem('nodal_key') || '';
+                const response = await fetch('/api/range/simulate', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'X-API-Key': key 
+                    },
+                    body: JSON.stringify({ message: text })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value, { stream: true });
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = JSON.parse(line.slice(6));
+                            
+                            if (data.type === 'status') {
+                                if (data.content.startsWith('[NEO-THINK]')) {
+                                    appendLog('NEO', data.content.replace('[NEO-THINK]', '').trim(), 'log-think');
+                                } else {
+                                    appendLog('SYS', data.content, 'log-sys');
+                                }
+                            } else if (data.type === 'response') {
+                                // Extract JSON from potential markdown blocks (robust parsing)
+                                const jsonMatch = data.content.match(/\{[\s\S]*\}/);
+                                if (jsonMatch) {
+                                    try {
+                                        const payload = JSON.parse(jsonMatch[0]);
+                                        renderAgentDiagram(payload.mermaid, payload.message, payload.threats, payload.drops);
+                                    } catch (err) {
+                                        appendLog('SYS', 'Failed to parse JSON topology payload.', 'log-sys');
+                                        console.error("JSON parse error:", err, jsonMatch[0]);
+                                    }
+                                } else {
+                                    appendLog('SYS', 'Agent returned invalid topology format.', 'log-sys');
+                                    appendLog('NEO', data.content, 'log-agent');
+                                }
+                            } else if (data.type === 'error') {
+                                appendLog('SYS', 'Error: ' + data.content, 'log-sys');
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                appendLog('SYS', 'Connection to simulation engine failed.', 'log-sys');
+                console.error(error);
+            }
+            
+        });
+
+        // This function simulates the AI Agent generating raw Mermaid.js markdown based on context
+        // The agent will call this function with real LLM output
+        async function renderAgentDiagram(markdown, agentLogMessage, threats, drops) {
+            
+            appendLog('NEO', agentLogMessage, 'log-agent');
+            document.getElementById('threatCount').innerText = threats;
+            document.getElementById('dropCount').innerText = drops;
+
+            // Clear previous, reset state, render new diagram
+            diagramContainer.classList.remove('active');
+            
+            try {
+                // Generate a unique ID for the mermaid target
+                const id = 'graph-' + Date.now();
+                mermaidTarget.innerHTML = `<div class="mermaid" id="${id}"></div>`;
+                
+                // Render the AI's markdown into SVG
+                const { svg } = await mermaid.render(id, markdown);
+                mermaidTarget.innerHTML = svg;
+                
+                // Initialize pan/zoom
+                const svgElement = mermaidTarget.querySelector('svg');
+                if (svgElement) {
+                    svgPanZoom(svgElement, {
+                        zoomEnabled: true,
+                        controlIconsEnabled: true,
+                        fit: true,
+                        center: true,
+                        minZoom: 0.5,
+                        maxZoom: 10
+                    });
+                }
+                
+                // Reveal with animation
+                setTimeout(() => {
+                    diagramContainer.classList.add('active');
+                }, 100);
+
+            } catch (error) {
+                appendLog('SYS', 'Error rendering agent diagram payload.', 'log-sys');
+                console.error(error);
+            }
+        }
+    </script>
+</body>
+</html>

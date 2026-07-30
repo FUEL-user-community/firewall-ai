@@ -1,0 +1,42 @@
+# Git & CI/CD
+.git
+.gitignore
+.github
+
+# Virtual Environments & Python Cache
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Credentials & Sensitive Files (CRITICAL)
+.env
+.env.backup
+.env.*
+core/service_account.json
+
+# Local Databases & Runtime Logs (NEVER bake local dev state into images)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+data/*.db
+storage/audit_log.jsonl
+*.log
+
+# Temporary & Scratch Workspaces
+scratch/
+site/
+node_modules/
+
+# Markdown & Documentation (Not needed inside container image)
+*.md
+LICENSE
+
+# IDE & OS Metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

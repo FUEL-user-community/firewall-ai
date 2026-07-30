@@ -1,0 +1,1618 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Core Defense — Autonomous Defense</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@600;700&display=swap"
+        rel="stylesheet">
+
+    <style>
+        /* ═══════════════════════════════════════════════════════
+           Resize Handle
+           ═══════════════════════════════════════════════════════ */
+
+        .resize-handle {
+            position: absolute;
+            top: 0;
+            left: -3px;
+            width: 6px;
+            height: 100%;
+            cursor: col-resize;
+            z-index: 50;
+            transition: background 0.15s ease;
+        }
+
+        .resize-handle::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 2px;
+            height: 32px;
+            border-radius: 2px;
+            background: transparent;
+            transition: background 0.15s ease;
+        }
+
+        .resize-handle:hover::after,
+        .resize-handle.dragging::after {
+            background: rgba(96, 165, 250, 0.5);
+        }
+
+        .resize-handle:hover,
+        .resize-handle.dragging {
+            background: rgba(96, 165, 250, 0.06);
+        }
+
+        /* Prevent text selection during drag */
+        body.resizing {
+            cursor: col-resize !important;
+            user-select: none !important;
+        }
+
+        body.resizing * {
+            cursor: col-resize !important;
+        }
+
+        /* ═══════════════════════════════════════════════════════
+           Collapsed Chat — Icon Strip
+           ═══════════════════════════════════════════════════════ */
+
+        .chat-collapsed-strip {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            padding: 16px 0;
+            gap: 16px;
+            height: 100%;
+        }
+
+        .dashboard.chat-collapsed .chat-collapsed-strip {
+            display: flex;
+        }
+
+        .dashboard.chat-collapsed .chat-expanded,
+        .dashboard.chat-collapsed .chat-toggle,
+        .dashboard.chat-collapsed .resize-handle {
+            display: none !important;
+        }
+
+        .collapsed-chat-btn {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            border: 1px solid #222;
+            background: transparent;
+            color: #666;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .collapsed-chat-btn:hover {
+            border-color: #555;
+            color: #FFF;
+        }
+
+        /* ═══════════════════════════════════════════════════════
+           Chat Header Controls
+           ═══════════════════════════════════════════════════════ */
+
+        .chat-header-controls {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .chat-ctrl-btn {
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            border: none;
+            background: transparent;
+            color: #555;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-size: 14px;
+        }
+
+        .chat-ctrl-btn:hover {
+            color: #FFF;
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        /* ═══════════════════════════════════════════════════════
+           Wide Chat — Bigger Font When Panel Is Expanded
+           ═══════════════════════════════════════════════════════ */
+
+        .chat-panel.wide-mode .msg-bubble,
+        .chat-panel.wide-mode .msg-neo .msg-bubble {
+            font-size: 14px;
+        }
+
+        .chat-panel.wide-mode .chat-input-bar input {
+            font-size: 14px;
+        }
+
+        /* ═══════════════════════════════════════════════════════
+           Demo Mode (Ctrl+Shift+D)
+           ═══════════════════════════════════════════════════════ */
+
+        body.demo-mode .defense-card {
+            padding: 20px;
+        }
+
+        body.demo-mode .card-title {
+            font-size: 17px;
+        }
+
+        body.demo-mode .card-body p,
+        body.demo-mode .card-finding {
+            font-size: 15px;
+        }
+
+        body.demo-mode .card-severity-badge {
+            font-size: 11px;
+            padding: 3px 10px;
+        }
+
+        body.demo-mode .card-action-btn {
+            font-size: 13px;
+            padding: 8px 20px;
+        }
+
+        body.demo-mode .msg-bubble,
+        body.demo-mode .msg-neo .msg-bubble {
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        body.demo-mode .chat-input-bar input {
+            font-size: 15px;
+            padding: 14px 20px;
+        }
+
+        body.demo-mode .filter-btn {
+            font-size: 14px;
+            padding: 8px 18px;
+        }
+
+        body.demo-mode .counter-badge {
+            font-size: 14px;
+            min-width: 32px;
+            height: 28px;
+        }
+
+        body.demo-mode .brand-title {
+            font-size: 16px;
+        }
+
+        * {
+            box-sizing: border-box;
+            /* Audit Fix: Prevents padding from breaking 100vh height */
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body {
+            height: 100%;
+            background: #0A0A0A;
+            color: #E0E0E0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 14px;
+            line-height: 1.6;
+            overflow: hidden;
+            /* Prevent body scroll, let grid handle it */
+        }
+
+        .app-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            height: 52px;
+            border-bottom: 1px solid #1A1A1A;
+            background: #050505;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-left,
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-logo {
+            color: #FFFFFF;
+        }
+
+        .brand-title {
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #FFFFFF;
+        }
+
+        .header-subtitle {
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            color: #666;
+            padding-left: 8px;
+            border-left: 1px solid #222;
+            text-transform: uppercase;
+        }
+
+        .brand-badge {
+            font-size: 10px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 1px;
+            color: #fbbf24;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 24px;
+            margin-left: 32px;
+            border-left: 1px solid #1A1A1A;
+            padding-left: 32px;
+        }
+
+        .nav-link {
+            color: #666;
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 13px;
+            transition: color 0.2s;
+        }
+
+        .nav-link:hover {
+            color: #E0E0E0;
+        }
+
+        .nav-link.active {
+            color: #FFFFFF;
+            position: relative;
+        }
+
+        .nav-link.active::after {
+            content: '';
+            position: absolute;
+            bottom: -16px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: #FFFFFF;
+        }
+
+        .header-counters {
+            display: flex;
+            gap: 8px;
+            margin-left: 24px;
+        }
+
+        .counter-badge {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 28px;
+            height: 24px;
+            padding: 0 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .counter-critical {
+            background: transparent;
+            color: #f87171;
+            border: 1px solid #333;
+        }
+
+        .counter-critical.active {
+            border-color: #f87171;
+            color: #f87171;
+        }
+
+        .counter-caution {
+            background: transparent;
+            color: #fbbf24;
+            border: 1px solid #333;
+        }
+
+        .counter-normal {
+            background: transparent;
+            color: #34d399;
+            border: 1px solid #333;
+        }
+
+        .btn-icon {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            border: 1px solid #222;
+            background: transparent;
+            color: #777;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-icon:hover {
+            border-color: #555;
+            color: #FFF;
+            background: transparent;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1fr var(--chat-width, 420px);
+            grid-template-rows: auto 1fr;
+            grid-template-areas:
+                "filter chat"
+                "deck chat";
+            height: calc(100vh - 52px);
+            width: 100%;
+            transition: grid-template-columns 0.15s ease;
+        }
+
+        /* Collapsed chat — icon strip only */
+        .dashboard.chat-collapsed {
+            grid-template-columns: 1fr 48px;
+        }
+
+        /* Fullscreen chat — deck hidden */
+        .dashboard.chat-fullscreen {
+            grid-template-columns: 0fr 1fr;
+        }
+
+        .dashboard.chat-fullscreen .filter-bar,
+        .dashboard.chat-fullscreen .card-deck {
+            display: none;
+        }
+
+        /* Responsive stack for mobile */
+        @media (max-width: 900px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto 1fr 50vh;
+                grid-template-areas:
+                    "filter"
+                    "deck"
+                    "chat";
+                overflow-y: auto;
+                /* Allow full page scroll on mobile */
+            }
+
+            .chat-panel {
+                margin-left: 0 !important;
+                border-left: none !important;
+                border-top: 1px solid #1A1A1A;
+            }
+        }
+
+        .filter-bar {
+            grid-area: filter;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 16px 24px 8px 24px;
+        }
+
+        .filter-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 4px;
+            border: 1px solid transparent;
+            background: transparent;
+            color: #777;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .filter-btn:hover {
+            color: #E0E0E0;
+            background: #111;
+        }
+
+        .filter-btn.active {
+            border-color: #333;
+            color: #FFFFFF;
+            background: #1A1A1A;
+        }
+
+        .filter-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .dot-all {
+            background: #666;
+        }
+
+        .dot-critical {
+            background: #f87171;
+        }
+
+        .dot-caution {
+            background: #fbbf24;
+        }
+
+        .card-deck {
+            grid-area: deck;
+            overflow-y: auto;
+            padding: 0 24px 16px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            /* Audit Fix: Tells Grid this container is allowed to shrink, enabling internal scroll */
+            min-height: 0;
+        }
+
+        /* Custom scrollbar for deck */
+        .card-deck::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .card-deck::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .card-deck::-webkit-scrollbar-thumb {
+            background: #222;
+            border-radius: 4px;
+        }
+
+        .card-deck::-webkit-scrollbar-thumb:hover {
+            background: #333;
+        }
+
+        .defense-card {
+            background: transparent;
+            border: 1px solid #1A1A1A;
+            border-radius: 4px;
+            padding: 16px;
+            overflow: hidden;
+            transition: all 0.2s ease;
+            animation: cardSlideIn 0.4s ease-out;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        @keyframes cardSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .defense-card:hover {
+            border-color: #333;
+        }
+
+        .defense-card.severity-critical {
+            border-left: 2px solid #f87171;
+        }
+
+        .defense-card.severity-caution {
+            border-left: 2px solid #fbbf24;
+        }
+
+        .defense-card.severity-normal {
+            border-left: 2px solid #34d399;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .card-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #FFFFFF;
+            margin-bottom: 4px;
+        }
+
+        .card-meta {
+            font-size: 12px;
+            color: #666;
+            display: flex;
+            gap: 12px;
+        }
+
+        .card-severity-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 2px;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            font-family: 'JetBrains Mono', monospace;
+            flex-shrink: 0;
+        }
+
+        .badge-critical {
+            background: transparent;
+            color: #f87171;
+            border: 1px solid #444;
+        }
+
+        .badge-caution {
+            background: transparent;
+            color: #fbbf24;
+            border: 1px solid #444;
+        }
+
+        .badge-normal {
+            background: transparent;
+            color: #34d399;
+            border: 1px solid #444;
+        }
+
+        .card-body p {
+            font-size: 13px;
+            color: #999;
+        }
+
+        .card-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .card-action-btn {
+            padding: 6px 16px;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+
+        .action-primary {
+            background: #E0E0E0;
+            border-color: #E0E0E0;
+            color: #000000;
+        }
+
+        .action-primary:hover {
+            background: #FFFFFF;
+            border-color: #FFFFFF;
+            color: #000000;
+        }
+
+        .action-approve {
+            background: transparent;
+            border-color: #333;
+            color: #34d399;
+        }
+
+        .action-approve:hover {
+            border-color: #34d399;
+            color: #34d399;
+        }
+
+        .action-danger {
+            background: transparent;
+            border-color: #333;
+            color: #f87171;
+        }
+
+        .action-danger:hover {
+            border-color: #f87171;
+            color: #f87171;
+        }
+
+        .action-mute {
+            background: transparent;
+            border-color: #333;
+            color: #666;
+        }
+
+        .action-mute:hover {
+            border-color: #555;
+            color: #888;
+        }
+
+        .chat-panel {
+            grid-area: chat;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            border-left: 1px solid #1A1A1A;
+            background: linear-gradient(180deg, #050505 0%, #080808 100%);
+            overflow: hidden;
+            box-shadow: -4px 0 24px rgba(0, 0, 0, 0.5);
+            position: relative;
+            min-width: 0;
+        }
+
+        /* Investigating pulse — subtle border glow when agent is streaming */
+        .chat-panel.investigating {
+            border-left-color: rgba(96, 165, 250, 0.4);
+            box-shadow: -4px 0 24px rgba(96, 165, 250, 0.08);
+        }
+
+        .chat-expanded {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid #1A1A1A;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-header-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            font-size: 13px;
+            color: #E0E0E0;
+            letter-spacing: 0.5px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #34d399;
+            box-shadow: 0 0 8px #34d399;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 0.5;
+                box-shadow: 0 0 0 #34d399;
+            }
+
+            50% {
+                opacity: 1;
+                box-shadow: 0 0 8px #34d399;
+            }
+
+            100% {
+                opacity: 0.5;
+                box-shadow: 0 0 0 #34d399;
+            }
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .chat-messages::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: #222;
+        }
+
+        /* Chat Message Bubbles */
+        .msg {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-width: 100%;
+        }
+
+        .msg-user {
+            align-self: flex-end;
+        }
+
+        .msg-neo {
+            align-self: flex-start;
+        }
+
+        .msg-bubble {
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .msg-user .msg-bubble {
+            background: #1A1A1A;
+            color: #FFFFFF;
+            border-bottom-right-radius: 4px;
+            border: 1px solid #222;
+        }
+
+        .msg-neo .msg-bubble {
+            background: rgba(96, 165, 250, 0.04);
+            border: 1px solid rgba(96, 165, 250, 0.15);
+            color: #bfdbfe;
+            border-bottom-left-radius: 4px;
+            box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.02);
+        }
+
+        .chat-input-bar {
+            padding: 16px 20px;
+            border-top: 1px solid #1A1A1A;
+            display: flex;
+            gap: 12px;
+            background: rgba(5, 5, 5, 0.8);
+            backdrop-filter: blur(8px);
+        }
+
+        .chat-input-bar input {
+            flex: 1;
+            background: #0A0A0A;
+            border: 1px solid #222;
+            border-radius: 20px;
+            padding: 12px 18px;
+            color: #FFF;
+            font-family: inherit;
+            font-size: 13px;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .chat-input-bar input:focus {
+            border-color: #60a5fa;
+            background: #000;
+            box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.1);
+        }
+
+        .chat-input-bar button {
+            background: #60a5fa;
+            color: #000;
+            border: none;
+            border-radius: 50%;
+            width: 42px;
+            height: 42px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .chat-input-bar button:hover {
+            background: #93c5fd;
+            transform: scale(1.05);
+        }
+    
+.modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(8, 8, 14, 0.85);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 500;
+    animation: fadeIn 0.2s ease-out;
+}
+
+.modal-card {
+    background: #111119;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    width: 100%;
+    max-width: 600px;
+    max-height: 80vh;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    animation: fadeInUp 0.3s ease-out;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 24px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.modal-header h2 {
+    font-size: 16px;
+    font-weight: 700;
+    color: #f0f0f8;
+}
+
+.btn-close-modal {
+    background: none;
+    border: none;
+    color: #666;
+    font-size: 18px;
+    cursor: pointer;
+}
+
+.btn-close-modal:hover { color: #aaa; }
+
+.modal-body {
+    padding: 16px 24px;
+    overflow-y: auto;
+    max-height: 60vh;
+}
+
+/* Schedule entries */
+.schedule-entry {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+
+.schedule-entry:last-child { border-bottom: none; }
+
+.schedule-name {
+    flex: 1;
+    font-size: 13px;
+    color: #ccc;
+}
+
+.schedule-id {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: #555;
+    min-width: 50px;
+}
+
+.schedule-freq {
+    font-size: 11px;
+    color: #666;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.03);
+    min-width: 70px;
+    text-align: center;
+}
+
+.schedule-last {
+    font-size: 11px;
+    color: #555;
+    font-family: 'JetBrains Mono', monospace;
+    min-width: 60px;
+    text-align: right;
+}
+
+.schedule-toggle {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    appearance: none;
+    background: #1a1a2a;
+    border-radius: 10px;
+    outline: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 1px solid rgba(255,255,255,0.08);
+}
+
+.schedule-toggle:checked {
+    background: rgba(52, 211, 153, 0.25);
+    border-color: rgba(52, 211, 153, 0.4);
+}
+
+.schedule-toggle::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    background: #666;
+    border-radius: 50%;
+    transition: all 0.2s;
+}
+
+.schedule-toggle:checked::before {
+    transform: translateX(16px);
+    background: #34d399;
+}
+
+/* ═══════════════════════════════════════════════════════
+   Animations
+   ═══════════════════════════════════════════════════════ */
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Login, Setup & Schedule Overlays (Premium Redesign)
+   ═══════════════════════════════════════════════════════ */
+
+.login-overlay, .setup-overlay, .modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(5, 5, 5, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    animation: fadeIn 0.3s ease-out;
+}
+
+.login-card, .setup-card, .modal-card {
+    background: #0A0A0A;
+    border: 1px solid #1A1A1A;
+    border-radius: 4px;
+    padding: 40px;
+    width: 100%;
+    max-width: 420px;
+    text-align: center;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.8);
+    animation: fadeInUp 0.4s ease-out;
+    position: relative;
+}
+
+.setup-card {
+    max-width: 500px;
+}
+
+.login-icon { 
+    font-size: 24px; 
+    color: #FFFFFF; 
+    margin-bottom: 20px; 
+}
+
+.login-card h2, .setup-card h2, .modal-header h2 { 
+    font-size: 20px; 
+    font-weight: 700; 
+    color: #FFFFFF; 
+    margin-bottom: 8px; 
+    letter-spacing: 0.5px;
+}
+
+.login-card p, .setup-card p { 
+    font-size: 13px; 
+    color: #888; 
+    margin-bottom: 32px; 
+    line-height: 1.6;
+}
+
+.login-form, .setup-fields-group { 
+    display: flex; 
+    flex-direction: column; 
+    gap: 16px; 
+    margin-bottom: 16px;
+}
+
+.login-form input, .setup-fields-group input {
+    padding: 12px 16px;
+    background: #050505;
+    border: 1px solid #222;
+    border-radius: 4px;
+    color: #FFFFFF;
+    font-size: 14px;
+    text-align: center;
+    transition: all 0.2s;
+    font-family: inherit;
+}
+
+.input-group { display: flex; flex-direction: column; text-align: left; gap: 8px; }
+.input-group input { width: 100%; box-sizing: border-box; text-align: left; }
+.input-help { font-size: 11px; color: #666; margin-top: 2px; }
+
+.login-form input:focus, .setup-fields-group input:focus {
+    outline: none;
+    border-color: #555;
+    background: #111;
+}
+
+.login-form button, .setup-login-btn {
+    padding: 12px 24px;
+    background: #E0E0E0;
+    border: 1px solid #E0E0E0;
+    border-radius: 4px;
+    color: #000000;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    width: 100%;
+}
+
+.login-form button:hover, .setup-login-btn:hover {
+    background: #FFFFFF;
+    border-color: #FFFFFF;
+    color: #000000;
+}
+
+.login-error { color: #f87171; font-size: 12px; margin-top: 16px; min-height: 18px; }
+
+/* Setup Specifics */
+.setup-options { display: flex; flex-direction: column; gap: 16px; }
+
+.setup-option {
+    background: #050505;
+    border: 1px solid #1A1A1A;
+    border-radius: 4px;
+    padding: 20px;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.setup-option:hover {
+    border-color: #333;
+    background: #111;
+}
+
+.setup-option h3 { font-size: 15px; color: #FFFFFF; margin-bottom: 4px; font-weight: 600; }
+.setup-option p { font-size: 12px; color: #777; margin: 0; }
+
+.setup-back {
+    position: absolute;
+    top: 24px;
+    left: 24px;
+    background: transparent;
+    border: none;
+    color: #666;
+    font-size: 13px;
+    cursor: pointer;
+    transition: color 0.2s;
+}
+
+.setup-back:hover { color: #FFF; }
+
+.passphrase-box {
+    background: #050505;
+    border: 1px solid #222;
+    color: #34d399;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px;
+    padding: 16px;
+    border-radius: 4px;
+    margin-bottom: 24px;
+    letter-spacing: 1px;
+}
+
+.setup-copy-btn {
+    background: transparent;
+    border: 1px solid #333;
+    color: #E0E0E0;
+    padding: 12px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 13px;
+    width: 100%;
+    margin-bottom: 12px;
+}
+
+.setup-copy-btn:hover { background: #111; border-color: #555; color: #FFF; }
+
+/* Modal specific tweaks */
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #1A1A1A;
+}
+
+.modal-header h2 {
+    margin-bottom: 0;
+}
+
+.btn-close-modal {
+    background: transparent;
+    border: none;
+    color: #666;
+    font-size: 16px;
+    cursor: pointer;
+}
+
+.btn-close-modal:hover {
+    color: #FFF;
+}
+
+/* ═══════════════════════════════════════════════════════
+   Responsive
+   ═══════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+    .header { padding: 10px 14px; }
+    .header-subtitle { display: none; }
+    .dashboard { padding: 0 10px; }
+    .filter-bar { overflow-x: auto; padding: 10px 0; }
+    .defense-card { border-radius: 10px; }
+    .card-header { padding: 12px 14px 8px; }
+    .card-body { padding: 0 14px 10px; }
+    .card-actions { padding: 8px 14px 12px; }
+    .modal-card { margin: 0 16px; }
+}
+
+@media (max-width: 480px) {
+    .counter { min-width: 24px; height: 22px; font-size: 11px; padding: 0 6px; }
+    .filter-btn { padding: 5px 10px; font-size: 11px; }
+    .card-title { font-size: 13px; }
+    .card-finding { font-size: 12px; }
+    .card-action-btn { padding: 5px 12px; font-size: 11px; }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Visibility Components (Logprobs, Auditor, Drift)
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Confidence Bar ── */
+.confidence-container {
+    margin-top: 12px;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.confidence-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: 600;
+    color: #888899;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.confidence-bar-bg {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+    display: flex;
+}
+
+.confidence-fill {
+    height: 100%;
+    transition: width 0.5s ease;
+}
+
+.confidence-fill.high { background: #34d399; }
+.confidence-fill.medium { background: #fbbf24; }
+.confidence-fill.low { background: #f87171; }
+
+.confidence-margin-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+}
+.confidence-margin-val.high { color: #34d399; }
+.confidence-margin-val.medium { color: #fbbf24; }
+.confidence-margin-val.low { color: #f87171; }
+
+/* ── Audit Panel ── */
+.audit-panel {
+    margin-top: 12px;
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    border-radius: 6px;
+    background: rgba(239, 68, 68, 0.05);
+    overflow: hidden;
+}
+
+.audit-panel.verified {
+    border-color: rgba(52, 211, 153, 0.2);
+    background: rgba(52, 211, 153, 0.05);
+}
+
+.audit-header {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background: rgba(0, 0, 0, 0.2);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.audit-panel.verified .audit-header { color: #34d399; }
+.audit-panel:not(.verified) .audit-header { color: #f87171; }
+
+.audit-body {
+    padding: 12px;
+    font-size: 13px;
+    color: #d8d8e4;
+}
+
+.audit-dispute {
+    margin-top: 8px;
+    padding-left: 12px;
+    border-left: 2px solid #f87171;
+}
+
+.audit-dispute-claim {
+    color: #f87171;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    margin-bottom: 4px;
+}
+
+.audit-dispute-issue {
+    color: #a0a0b0;
+}
+
+/* ── Drift Badge ── */
+.drift-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+.drift-badge.critical {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.drift-badge.caution {
+    background: rgba(251, 191, 36, 0.2);
+    color: #fbbf24;
+    border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+</style>
+</head>
+
+<body>
+
+    <header class="app-header">
+        <div class="header-left">
+            <div class="brand">
+                <svg class="brand-logo" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+                </svg>
+                <span class="brand-title">CORE DEFENSE</span>
+                <span class="brand-badge">BETA</span>
+                <button class="btn-icon" id="btnSchedule" title="Card Schedule" style="margin-left: 12px; width: 24px; height: 24px; border:none; background: transparent; color:#666; cursor:pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></button>
+                <button class="btn-icon" id="btnToggleChat" title="Open Chat" style="width: 24px; height: 24px; border:none; background: transparent; color:#666; cursor:pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+            </div>
+            <nav class="nav-links">
+                <a href="#" class="nav-link active">Defense Deck</a>
+                <a href="range.html" class="nav-link">Range</a>
+                <a href="#" class="nav-link">Policies</a>
+            </nav>
+            <div class="header-counters">
+                <div class="counter-badge counter-critical" id="countCritical">0</div>
+                <div class="counter-badge counter-caution" id="countCaution">0</div>
+                <div class="counter-badge counter-normal" id="countNormal">0</div>
+            </div>
+        </div>
+        <div class="header-right">
+            <button class="btn-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path
+                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                    </path>
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <main class="dashboard" id="dashboard">
+
+        <!-- Filter Bar -->
+        <div class="filter-bar">
+            <button class="filter-btn active">
+                <div class="filter-dot dot-all"></div> All Cards
+            </button>
+            <button class="filter-btn">
+                <div class="filter-dot dot-critical"></div> Critical
+            </button>
+            <button class="filter-btn">
+                <div class="filter-dot dot-caution"></div> Caution
+            </button>
+        </div>
+
+        <!-- Card Deck Container -->
+        <div class="card-deck" id="cardDeck">
+            <!-- Cards injected via JS -->
+        </div>
+
+        <!-- Chat Panel Container -->
+        <div class="chat-panel" id="chatPanel">
+
+            <!-- Resize drag handle -->
+            <div class="resize-handle" id="resizeHandle"></div>
+
+            <!-- Collapsed icon strip -->
+            <div class="chat-collapsed-strip" id="chatCollapsedStrip">
+                <button class="collapsed-chat-btn" id="btnExpandFromStrip" title="Open Chat (Ctrl+K)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    </svg>
+                </button>
+            </div>
+            
+            <div class="chat-toggle" id="chatToggle" style="display: none; padding: 20px; color: #666; cursor: pointer; border-bottom: 1px solid #1A1A1A;">
+                <span>Ask NEO a question...</span>
+            </div>
+
+            <div class="chat-expanded" id="chatExpanded">
+                <div class="chat-header">
+                    <div class="chat-header-title">
+                        <div class="status-dot" id="statusDot"></div>
+                        <span id="statusText" style="display:none;"></span>NEO
+                    </div>
+                    <div class="chat-header-controls">
+                        <button class="chat-ctrl-btn" id="btnFullscreenChat" title="Maximize chat">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="15 3 21 3 21 9"/>
+                                <polyline points="9 21 3 21 3 15"/>
+                                <line x1="21" y1="3" x2="14" y2="10"/>
+                                <line x1="3" y1="21" x2="10" y2="14"/>
+                            </svg>
+                        </button>
+                        <button class="chat-ctrl-btn" id="btnCollapseChat" title="Collapse chat">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="17 8 12 3 7 8"/>
+                                <polyline points="7 16 12 21 17 16"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="chat-messages" id="messages">
+                    <div class="msg msg-neo">
+                        <div class="msg-bubble">How can I best assist you?</div>
+                    </div>
+                </div>
+                <form class="chat-input-bar" id="chatForm">
+                    <input type="text" id="input" name="input" placeholder="Query Neo..." autocomplete="off">
+                    <button type="submit" id="sendBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+                        </svg>
+                    </button>
+                </form>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        // Array to be populated by the AI Agent
+        let activeAlerts = [];
+
+        function renderCards(alertsToRender) {
+            const deck = document.getElementById('cardDeck');
+            deck.innerHTML = '';
+
+            let crit = 0, caut = 0, norm = 0;
+
+            alertsToRender.forEach(alert => {
+                if (alert.severity === 'critical') crit++;
+                if (alert.severity === 'caution') caut++;
+                if (alert.severity === 'normal') norm++;
+
+                const card = document.createElement('div');
+                card.className = `defense-card severity-${alert.severity}`;
+
+                card.innerHTML = `
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">${alert.title}</div>
+                            <div class="card-meta">
+                                <span>${alert.id}</span>
+                                <span>•</span>
+                                <span>${alert.ip}</span>
+                                <span>•</span>
+                                <span>${alert.time}</span>
+                            </div>
+                        </div>
+                        <span class="card-severity-badge badge-${alert.severity}">${alert.severity}</span>
+                    </div>
+                    <div class="card-body">
+                        <p>${alert.desc}</p>
+                    </div>
+                    <div class="card-actions">
+                        ${alert.severity === 'critical' || alert.severity === 'caution' ?
+                        `<button class="card-action-btn action-primary">Investigate</button>
+                             <button class="card-action-btn action-danger">Block IP</button>` :
+                        `<button class="card-action-btn action-approve">Acknowledge</button>`
+                    }
+                        <button class="card-action-btn action-mute">Mute</button>
+                    </div>
+                `;
+                deck.appendChild(card);
+            });
+
+            // Update DOM counters
+            const elCrit = document.getElementById('countCritical');
+            const elCaut = document.getElementById('countCaution');
+
+            elCrit.innerText = crit;
+            elCaut.innerText = caut;
+            document.getElementById('countNormal').innerText = norm;
+
+            // Toggle active styling based on presence of criticals
+            if (crit > 0) {
+                elCrit.classList.add('active');
+            } else {
+                elCrit.classList.remove('active');
+            }
+        }
+
+        // NOTE: Chat form, toggleChat, keyboard shortcuts, and filters
+        // are all handled by app.js — no duplicates here.
+
+        // The agent will call renderCards(activeAlerts) when data is loaded
+    </script>
+
+<!-- ── Schedule Modal ── -->
+    <div class="modal-overlay" id="scheduleModal" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>Card Schedule</h2>
+                <button class="btn-close-modal" id="btnCloseSchedule">✕</button>
+            </div>
+            <div class="modal-body" id="scheduleBody">
+                <!-- Schedule entries injected here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Setup Overlay ── -->
+    <div class="setup-overlay" id="setupOverlay" style="display: none;">
+        <!-- Step 1: Selection -->
+        <div class="setup-card" id="setupStep1">
+            <div class="login-icon">◆</div>
+            <h2>Welcome to NODAL</h2>
+            <p>How do you want to manage your security credentials?</p>
+            <div class="setup-options">
+                <button type="button" class="setup-option" id="btnSetupSimple">
+                    <h3>Simple</h3>
+                    <p>Store API keys locally in a .env file</p>
+                </button>
+                <button type="button" class="setup-option" id="btnSetupVault">
+                    <h3>Enterprise</h3>
+                    <p>Connect to HashiCorp Vault</p>
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 2: Form -->
+        <div class="setup-card" id="setupStep2" style="display: none;">
+            <button type="button" class="setup-back" id="btnSetupBack">← Back</button>
+            <h2 id="setupTitle">Configuration</h2>
+            <p id="setupDesc">Enter your details.</p>
+            <form id="setupForm" class="login-form">
+                <input type="hidden" id="setupBackend" value="">
+                <div id="setupSimpleFields" class="setup-fields-group">
+                    <input type="password" id="setupGeminiKey" placeholder="Gemini API Key">
+                    <input type="password" id="setupPanosKey" placeholder="PAN-OS API Key">
+                </div>
+                <div id="setupVaultFields" class="setup-fields-group" style="display: none;">
+                    <div class="input-group">
+                        <input type="text" id="setupVaultAddr" placeholder="Vault URL (e.g. https://vault.company.com:8200)">
+                        <span class="input-help">The address of your company's HashiCorp Vault server.</span>
+                    </div>
+                    <div class="input-group">
+                        <input type="text" id="setupVaultRole" placeholder="Vault AppRole ID">
+                        <span class="input-help">Your machine-to-machine username, provided by your IT/Vault administrator.</span>
+                    </div>
+                    <div class="input-group">
+                        <input type="password" id="setupVaultSecret" placeholder="Vault Secret ID">
+                        <span class="input-help">Your machine-to-machine password, provided by your IT/Vault administrator.</span>
+                    </div>
+                </div>
+                <div class="input-group">
+                    <input type="text" id="setupFwIp" placeholder="Firewall IP or Hostname" required>
+                </div>
+                <button type="submit" id="setupSubmitBtn">Save & Initialize</button>
+            </form>
+            <div id="setupError" class="login-error"></div>
+        </div>
+
+        <!-- Step 3: Success -->
+        <div class="setup-card" id="setupStep3" style="display: none;">
+            <div class="login-icon" style="color: #4ade80;">✓</div>
+            <h2>Setup Complete</h2>
+            <p>Your unique GUI passphrase has been generated. Save this securely, as you will need it to unlock the dashboard.</p>
+            <div class="passphrase-box" id="setupPassphrase"></div>
+            <button type="button" class="setup-copy-btn" id="btnCopyPassphrase">Copy to Clipboard</button>
+            <button type="button" class="setup-login-btn" id="btnProceedLogin">Proceed to Login</button>
+        </div>
+    </div>
+
+    <!-- ── Login Overlay ── -->
+    <div class="login-overlay" id="loginOverlay">
+        <div class="login-card">
+            <div class="login-icon">◆</div>
+            <h2>Unlock NODAL</h2>
+            <p>Enter your vault passphrase to connect to the firewall.</p>
+            <form id="loginForm" class="login-form">
+                <input type="password" id="loginInput" placeholder="Passphrase" autofocus required>
+                <button type="submit" id="loginBtn">Connect</button>
+            </form>
+            <div id="loginError" class="login-error"></div>
+        </div>
+    </div>
+
+    <!-- ── Audio Alert (optional, for CRITICAL cards) ── -->
+    <audio id="alertSound" preload="none">
+        <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ==" type="audio/wav">
+    </audio>
+
+    
+    <script src="app.js"></script>
+
+</body>
+
+</html>
