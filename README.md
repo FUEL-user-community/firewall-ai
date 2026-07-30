@@ -8,7 +8,7 @@ Core Defense connects AI models to your live Palo Alto Networks firewalls. It al
 
 ## Key Capabilities
 
-*   **Investigation Engine**: Powered by Google Gemini (tested with Gemini 3.1 Pro and 3.6 Flash), the agent breaks down complex network troubleshooting step-by-step.
+*   **Investigation Engine**: Powered by Google Gemini (tested with current Gemini Pro and Flash models), the agent breaks down complex network troubleshooting step-by-step.
 *   **Multi-Layered Safety Pipeline**:
     *   **Policy Engine**: Enforces strict `READ_ONLY` mode by default.
     *   **Circuit Breaker**: Prevents runaway execution loops (max 30 steps).
@@ -20,13 +20,28 @@ Core Defense connects AI models to your live Palo Alto Networks firewalls. It al
 *   **Enterprise Secrets Provider**: Pluggable support for HashiCorp Vault (AppRole), GCP Secret Manager, AWS Secrets Manager, and local `.env`.
 *   **Multi-Firewall Fleet Support**: Single interface to query and audit multiple firewalls declared in `config/devices.yaml`.
 
----
 
 ## System Architecture
 
+```mermaid
+flowchart TD
+    UI["Web UI / Chat"] <--> Server["FastAPI Server"]
+    Server <--> Brain["Core Brain + Gemini"]
 
+    Brain --> Safety["Safety Pipeline"]
+    Safety --> PII["PII Scrubber"]
+    Safety --> Policy["Policy Engine — READ_ONLY"]
+    Safety --> CB["Circuit Breaker — 30 Steps"]
+    Safety --> Drift["Semantic Drift Gate"]
+    Safety --> Filter["Command Filter"]
 
----
+    Filter <--> Pool["PAN-OS Client Pool"]
+    Pool <--> FW1["Firewall 1"]
+    Pool <--> FW2["Firewall N"]
+
+    Server <--> Cards["Defense Deck — SQLite"]
+    Pool <--> Secrets["Secrets — Vault / AWS / GCP / .env"]
+```
 
 ## Quick Start
 
@@ -41,8 +56,8 @@ Core Defense connects AI models to your live Palo Alto Networks firewalls. It al
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/FUEL-UG/neo-framework-pan-os.git
-cd neo-framework-pan-os
+git clone https://github.com/FUEL-user-community/firewall-ai.git
+cd firewall-ai
 
 # 2. Create and activate a virtual environment
 python -m venv venv
@@ -113,7 +128,7 @@ All configuration lives in the `config/` directory:
 ```
 config/
 ├── devices.yaml        # Firewall fleet registry (IPs, labels, default target)
-├── prompts.yaml        # System prompts and persona definitions (NEO / GHOST)
+├── prompts.yaml        # Core Defense Agent system prompts
 ├── commands.yaml       # Allowed PAN-OS commands and macro chains
 ├── cards.yaml          # Autonomous Defense Deck card definitions
 ├── card_prompts.yaml   # Card execution prompt templates
