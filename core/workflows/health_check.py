@@ -244,8 +244,7 @@ def run_health_check(tool_executor, target_device: str = None) -> str:
     lines.append("")
     
     for subsystem, verdict, detail in findings:
-        marker = "⚠️" if verdict == "CAUTION" else ("🔴" if verdict == "CRITICAL" else "✅")
-        lines.append(f"  {marker} {subsystem}: {verdict} — {detail}")
+        lines.append(f"  [{verdict}] {subsystem}: {verdict} — {detail}")
     
     lines.append("")
     lines.append(f"Parsed metrics: {metrics}")

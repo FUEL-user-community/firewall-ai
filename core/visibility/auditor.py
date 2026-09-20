@@ -195,12 +195,12 @@ class Auditor:
             dispute_count = len(result.disputes)
             if dispute_count > 0:
                 logger.warning(
-                    f"[AUDITOR] 🔴 {dispute_count} dispute(s) found | "
+                    f"[AUDITOR] [DISPUTE] {dispute_count} dispute(s) found | "
                     f"Score: {result.audit_score} | {result.summary}"
                 )
             else:
                 logger.info(
-                    f"[AUDITOR] ✅ No disputes | Score: {result.audit_score} | {result.summary}"
+                    f"[AUDITOR] [PASSED] No disputes | Score: {result.audit_score} | {result.summary}"
                 )
 
             return result

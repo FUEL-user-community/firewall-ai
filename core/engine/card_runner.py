@@ -314,7 +314,7 @@ class CardRunner:
             result.trust_score = validation["trust_score"]
             if validation["unverified"]:
                 logger.warning(
-                    f"[CardRunner] ⚠ {card_id} trust_score={result.trust_score:.2f} — "
+                    f"[CardRunner] [WARN] {card_id} trust_score={result.trust_score:.2f} — "
                     f"{len(validation['unverified'])} unverified evidence claims"
                 )
 
@@ -369,7 +369,7 @@ class CardRunner:
             if result_id:
                 result.id = result_id
                 logger.info(
-                    f"[CardRunner] ✓ {card_id} completed in {elapsed:.1f}s — "
+                    f"[CardRunner] [OK] {card_id} completed in {elapsed:.1f}s — "
                     f"severity={result.severity}, stored={result_id}"
                 )
                 return result
@@ -379,7 +379,7 @@ class CardRunner:
 
         except Exception as e:
             elapsed = time.time() - start_time
-            logger.error(f"[CardRunner] ✗ {card_id} failed after {elapsed:.1f}s: {e}")
+            logger.error(f"[CardRunner] [FAIL] {card_id} failed after {elapsed:.1f}s: {e}")
             return None
 
     def _resolve_identities(self, tool_outputs: List[Dict], device: Optional[str]) -> List[Dict]:

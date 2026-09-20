@@ -213,11 +213,27 @@ neo:
     **Updated Posture Score:** `<Updated Score>` ([NORMAL | CAUTION | CRITICAL])
 
     --- GOVERNED CALIBRATION (ALL MODES) ---
+    HEALTH & TELEMETRY EVALUATION DOCTRINE:
+    - CAPACITY-RELATIVE & PROPORTIONAL REASONING: Evaluate hardware telemetry relative to provisioned capacity, architecture (physical appliance vs virtual machine), and operational impact. Do not treat minor static baseline figures as system failures.
+    - MEMORY & SWAP EVALUATION:
+        - NORMAL: Swap usage is inactive or negligible (< 2% of total physical RAM, representing standard cold-boot kernel memory paging). Physical memory utilization within nominal operating boundaries.
+        - CAUTION: Swap utilization is elevated (> 5-10% of total physical RAM) with sustained growth under moderate memory utilization (> 80%).
+        - CRITICAL: Physical memory exhaustion (> 90-95% utilized) accompanied by active, continuous swap thrashing (out-of-memory risk) or core daemon memory leaks.
+    - COMPUTE & LOAD EVALUATION:
+        - NORMAL: Normalized load-to-core ratio within provisioned processing capacity.
+        - CAUTION: Elevated load-to-core ratio with diminishing CPU idle headroom.
+        - CRITICAL: Dataplane or management core saturation where load heavily exceeds core capacity paired with near-zero CPU idle capacity (< 20%).
+        - SUPPRESSION: Elevated aggregate CPU load when CPU idle remains abundant (> 70%) represents benign Linux I/O wait. Categorize as NORMAL or CAUTION, not compute saturation.
+    - STORAGE & PARTITION ROLES:
+        - System Partitions (`/` and `/opt/pancfg`): Critical OS and configuration volumes. Flag CAUTION/CRITICAL when utilization approaches capacity limits that risk commit failures or system hangs.
+        - Log Partitions (`/opt/panlogs`): PAN-OS automatically purges and manages ring-buffer retention at 90-95% by design. Do NOT alarm on high log partition usage unless space is 100% exhausted and actively dropping new logs.
+    - SYSTEM UPTIME:
+        - Evaluate recent uptime in context. A recent reboot warrants CAUTION only to note investigation of whether it was a planned maintenance reboot versus an uncommanded daemon crash or power failure.
+
     SEVERITY THRESHOLDS:
-    - CRITICAL: EOL software releases, active swap memory utilization (> 0), dataplane load/vCPU > 1.5, core daemon crashes, uncommitted candidate discrepancies, expired Threat Prevention/WildFire licenses, corroborated bi-directional compromise of internal assets.
-    - CAUTION: System uptime < 24h, load/vCPU 0.7-1.5, dynamic threat content > 7 days stale, HA peer synchronization mismatch.
-    - NORMAL / ROUTINE NOISE: Any dropped perimeter reconnaissance, uncorroborated port scans from Untrust, single-packet probes with no subsequent session establishment.
-    - SUPPRESSION: Elevated aggregate CPU load with idle capacity > 70% categorized as CAUTION (I/O wait profile).
+    - CRITICAL: Physical memory exhaustion with active swap thrashing, severe compute core exhaustion, EOL software releases without compensating controls, core daemon crashes (mgmtsrvr, pan_task), uncommitted candidate configuration discrepancies, expired Threat Prevention/WildFire licenses, or corroborated bi-directional compromise of internal assets.
+    - CAUTION: Sustained swap growth under high memory load, elevated load-to-core ratio without idle headroom, recent unverified system reboot, dynamic threat content > 7 days stale, or HA peer synchronization mismatch.
+    - NORMAL / ROUTINE NOISE: Nominal resource utilization, minor baseline swap paging, storage within partition design limits, dropped perimeter reconnaissance, uncorroborated port scans from Untrust, and single-packet probes with no subsequent session establishment.
 
     PERIMETER NOISE CANCELLATION DOCTRINE:
     - DROPPED INGRESS PROBES ARE NOT BREACHES: Routine external scanning traffic (Shodan, Censys, mass vulnerability sweeps) terminated or dropped by security policy or default-deny on an Untrust ingress interface is NORMAL background internet noise. The firewall successfully contained the packet. Never classify dropped, denied, or reset inbound sweeps as CRITICAL or CAUTION.

@@ -40,7 +40,7 @@ VERIFY_SSL: bool = _env_ssl not in ("false", "0", "no", "off")
 
 if not VERIFY_SSL:
     logger.warning(
-        "[CLIENT] ⚠️  SSL verification DISABLED (PANOS_VERIFY_SSL=false). "
+        "[CLIENT] [WARNING] SSL verification DISABLED (PANOS_VERIFY_SSL=false). "
         "This is insecure — use only for lab environments with self-signed certs."
     )
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
