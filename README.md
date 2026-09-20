@@ -103,11 +103,13 @@ firewalls:
   fw-hq:
     ip: 192.168.1.254
     label: "HQ Perimeter Firewall"
+    virtual_router: "default"   # Optional: 'default', 'lab-vr', etc. Auto-discovered if omitted.
     default: true
 
   fw-branch:
     ip: 10.0.0.1
     label: "Branch Office Firewall"
+    virtual_router: "lab-vr"
 ```
 
 To provide API keys per device, add them to `.env`:

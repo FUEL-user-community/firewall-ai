@@ -81,17 +81,21 @@ class PanOSClient:
         hostname: str,
         api_key: str,
         label: str = "",
-        verify_ssl: Optional[bool] = None
+        verify_ssl: Optional[bool] = None,
+        virtual_router: Optional[str] = None
     ):
         self.device_name = device_name
         self.hostname = hostname
         self.label = label
         self.verify_ssl = VERIFY_SSL if verify_ssl is None else verify_ssl
+        self.virtual_router = virtual_router
+        self._cached_vr = virtual_router
 
         try:
             self.fw = Firewall(hostname=hostname, api_key=api_key)
             self._configure_ssl()
-            logger.info(f"[PanOSClient] Initialized: {device_name} ({label}) @ {hostname} (ssl_verify={self.verify_ssl})")
+            vr_info = f", vr='{self.virtual_router}'" if self.virtual_router else ""
+            logger.info(f"[PanOSClient] Initialized: {device_name} ({label}) @ {hostname} (ssl_verify={self.verify_ssl}{vr_info})")
         except Exception as e:
             logger.error(f"[PanOSClient] Failed to initialize {device_name}: {e}")
             raise
@@ -377,7 +381,8 @@ class PanOSClientPool:
                 hostname=hostname,
                 api_key=api_key,
                 label=label,
-                verify_ssl=VERIFY_SSL
+                verify_ssl=VERIFY_SSL,
+                virtual_router=config.get('virtual_router')
             )
             self._connections[device_name] = client
             return client
@@ -396,6 +401,7 @@ class PanOSClientPool:
                     'ip': config.get('ip', 'unknown'),
                     'label': config.get('label', name),
                     'default': config.get('default', False),
+                    'virtual_router': config.get('virtual_router'),
                     'connected': name in self._connections,
                 })
             return devices

@@ -165,6 +165,43 @@ def test_security_policy(source: str, destination: str, port: str,
         return f"ERROR: [test_security_policy] failed. Reason: {str(e)}. NO POLICY DATA WAS RETRIEVED."
 
 
+def _discover_virtual_router(client) -> Optional[str]:
+    """Auto-discovers the active virtual router name from the firewall running config."""
+    cached = getattr(client, "_cached_vr", None)
+    if cached:
+        return cached
+
+    # Attempt 1: Fetch virtual-router config via xapi
+    try:
+        if hasattr(client, "fw") and hasattr(client.fw, "xapi"):
+            client.fw.xapi.get(xpath="/config/devices/entry/network/virtual-router")
+            res_xml = client.fw.xapi.xml_result()
+            if res_xml is not None:
+                root = res_xml if hasattr(res_xml, "findall") else fromstring(str(res_xml))
+                for entry in root.findall(".//entry"):
+                    name = entry.get("name")
+                    if name and name.strip():
+                        client._cached_vr = name.strip()
+                        return client._cached_vr
+    except Exception as e:
+        logger.debug(f"[PolicyMath] VR auto-discovery via config failed: {e}")
+
+    # Attempt 2: Operational query show routing route summary
+    try:
+        status, res_xml = client.execute_op("show routing route summary")
+        if status == 200 and res_xml:
+            root = fromstring(res_xml)
+            for entry in root.findall(".//entry"):
+                name = entry.get("name") or (entry.findtext("name") if entry.find("name") is not None else None)
+                if name and name.strip():
+                    client._cached_vr = name.strip()
+                    return client._cached_vr
+    except Exception as e:
+        logger.debug(f"[PolicyMath] VR auto-discovery via op failed: {e}")
+
+    return None
+
+
 def test_routing_fib(ip: str, virtual_router: str = "default", target_device: str = None) -> str:
     """
     Simulate a routing lookup on the firewall to see which interface and next-hop
@@ -175,27 +212,47 @@ def test_routing_fib(ip: str, virtual_router: str = "default", target_device: st
     
     Args:
         ip (str): The IP address to test routing for.
-        virtual_router (str): The virtual router name (default is 'default').
+        virtual_router (str): The virtual router name (configured in devices.yaml or auto-resolved).
         target_device (str): Device name from fleet inventory.
     """
     ip_clean = ip.strip() if ip else ""
-    vr_clean = virtual_router.strip() if virtual_router else "default"
-
     if not ip_clean:
         return "ERROR: [test_routing_fib] IP address cannot be empty."
 
-    root = Element("test")
-    routing = SubElement(root, "routing")
-    fib = SubElement(routing, "fib-lookup")
-    SubElement(fib, "virtual-router").text = vr_clean
-    SubElement(fib, "ip").text = ip_clean
-    xml_cmd = tostring(root, encoding="unicode")
-
-    logger.info(f"[PolicyMath] Testing routing FIB: IP={ip_clean} VR={vr_clean} on {target_device or 'default'}")
-
     try:
         client = _get_pool().get_client(target_device)
+
+        # Priority: explicit non-default argument -> devices.yaml virtual_router -> cached VR -> "default"
+        configured_vr = getattr(client, "virtual_router", None) or getattr(client, "_cached_vr", None)
+        if virtual_router and virtual_router.strip() and virtual_router.strip().lower() != "default":
+            vr_clean = virtual_router.strip()
+        elif configured_vr and configured_vr.strip():
+            vr_clean = configured_vr.strip()
+        else:
+            vr_clean = "default"
+
+        root = Element("test")
+        routing = SubElement(root, "routing")
+        fib = SubElement(routing, "fib-lookup")
+        SubElement(fib, "virtual-router").text = vr_clean
+        SubElement(fib, "ip").text = ip_clean
+        xml_cmd = tostring(root, encoding="unicode")
+
+        logger.info(f"[PolicyMath] Testing routing FIB: IP={ip_clean} VR={vr_clean} on {target_device or 'default'}")
         status, result = client.execute_op(xml_cmd)
+
+        # Auto-heal: If VR was rejected by PAN-OS as invalid, discover the real VR and re-execute
+        if status != 200 and "invalid virtual-router" in result.lower():
+            discovered_vr = _discover_virtual_router(client)
+            if discovered_vr and discovered_vr != vr_clean:
+                logger.info(f"[PolicyMath] Auto-resolved virtual-router '{discovered_vr}' (was '{vr_clean}')")
+                retry_root = Element("test")
+                retry_routing = SubElement(retry_root, "routing")
+                retry_fib = SubElement(retry_routing, "fib-lookup")
+                SubElement(retry_fib, "virtual-router").text = discovered_vr
+                SubElement(retry_fib, "ip").text = ip_clean
+                retry_cmd = tostring(retry_root, encoding="unicode")
+                status, result = client.execute_op(retry_cmd)
 
         if status == 200:
             sanitizer = ToxicXmlSanitizer()

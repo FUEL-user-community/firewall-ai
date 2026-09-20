@@ -18,13 +18,16 @@ firewalls:
   fw-hq:
     ip: 192.168.1.254
     label: "HQ Perimeter Firewall"
+    virtual_router: "default" # Optional: Virtual router name (e.g. 'default', 'lab-vr'). Auto-discovered if omitted.
     default: true             # Used when target_device is not specified
 
   # Uncomment to add more firewalls:
   # fw-lab:
   #   ip: 10.0.0.1
   #   label: "Lab / Test Firewall"
+  #   virtual_router: "lab-vr"
   #
   # fw-branch-01:
   #   ip: 172.16.0.1
   #   label: "Branch Office — Seattle"
+  #   virtual_router: "default"

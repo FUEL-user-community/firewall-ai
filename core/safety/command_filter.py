@@ -33,6 +33,13 @@ class CommandFilter:
         "request system info",
     )
 
+    # Verified read-only XML operational queries required for pan-os-python xapi.op()
+    ALLOWED_XML_EXACT = (
+        "<show><interface>all</interface></show>",
+        "<show><interface><hardware/></interface></show>",
+        "<show><arp><entry name='all'/></arp></show>",
+    )
+
     # Strict word boundaries eliminate false-positive substring blocking (H1)
     BLOCKED_PATTERNS = (
         r"\brequest\s+restart\b",
@@ -58,6 +65,11 @@ class CommandFilter:
 
         cmd_clean = cmd.strip()
         cmd_lower = cmd_clean.lower()
+
+        # Allow verified read-only operational XML queries required by pan-os-python
+        if cmd_lower in cls.ALLOWED_XML_EXACT:
+            logger.info(f"[CMDFILTER] ALLOWED (verified XML): {cmd_clean[:80]}")
+            return True, "Allowed (verified XML operational command)"
 
         # Reject XML tags to prevent command / XML smuggling
         if '<' in cmd_lower or '>' in cmd_lower:
