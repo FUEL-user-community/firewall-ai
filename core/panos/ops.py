@@ -223,8 +223,9 @@ def test_routing_fib(ip: str, virtual_router: str = "default", target_device: st
         client = _get_pool().get_client(target_device)
 
         # Priority: explicit non-default argument -> devices.yaml virtual_router -> cached VR -> "default"
-        configured_vr = getattr(client, "virtual_router", None) or getattr(client, "_cached_vr", None)
-        if virtual_router and virtual_router.strip() and virtual_router.strip().lower() != "default":
+        raw_vr = getattr(client, "virtual_router", None) or getattr(client, "_cached_vr", None)
+        configured_vr = raw_vr if isinstance(raw_vr, str) else None
+        if virtual_router and isinstance(virtual_router, str) and virtual_router.strip() and virtual_router.strip().lower() != "default":
             vr_clean = virtual_router.strip()
         elif configured_vr and configured_vr.strip():
             vr_clean = configured_vr.strip()

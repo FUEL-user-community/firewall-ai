@@ -304,6 +304,31 @@ def test_range_schema_enforcement_markdown_and_fallback():
     assert parsed2["message"] == plain_text
     assert parsed2["threats"] == 0
 
+    # Case 3: Mermaid edge labels containing parentheses sanitized
+    mermaid_with_parens = (
+        "{\n"
+        '  "mermaid": "graph TD\\n  A -.->|Dropped (Rule: interzone-default)| B",\n'
+        '  "message": "Dropped by policy",\n'
+        '  "threats": 0,\n'
+        '  "drops": 1\n'
+        "}\n"
+    )
+    res3 = brain._enforce_range_schema(mermaid_with_parens, trace_id="range-3")
+    parsed3 = json.loads(res3)
+    assert "(" not in parsed3["mermaid"]
+    assert "Dropped - Rule: interzone-default" in parsed3["mermaid"]
+
+    # Case 4: Conversational preamble before JSON extracted cleanly without triggering fallback
+    raw_with_preamble = (
+        'No text outside the JSON output. { "mermaid": "graph TD\\n  Attacker --> Target", '
+        '"message": "Contained", "threats": 0, "drops": 1 }'
+    )
+    res4 = brain._enforce_range_schema(raw_with_preamble, trace_id="range-4")
+    parsed4 = json.loads(res4)
+    assert parsed4["mermaid"] == "graph TD\n  Attacker --> Target"
+    assert parsed4["message"] == "Contained"
+    assert parsed4["drops"] == 1
+
 
 def test_investigate_stream_generator_events():
     """Verify investigate_stream yields status, chunk, response, and done event sequence."""
@@ -334,4 +359,118 @@ def test_investigate_stream_generator_events():
     assert "0 vulnerabilities found" in resp_event["content"]
 
 
+def test_gemini_38_flash_generation_config_and_range_mode():
+    """Verify Gemini 3.8 Flash specs: temperature stripped, JSON schema for range, thinking medium."""
+    from core.pipeline.model_config import (
+        get_generation_config, classify_mode, get_thinking_level,
+        RANGE_PROBE_LIMIT, THINKING_LEVEL_RANGE
+    )
 
+    # 1. Generation config in default mode has stripped temperature
+    cfg_default = get_generation_config()
+    assert cfg_default.temperature is None
+    assert cfg_default.response_mime_type is None
+
+    # 2. Generation config in range mode has stripped temperature and clean mime type
+    cfg_range = get_generation_config(target_mode="range")
+    assert cfg_range.temperature is None
+    assert cfg_range.response_mime_type is None
+
+    # 3. Mode classification and thinking level
+    assert classify_mode("test attack path", target_mode="range") == "range"
+    assert get_thinking_level("range") == THINKING_LEVEL_RANGE
+    assert THINKING_LEVEL_RANGE == "medium"
+    assert RANGE_PROBE_LIMIT == 7
+
+
+def test_range_probe_ceiling_guard_injection():
+    """Verify ceiling directive is injected and tool_config mode NONE is passed when turn reaches RANGE_PROBE_LIMIT - 1."""
+    from core.pipeline.model_config import RANGE_PROBE_LIMIT
+
+    mock_model = MagicMock()
+    brain = CoreBrain(model=mock_model, tools=[])
+    brain.api_key = "mock-key"
+
+    mock_chat = MagicMock()
+    mock_chat.history = []
+    mock_response = MagicMock()
+    mock_chat.send_message.return_value = mock_response
+
+    state = MagicMock()
+    state.target_mode = "range"
+    state.trace_id = "test-ceiling"
+    state.prev_turn_tools = ["test_security_policy"]
+    state.base_config = MagicMock()
+
+    turn_result = MagicMock()
+    turn_result.tool_parts = [MagicMock()]
+
+    # At turn = RANGE_PROBE_LIMIT - 1 (turn 6), ceiling guard must inject directive and block tools
+    brain._step_tool_feedback(mock_chat, turn_result, state, turn=RANGE_PROBE_LIMIT - 1)
+    
+    assert mock_chat.send_message.called
+    sent_payload = mock_chat.send_message.call_args[0][0]
+    has_ceiling_directive = any("SIMULATION PROBE BUDGET REACHED" in str(item) for item in sent_payload)
+    assert has_ceiling_directive
+    call_kwargs = mock_chat.send_message.call_args[1]
+    assert call_kwargs.get("tool_config") == {"function_calling_config": {"mode": "NONE"}}
+
+
+def test_final_turn_recovery_on_loop_completion():
+    """Verify that a synthesizable response received on the final turn is not swallowed as [TIMEOUT]."""
+    mock_model = MagicMock()
+    mock_chat = MagicMock()
+    mock_model.start_chat.return_value = mock_chat
+
+    # Simulate response with valid text
+    mock_response = MagicMock()
+    mock_part = MagicMock()
+    mock_part.function_call = None
+    mock_part.text = '{"mermaid": "graph TD\\n  A --> B", "message": "Contained", "threats": 0, "drops": 1}'
+    mock_response.parts = [mock_part]
+    mock_response.text = mock_part.text
+    mock_chat.send_message.return_value = mock_response
+
+    brain = CoreBrain(model=mock_model, tools=[])
+    brain.api_key = "mock-key"
+
+    result = brain.investigate("Simulate attack vector", target_mode="range")
+    assert "[TIMEOUT]" not in result
+    assert "graph TD" in result
+
+
+def test_circuit_breaker_recovery_in_investigate():
+    """Verify that if CircuitBreakerError is raised during turn processing, investigate recovers gracefully."""
+    from core.safety.circuit_breaker import CircuitBreakerError
+
+    mock_model = MagicMock()
+    mock_chat = MagicMock()
+    mock_model.start_chat.return_value = mock_chat
+
+    mock_initial_response = MagicMock()
+    mock_chat.send_message.return_value = mock_initial_response
+
+    brain = CoreBrain(model=mock_model, tools=[])
+    brain.api_key = "mock-key"
+
+    recovery_text = '{"mermaid": "graph TD\\n  A --> B", "message": "Circuit breaker recovered", "threats": 0, "drops": 1}'
+    mock_recovery_response = MagicMock()
+    mock_recovery_part = MagicMock()
+    mock_recovery_part.function_call = None
+    mock_recovery_part.text = recovery_text
+    mock_recovery_response.parts = [mock_recovery_part]
+    mock_recovery_response.text = recovery_text
+
+    def mock_send_message(payload, **kwargs):
+        if any("CIRCUIT BREAKER TRIGGERED" in str(item) for item in payload):
+            assert kwargs.get("tool_config") == {"function_calling_config": {"mode": "NONE"}}
+            return mock_recovery_response
+        return mock_initial_response
+
+    mock_chat.send_message.side_effect = mock_send_message
+
+    with patch.object(brain, "_process_turn_parts", side_effect=CircuitBreakerError("Loop detected: identical tool call repeated")):
+        result = brain.investigate("Simulate attack vector", target_mode="range")
+
+    assert "graph TD" in result
+    assert "Circuit breaker recovered" in result

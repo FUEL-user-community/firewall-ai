@@ -95,7 +95,7 @@ except ImportError:
 from core.pipeline.prompt_assembler import SYSTEM_PROMPT
 from core.pipeline.model_config import (
     GEMINI_MODEL, PRICE_PER_M_INPUT, PRICE_PER_M_OUTPUT,
-    MAX_TURNS,
+    MAX_TURNS, RANGE_PROBE_LIMIT,
     classify_mode, get_thinking_level, get_generation_config,
 )
 from core.pipeline.tool_executor import ToolExecutor
@@ -533,26 +533,18 @@ class CoreBrain:
 
         all_tools = self.keeper.get_tools("#core")
         manifest_str = ", ".join([t.__name__ for t in all_tools])
-        base_config = get_generation_config()
+        effective_mode = target_mode or "default"
+        base_config = get_generation_config(target_mode=effective_mode)
         if temperature is not None:
             try:
                 base_config.temperature = temperature
             except Exception:
                 pass
 
-        if target_mode == "range":
-            try:
-                base_config = genai.types.GenerationConfig(
-                    response_mime_type="application/json",
-                    temperature=temperature if temperature is not None else 0.2
-                )
-            except Exception:
-                pass
-
         if self.budget_guard:
             self.budget_guard.reset_investigation()
 
-        mode = classify_mode(user_query)
+        mode = classify_mode(user_query, target_mode=effective_mode)
         thinking_level = get_thinking_level(mode)
         logger.info(
             f"[{trace_id}] [ARCHITECT] Investigation Started. Mode: {mode}. "
@@ -835,14 +827,31 @@ class CoreBrain:
 
     def _enforce_range_schema(self, raw_text: str, trace_id: str) -> str:
         """Validates and guarantees pure JSON output for Breach & Attack Simulation."""
+        clean = ""
         match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL | re.IGNORECASE)
         if match:
             clean = match.group(1).strip()
         else:
-            clean = re.sub(r'^```json\s*', '', raw_text.strip(), flags=re.IGNORECASE)
-            clean = re.sub(r'\s*```$', '', clean).strip()
+            start_idx = raw_text.find('{')
+            end_idx = raw_text.rfind('}')
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                clean = raw_text[start_idx:end_idx + 1].strip()
+            else:
+                clean = re.sub(r'^```json\s*', '', raw_text.strip(), flags=re.IGNORECASE)
+                clean = re.sub(r'\s*```$', '', clean).strip()
         try:
             parsed = json.loads(clean)
+            if isinstance(parsed, dict) and "mermaid" in parsed and isinstance(parsed["mermaid"], str):
+                mermaid_str = parsed["mermaid"]
+                mermaid_clean = re.sub(r'^```(?:mermaid)?\s*', '', mermaid_str.strip(), flags=re.IGNORECASE)
+                mermaid_clean = re.sub(r'\s*```$', '', mermaid_clean).strip()
+                # Sanitize unquoted parentheses in edge labels |...| to prevent Mermaid 'PS' lexer crashes
+                def _fix_pipe_label(m):
+                    lbl = m.group(1).replace("(", "- ").replace(")", "")
+                    clean_lbl = re.sub(r'\s+', ' ', lbl).strip()
+                    return f"|{clean_lbl}|"
+                parsed["mermaid"] = re.sub(r'\|([^|\n]+)\|', _fix_pipe_label, mermaid_clean)
+
             validated = RangeSimulationPayload.model_validate(parsed)
             return validated.model_dump_json()
         except Exception as e:
@@ -869,8 +878,8 @@ class CoreBrain:
         state.emit(f"Analyzing {tool_names_str}...")
 
         message_payload = self.context_mgr.build_message_payload(turn_result.tool_parts, state.trace_id)
-        checkpoint_prompt = self.context_mgr.get_checkpoint_prompt(turn, state.prev_turn_tools, state.trace_id)
-        compress_prompt = self.context_mgr.get_compression_prompt(turn, len(chat.history), state.trace_id)
+        checkpoint_prompt = self.context_mgr.get_checkpoint_prompt(turn, state.prev_turn_tools, state.trace_id, target_mode=state.target_mode)
+        compress_prompt = self.context_mgr.get_compression_prompt(turn, len(chat.history), state.trace_id, target_mode=state.target_mode)
 
         if checkpoint_prompt:
             message_payload.append(checkpoint_prompt)
@@ -879,11 +888,38 @@ class CoreBrain:
         if pivot_directive:
             message_payload.append(pivot_directive)
 
+        # Probe Ceiling Guard: Enforce graceful synthesis before hitting turn limits
+        ceiling_applied = False
+        if state.target_mode == "range" and turn >= RANGE_PROBE_LIMIT - 1:
+            ceiling_directive = (
+                f"\n\n[SYSTEM: SIMULATION PROBE BUDGET REACHED (Turn {turn+1} of {RANGE_PROBE_LIMIT})]\n"
+                "You have comprehensive empirical telemetry across candidate ingress, lateral, and policy boundaries.\n"
+                "Do NOT execute any further tool calls.\n"
+                "Proceed directly to Step 3 (TOPOLOGY SYNTHESIS) and emit your terminal pure JSON payload NOW."
+            )
+            logger.info(f"[{state.trace_id}] [CEILING] Injecting forced Range synthesis directive at Turn {turn+1}")
+            message_payload.append(ceiling_directive)
+            ceiling_applied = True
+        elif turn >= MAX_TURNS - 2:
+            ceiling_directive = (
+                f"\n\n[SYSTEM: INVESTIGATION CEILING REACHED (Turn {turn+1} of {MAX_TURNS})]\n"
+                "Do NOT execute any further tool calls.\n"
+                "Synthesize your findings and output your final executive report NOW."
+            )
+            logger.info(f"[{state.trace_id}] [CEILING] Injecting forced investigation report directive at Turn {turn+1}")
+            message_payload.append(ceiling_directive)
+            ceiling_applied = True
+
+        extra_kwargs = {}
+        if ceiling_applied:
+            extra_kwargs["tool_config"] = {"function_calling_config": {"mode": "NONE"}}
+
         return self._execute_with_quota_retry(
             lambda: chat.send_message(
                 message_payload,
                 generation_config=state.base_config,
-                request_options={"timeout": DEFAULT_REQUEST_TIMEOUT}
+                request_options={"timeout": DEFAULT_REQUEST_TIMEOUT},
+                **extra_kwargs
             ),
             operation_name=f"turn {turn + 1} feedback"
         )
@@ -989,7 +1025,35 @@ class CoreBrain:
                 return budget_report
 
             # Extract Hi-CoT reasoning and execute tool calls
-            turn_result = self._process_turn_parts(response, state, turn)
+            try:
+                turn_result = self._process_turn_parts(response, state, turn)
+            except CircuitBreakerError as e:
+                logger.warning(
+                    f"[{state.trace_id}] [SHIELD] Circuit Breaker Tripped during turn {turn+1}: {e}. Forcing final synthesis."
+                )
+                state.emit(f"Investigation loop prevented ({e}). Synthesizing collected evidence...")
+                try:
+                    final_prompt = (
+                        f"[SYSTEM: CIRCUIT BREAKER TRIGGERED - {e}]\n"
+                        "You have sufficient data. Tool calling is disabled.\n"
+                    )
+                    if state.target_mode == "range":
+                        final_prompt += "Emit your terminal pure JSON simulation payload NOW."
+                    else:
+                        final_prompt += "Synthesize your findings and output your final executive report NOW."
+
+                    response = self._execute_with_quota_retry(
+                        lambda: chat.send_message(
+                            [final_prompt],
+                            generation_config=state.base_config,
+                            request_options={"timeout": DEFAULT_REQUEST_TIMEOUT},
+                            tool_config={"function_calling_config": {"mode": "NONE"}}
+                        ),
+                        operation_name="circuit breaker recovery"
+                    )
+                except Exception as rec_err:
+                    logger.error(f"[{state.trace_id}] Circuit breaker recovery failed: {rec_err}")
+                return self._finalize_investigation(response, state, turn, **kwargs)
 
             # Check for dynamic tool tray pivot (e.g. summon_toolkit)
             pivot_directive = self._handle_tool_tray_pivot(turn_result, state)
@@ -1016,6 +1080,22 @@ class CoreBrain:
 
             # Final report generation
             return self._finalize_investigation(response, state, turn, **kwargs)
+
+        # Fallback: if loop finished all turns, check if the last response has synthesizable content
+        if response is not None:
+            has_text = False
+            try:
+                parts = getattr(response, 'parts', None)
+                if parts and any(hasattr(p, 'text') and p.text for p in parts):
+                    has_text = True
+                elif getattr(response, 'text', None):
+                    has_text = True
+            except Exception:
+                pass
+
+            if has_text:
+                logger.info(f"[{state.trace_id}] Loop reached MAX_TURNS ({MAX_TURNS}) with final synthesis present. Finalizing.")
+                return self._finalize_investigation(response, state, MAX_TURNS - 1, **kwargs)
 
         return f"[TIMEOUT] Maximum turns ({MAX_TURNS}) reached."
 

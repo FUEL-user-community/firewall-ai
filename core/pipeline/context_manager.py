@@ -33,12 +33,16 @@ class ContextManager:
     # Context compression interval
     COMPRESS_INTERVAL = 3
 
-    def get_checkpoint_prompt(self, turn, prev_turn_tools, trace_id):
+    def get_checkpoint_prompt(self, turn, prev_turn_tools, trace_id, target_mode: str = "default"):
         """
         Mid-Investigation Context Checkpoint.
         Fires at CHECKPOINT_TURN if tools have been called.
+        Suppressed in Range simulation mode to avoid re-triggering exploratory tool probing.
         Returns the prompt string to append to the payload, or None.
         """
+        if target_mode == "range":
+            return None
+
         if turn != self.CHECKPOINT_TURN or not prev_turn_tools:
             return None
 
@@ -54,12 +58,16 @@ class ContextManager:
             "Then continue the investigation."
         )
 
-    def get_compression_prompt(self, turn, history_length, trace_id):
+    def get_compression_prompt(self, turn, history_length, trace_id, target_mode: str = "default"):
         """
         Context summarization every N turns.
         Fires when turn > 0, turn divisible by COMPRESS_INTERVAL, and history is substantial.
+        Suppressed in Range simulation mode to preserve raw schema focus.
         Returns the prompt string to append to the payload, or None.
         """
+        if target_mode == "range":
+            return None
+
         if turn <= 0 or turn % self.COMPRESS_INTERVAL != 0 or history_length <= 6:
             return None
 

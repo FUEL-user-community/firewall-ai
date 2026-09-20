@@ -45,25 +45,30 @@ PRICE_PER_M_OUTPUT = 10.00
 TEMP_DEFAULT = 1.0
 
 # Thinking level configuration
-# "high" = maximum reasoning depth (default for investigations)
-# "medium" = balanced speed/depth (for health checks)
-# "low" = minimal reasoning (for simple lookups)
+# "high" = maximum reasoning depth (reserved for deep forensic investigations)
+# "medium" = balanced speed/depth (default for health checks and Range simulations)
+# "low" = minimal reasoning (for latency-critical simple lookups)
 THINKING_LEVEL_INVESTIGATE = "high"
 THINKING_LEVEL_DIAGNOSTIC = "medium"
+THINKING_LEVEL_RANGE = "medium"
 
 # Investigation keyword triggers
-_INVESTIGATION_KEYWORDS = ["audit", "root", "threat", "investigate", "compromise", "attack"]
+_INVESTIGATION_KEYWORDS = ["audit", "root", "threat", "investigate", "compromise"]
 
 # Max turns for the agentic loop
-# Increased from 10 to 14 — thought signatures eliminate attention coherence decay.
 MAX_TURNS = 14
 
+# Probe budget for Range simulation (allows multi-hop traversal before forced synthesis)
+RANGE_PROBE_LIMIT = 7
 
-def classify_mode(query: str) -> str:
+
+def classify_mode(query: str, target_mode: str = "default") -> str:
     """
-    Returns 'investigate' or 'diagnostic' based on query keywords.
+    Returns 'range', 'investigate', or 'diagnostic' based on target_mode and query keywords.
     Used to select thinking_level and output format.
     """
+    if target_mode == "range":
+        return "range"
     if any(k in query.lower() for k in _INVESTIGATION_KEYWORDS):
         return "investigate"
     return "diagnostic"
@@ -71,20 +76,22 @@ def classify_mode(query: str) -> str:
 
 def get_thinking_level(mode: str) -> str:
     """Returns the thinking_level for the given mode."""
+    if mode == "range":
+        return THINKING_LEVEL_RANGE
     if mode == "investigate":
         return THINKING_LEVEL_INVESTIGATE
     return THINKING_LEVEL_DIAGNOSTIC
 
 
-def get_generation_config() -> genai.types.GenerationConfig:
+def get_generation_config(target_mode: str = "default") -> genai.types.GenerationConfig:
     """
-    Returns the standard Gemini 3 generation config.
-    Temperature locked at 1.0, output capped at 16K tokens.
+    Returns GenerationConfig compliant with Gemini 3.8 Flash specifications.
+    Deprecated sampling parameters (temperature, top_p, top_k) stripped per Google TechDocs.
     """
-    return genai.types.GenerationConfig(
-        temperature=TEMP_DEFAULT,
-        max_output_tokens=16384  # Supports 64K output, using 16K for investigation depth
-    )
+    config_kwargs = {
+        "max_output_tokens": 16384
+    }
+    return genai.types.GenerationConfig(**config_kwargs)
 
 
 def get_card_generation_config() -> genai.types.GenerationConfig:

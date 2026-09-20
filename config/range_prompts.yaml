@@ -1,72 +1,64 @@
 # Breach & Attack Simulator (BAS) — Topological Prompt Extensions
 # =============================================================================
 # Loaded dynamically by prompt_assembler.py for target_mode="range".
-# Instructs NEO to evaluate attack vectors, policy bypasses, and generate
-# topological Mermaid diagrams against the authenticated network graph.
-#
-# DESIGN: Isolated from prompts.yaml to prevent JSON schema constraints
-# from interfering with core INVESTIGATE mode outputs.
+# Instructs NEO to evaluate attack vectors against live PAN-OS policy
+# and generate visual Mermaid topologies overlaid on Cartographer Base Graph.
 # =============================================================================
 
 neo:
   range_simulation: |
-    ### 7. BREACH & ATTACK SIMULATION (BAS) — TOPOLOGICAL THREAT MODELING ###
+    ### 7. RANGE SIMULATION MISSION ###
 
-    SIMULATION SCENARIO: {user_query}
+    MISSION: {user_query}
 
-    OPERATING MODE: Breach & Attack Simulation (BAS) — Topological Threat Modeling & Policy Verification.
-    MANDATE: Reconcile adversarial attack trajectories against live PAN-OS policy enforcement, routing convergence, and zone architecture. Emulate attacker ingress and lateral movement across the firewall dataplane, verifying boundary containment versus policy gaps.
+    You are operating in Range Simulator Mode. Your objective is to simulate the specified
+    attack vector against live PAN-OS policy enforcement and generate a visual topology.
 
-    OPERATIONAL SEQUENCE (STRICT ORDER OF OPERATIONS):
-    1. TOPOLOGY & FORWARDING GROUNDING:
-       Execute your standard INVESTIGATION LIFECYCLE.
-       Ingest the deterministic BASE GRAPH (Interfaces, Zones, Subnets) extracted directly from the target firewall.
-       Verify physical and logical zone boundaries, routing convergence, and interface bindings.
-       If the scenario references architectural documentation (e.g. compliance audits, Zero-Trust frameworks, incident archives),
-       invoke the DRIVE KNOWLEDGE BASE WORKFLOW (read_toc -> read_slice) prior to state analysis.
-    2. ADVERSARIAL TRAVERSAL MODELING:
-       Evaluate candidate ingress paths and lateral pivots against security policy rules, App-ID enforcement, and Security Profile bindings.
-       Audit matching rules for App-ID restrictions, attached Security Profile groups (Antivirus, Vulnerability, Anti-Spyware, URL Filtering, WildFire), and SSL Decryption status.
-       Distinguish between enforced boundary drops (active policy containment via deny rules) versus uninspected traversal (rules permitting traffic with `application: any`, default service ports, missing Decryption, or absent Threat Prevention).
-    3. TOPOLOGY SYNTHESIS:
-       ONLY after empirical telemetry and policy rules have been cross-correlated against the candidate attack vector,
-       synthesize the resulting traversal topology into a clean, expressive Mermaid diagram.
+    WORKFLOW:
+    1. ADVERSARIAL TRAVERSAL & DEEP DISCOVERY:
+       Investigate the attack trajectory across relevant firewall subsystems. You have full discretion
+       to execute ANY tool in your active manifest or summon specialized toolkits (`summon_toolkit`):
+       - Core Ingress & Forwarding: `test_security_policy`, `test_nat_policy`, `test_routing_fib`.
+       - Inspection & Configuration: `get_live_config` (security profile groups, decryption rules, address/service objects).
+       - Live Dataplane & Telemetry: `session_info`, `threat_logs`, `arp_table`, `user_ip_mapping`, `interface_all`.
+       - Operational CLI Depth: `find_command` or specialized PAN-OS operational queries when needed.
+       - Architectural Grounding: If the scenario references architectural baselines or compliance docs, invoke Drive knowledge base (`read_toc` -> `read_slice`).
+       Freely query whatever tools or operational telemetry are necessary to validate the scenario, moving to synthesis once you have empirical clarity.
+    2. SYNTHESIZE TOPOLOGY & VERDICT:
+       Once you have mapped the path and verified policy enforcement (or when prompted by the probe ceiling),
+       immediately synthesize your findings into a Mermaid diagram overlaid onto the physical Base Graph.
 
-    --- GROUND-TRUTH DATAPLANE BASE GRAPH ---
-    The following JSON represents the deterministic physical network topology (Interfaces, Zones, Subnets)
-    extracted directly from the target firewall's configuration via PAN-OS Cartographer.
-    Treat this as the immutable baseline canvas for your Mermaid AST diagram.
-    Never fabricate hypothetical zones, interfaces, or subnets; map adversarial ingress and lateral paths
-    directly onto this physical architecture.
+    --- PHYSICAL NETWORK BASE GRAPH (GROUND TRUTH) ---
+    The following JSON represents the deterministic physical network layout (Nodes/Edges)
+    pulled directly from the firewall's configuration via Cartographer. Use this as your
+    foundational canvas for the Mermaid diagram. Do not invent hypothetical zones or subnets;
+    overlay the adversary trajectory directly onto this physical architecture.
 
     BASE GRAPH:
     {base_graph_json}
     --------------------------------------------------
 
-    MERMAID AST SYNTHESIS DOCTRINE:
-    - CLUSTER BY ZONE: Enclose interfaces and subnets inside subgraphs matching the physical security zones present in BASE GRAPH:
+    TOPOLOGY GUIDELINES:
+    - CLUSTER BY ZONE: Enclose interfaces and subnets inside subgraphs matching physical security zones from BASE GRAPH:
         subgraph Zone_<zone_id> ["Zone: <zone_name>"]
-            Subnet_<safe_intf>["<interface_name><br>[<ip_cidr>]"]
+            Subnet_<intf_id>["<interface_name><br>[<ip_cidr>]"]
         end
-    - DELINEATE ADVERSARY TRAJECTORY:
-        Attacker node: `Attacker["Adversary Ingress<br>[Vector: {user_query}]"]`
-        Enforced dropped vectors: dashed arrows terminating at boundary drop nodes:
-        `Attacker -.->|Dropped: <protocol/port> (Rule: <rule_name>)| Drop_Node["Boundary Drop<br>[Action: Deny]"]`
-        Permitted inspected vectors: solid arrows labeled with verified rule and App-ID:
-        `Attacker -->|Permitted: <app_id> (Rule: <rule_name>)| Target_Node`
-        Uninspected traversal vectors (Zero-Trust policy gaps): thick arrows:
-        `Source_Node ==>|Uninspected: <protocol/port> (Rule: <rule_name>)| Target_Node`
-    - TARGET WORKLOADS: Anchor destination nodes within their respective zone or subnet subgraph based on the destination IPs, subnets, or address objects evaluated in the simulation:
-        `Target_Node["Target Workload: <destination_ip_or_service><br>[Zone: <target_zone>]"]`
-        Never fabricate generic or fictional assets; ground target nodes directly in the addresses, subnets, and services under evaluation.
+    - Anchor the adversary vector: `Attacker["Adversary Ingress<br>[Vector: {user_query}]"]`
+    - Delineate policy enforcement:
+      - Permitted traffic: solid arrow `-->|Permitted: <rule_name>|` to the target node.
+      - Blocked traffic: dashed arrow terminating at boundary drop: `-.->|Dropped: <rule_name>| Drop_Node["Boundary Drop<br>[Action: Deny]"]`
+    - Ground target nodes directly in the destination addresses/services under evaluation.
+    - SYNTAX INTEGRITY: Never use parentheses `(` or `)` inside edge labels `|...|`. Use colons or hyphens (e.g. `|Dropped: rule_name|` or `|Permitted: rule_name - app_id|`).
 
-    OUTPUT CONTRACT & TERMINATION (BAS MODE):
-    Your terminal turn MUST emit EXCLUSIVELY a pure JSON object.
-    Do NOT output conversational narrative, markdown code fences, or trailing commentary.
+    OUTPUT STRUCTURE & TERMINATION (RANGE MODE):
+    Your final turn MUST output ONLY a pure JSON object.
+    Begin your output directly with a JSON object.
+    Do NOT output conversational preamble, meta-instructions, markdown fences, or trailing commentary.
 
     {{
       "mermaid": "graph TD...", 
-      "message": "[BREACH_VERDICT]: <CONTAINED | COMPROMISED | UNINSPECTED_TRAVERSAL | LATERAL_SPREAD_DETECTED>\n\n[ATTACK_TRAJECTORY]:\n<Concise, rigorous description of ingress vector, protocols exploited, and policy boundaries tested>\n\n[EXPOSURE_BLAST_RADIUS]:\n<Enumeration of impacted zones, subnets, and workloads within adversarial reach>\n\n[POLICY_ENFORCEMENT_INTEGRITY]:\n<Empirical analysis of rule matching, App-ID enforcement, attached Security Profiles, and decryption coverage>\n\n[REMEDIATION_STATE_DELTA]:\n<The exact, minimal-diff operational policy rule modification or profile binding required to nullify the attack vector>", 
+      "message": "[VERDICT: CONTAINED or COMPROMISED]\nBrief explanation of the policy match, enforced rule, and containment posture.", 
       "threats": <integer_count>, 
       "drops": <integer_count>
     }}
+
