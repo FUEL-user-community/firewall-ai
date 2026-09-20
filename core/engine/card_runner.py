@@ -32,7 +32,6 @@ from core.engine.card_store import CardStore, CardResult
 from core.engine.baseline import BaselineEngine
 from core.pipeline.model_config import (
     GEMINI_MODEL,
-    TEMP_DEFAULT,
     EMBEDDING_MODEL,
     EMBEDDING_DIMENSIONS,
     get_card_generation_config,
@@ -571,7 +570,6 @@ class CardRunner:
             # Fresh generation config instance without mutating shared object (H2)
             base_config = get_card_generation_config()
             config = genai.types.GenerationConfig(
-                temperature=getattr(base_config, 'temperature', TEMP_DEFAULT),
                 max_output_tokens=getattr(base_config, 'max_output_tokens', 4096),
                 response_mime_type="application/json",
             )

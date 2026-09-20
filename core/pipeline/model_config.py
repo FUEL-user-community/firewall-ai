@@ -37,12 +37,11 @@ PRICE_PER_M_INPUT = 1.25
 PRICE_PER_M_OUTPUT = 10.00
 
 # =============================================================================
-# Temperature & Thinking Level
+# Thinking Level Configuration
 # =============================================================================
 
-# Temperature MUST be 1.0. Lower values cause looping/degradation on Gemini 3.
-# Internal thinking_level handles determinism natively.
-TEMP_DEFAULT = 1.0
+# Dynamic thinking handles reasoning and determinism natively per Gemini 3 specs.
+# Manual sampling parameters (temperature, top_p, top_k) are stripped.
 
 # Thinking level configuration
 # "high" = maximum reasoning depth (reserved for deep forensic investigations)
@@ -100,7 +99,6 @@ def get_card_generation_config() -> genai.types.GenerationConfig:
     Used by CardRunner for structured synthesis.
     """
     return genai.types.GenerationConfig(
-        temperature=TEMP_DEFAULT,
         max_output_tokens=4096,
         response_mime_type="application/json",
     )

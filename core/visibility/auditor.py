@@ -151,7 +151,6 @@ class Auditor:
         try:
             import google.generativeai as genai
             config = genai.types.GenerationConfig(
-                temperature=1.0,
                 max_output_tokens=2048,
                 response_mime_type="application/json"
             )
