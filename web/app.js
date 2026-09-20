@@ -157,8 +157,15 @@ function updateDeviceSelect() {
         if (c.device && c.device !== 'default') allDevs.add(c.device);
     });
 
+    const sortedDevs = Array.from(allDevs).sort();
+    const existingDevs = Array.from(select.options).slice(1).map(o => o.value);
+    const hasChanged = sortedDevs.length !== existingDevs.length ||
+        sortedDevs.some((d, i) => d !== existingDevs[i]);
+
+    if (!hasChanged) return;
+
     select.innerHTML = '<option value="all">All Firewalls</option>';
-    Array.from(allDevs).sort().forEach(dev => {
+    sortedDevs.forEach(dev => {
         const opt = document.createElement('option');
         opt.value = dev;
         opt.textContent = dev;
@@ -182,12 +189,26 @@ function loadCards() {
     })
     .then(r => r.json())
     .then(data => {
-        state.cards = data.cards || [];
-        state.counts = data.counts || { critical: 0, caution: 0, normal: 0 };
+        const newCards = data.cards || [];
+        const newCounts = data.counts || { critical: 0, caution: 0, normal: 0 };
+
+        const cardsUnchanged = state.cards.length === newCards.length &&
+            state.cards.every((c, i) => c.id === newCards[i].id && c.timestamp === newCards[i].timestamp);
+        const countsUnchanged = state.counts &&
+            state.counts.critical === newCounts.critical &&
+            state.counts.caution === newCounts.caution &&
+            state.counts.normal === newCounts.normal;
+
+        state.cards = newCards;
+        state.counts = newCounts;
+
         updateCounters(state.counts);
         updateDeviceSelect();
-        renderFilteredDeck();
-        syncScheduleCounts();
+
+        if (!cardsUnchanged || !countsUnchanged) {
+            renderFilteredDeck();
+            syncScheduleCounts();
+        }
     })
     .catch(err => {
         console.warn('[NODAL] Card load error:', err);
@@ -326,15 +347,18 @@ function renderCards(cards) {
         }
     });
 
-    // Append / re-order cards
+    // Append / re-order cards without unnecessary DOM re-insertion
     cards.forEach((card, idx) => {
         let el = existingCardsMap.get(card.id);
         if (!el) {
             el = createCardElement(card);
-            deck.appendChild(el);
-        } else {
-            // Re-order if position changed
-            deck.appendChild(el);
+            if (idx < deck.children.length) {
+                deck.insertBefore(el, deck.children[idx]);
+            } else {
+                deck.appendChild(el);
+            }
+        } else if (deck.children[idx] !== el) {
+            deck.insertBefore(el, deck.children[idx] || null);
         }
     });
 }

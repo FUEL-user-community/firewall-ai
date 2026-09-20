@@ -346,7 +346,6 @@
             background: rgba(248, 113, 113, 0.12);
             color: #f87171;
             box-shadow: 0 0 12px rgba(248, 113, 113, 0.25);
-            animation: statusPulseCrit 2s infinite;
         }
 
         .perimeter-status-chip.critical:hover {
@@ -366,10 +365,9 @@
             background: rgba(251, 191, 36, 0.18);
         }
 
-        @keyframes statusPulseCrit {
-            0% { box-shadow: 0 0 4px rgba(248, 113, 113, 0.2); }
-            50% { box-shadow: 0 0 14px rgba(248, 113, 113, 0.45); }
-            100% { box-shadow: 0 0 4px rgba(248, 113, 113, 0.2); }
+        @keyframes dotPulse {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
         }
 
         .status-pulse-dot {
@@ -389,6 +387,7 @@
         .status-pulse-dot.critical {
             background: #f87171;
             box-shadow: 0 0 8px #f87171;
+            animation: dotPulse 2s ease-in-out infinite;
         }
 
         .status-pulse-dot.caution {
@@ -663,7 +662,7 @@
             border-radius: 4px;
             padding: 16px;
             overflow: hidden;
-            transition: all 0.2s ease;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
             animation: cardSlideIn 0.4s ease-out;
             display: flex;
             flex-direction: column;

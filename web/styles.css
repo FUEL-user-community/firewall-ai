@@ -333,7 +333,7 @@ html, body {
     border: 1px solid #1A1A1A;
     border-radius: 4px;
     overflow: hidden;
-    transition: all 0.2s ease;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
     animation: cardSlideIn 0.4s ease-out;
 }
 
