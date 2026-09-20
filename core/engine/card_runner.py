@@ -574,8 +574,6 @@ class CardRunner:
                 temperature=getattr(base_config, 'temperature', TEMP_DEFAULT),
                 max_output_tokens=getattr(base_config, 'max_output_tokens', 4096),
                 response_mime_type="application/json",
-                response_logprobs=True,
-                logprobs=5,
             )
 
             response = model.generate_content(
@@ -613,11 +611,14 @@ class CardRunner:
 
             parsed = json.loads(raw_text)
 
-            # Extract logprobs and attach confidence margin to the result
+            # Extract logprobs and attach confidence margin to the result if available
             if extract_logprobs:
-                logprob_result = extract_logprobs(response)
-                if logprob_result.confidence_margin is not None:
-                    parsed["_confidence_margin"] = logprob_result.confidence_margin
+                try:
+                    logprob_result = extract_logprobs(response)
+                    if logprob_result and getattr(logprob_result, "confidence_margin", None) is not None:
+                        parsed["_confidence_margin"] = logprob_result.confidence_margin
+                except Exception as lpe:
+                    logger.debug(f"[CardRunner] Logprob extraction skipped: {lpe}")
 
             return parsed
 

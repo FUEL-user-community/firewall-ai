@@ -96,13 +96,12 @@ def get_generation_config(target_mode: str = "default") -> genai.types.Generatio
 
 def get_card_generation_config() -> genai.types.GenerationConfig:
     """
-    Returns the card-specific generation config with logprobs enabled.
-    Used by CardRunner for visibility into the model's internal uncertainty.
+    Returns the card-specific generation config.
+    Used by CardRunner for structured synthesis.
     """
     return genai.types.GenerationConfig(
         temperature=TEMP_DEFAULT,
         max_output_tokens=4096,
-        response_logprobs=True,
-        logprobs=5,
+        response_mime_type="application/json",
     )
 

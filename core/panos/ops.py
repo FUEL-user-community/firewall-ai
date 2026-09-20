@@ -107,7 +107,7 @@ def get_device_inventory() -> str:
     return "\n".join(output)
 
 
-def test_security_policy(source: str, destination: str, port: str,
+def test_security_policy(source: str = "10.0.0.5", destination: str = "8.8.8.8", port: str = "443",
                          protocol: str = "6", target_device: str = None) -> str:
     """
     Simulate a packet against the firewall's Security Policy rulebase.
@@ -202,7 +202,7 @@ def _discover_virtual_router(client) -> Optional[str]:
     return None
 
 
-def test_routing_fib(ip: str, virtual_router: str = "default", target_device: str = None) -> str:
+def test_routing_fib(ip: str = "8.8.8.8", virtual_router: str = "default", target_device: str = None) -> str:
     """
     Simulate a routing lookup on the firewall to see which interface and next-hop
     will be used to reach a specific IP address.
@@ -211,11 +211,13 @@ def test_routing_fib(ip: str, virtual_router: str = "default", target_device: st
     "Which interface is used for IP Z?", "Verify return route".
     
     Args:
-        ip (str): The IP address to test routing for.
+        ip (str): The IP address to test routing for. Default '8.8.8.8'.
         virtual_router (str): The virtual router name (configured in devices.yaml or auto-resolved).
         target_device (str): Device name from fleet inventory.
     """
-    ip_clean = ip.strip() if ip else ""
+    if ip is None:
+        ip = "8.8.8.8"
+    ip_clean = ip.strip()
     if not ip_clean:
         return "ERROR: [test_routing_fib] IP address cannot be empty."
 

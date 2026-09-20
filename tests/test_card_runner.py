@@ -260,3 +260,33 @@ def test_card_runner_all_cards_tool_resolution(runner):
     # Verify test_routing_fib is resolvable
     assert "test_routing_fib" in tool_map
 
+
+def test_card_runner_ft01_tool_chain_and_synthesis(runner):
+    """Verify FT-01 tool chain executes without missing argument errors and synthesis succeeds."""
+    card_def = runner.get_card_def("autonomous_chain_breaker")
+    assert card_def is not None
+
+    with patch("core.panos.ops._get_pool") as mock_pool, \
+         patch("core.panos.ops.execute_operational_command", return_value="<response status='success'><result/></response>"):
+        mock_client = MagicMock()
+        mock_client.execute_op.return_value = (200, "<response status='success'><result/></response>")
+        mock_pool.return_value.get_client.return_value = mock_client
+
+        outputs = runner._run_tool_chain(card_def, "default")
+        assert len(outputs) >= 3
+        for out in outputs:
+            assert "missing 3 required positional arguments" not in out["output"]
+            assert "missing 1 required positional argument" not in out["output"]
+
+        # Test synthesis GenerationConfig
+        mock_resp = MagicMock()
+        mock_resp.text = '{"triggered": false, "severity": "normal", "title": "Clean", "finding": "Nominal", "evidence": [], "metrics": {}}'
+        mock_resp.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50)
+
+        runner._model = MagicMock()
+        runner._model.generate_content.return_value = mock_resp
+
+        parsed = runner._synthesize(card_def, outputs)
+        assert parsed is not None
+        assert parsed["severity"] == "normal"
+
