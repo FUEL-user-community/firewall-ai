@@ -27,14 +27,27 @@ def search_live_docs(query: str) -> str:
     Args:
         query (str): The search term (e.g., 'CVE-2024-3400', 'App-ID decoder').
     """
-    api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
-    cse_id = os.getenv("GOOGLE_CSE_ID")
+    if not query or not isinstance(query, str) or not query.strip():
+        return "Error: Research query cannot be empty."
+
+    try:
+        from core.integrations.secrets import get_secret
+        api_key = get_secret("google_search_api_key")
+    except Exception:
+        api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
+
+    try:
+        from core.integrations.secrets import get_secret
+        cse_id = get_secret("google_cse_id")
+    except Exception:
+        cse_id = os.getenv("GOOGLE_CSE_ID")
 
     if not api_key or not cse_id:
         return "Error: Live Research API not configured (Missing GOOGLE_SEARCH_API_KEY or GOOGLE_CSE_ID)."
 
     url = "https://www.googleapis.com/customsearch/v1"
-    refined_query = f"{query} site:docs.paloaltonetworks.com/"
+    clean_query = query.strip()
+    refined_query = f"{clean_query} site:docs.paloaltonetworks.com/"
 
     params = {
         'q': refined_query,
@@ -42,9 +55,12 @@ def search_live_docs(query: str) -> str:
         'cx': cse_id,
         'num': 5
     }
+    headers = {
+        "User-Agent": "pan-os-python-nodal/1.0 (LiveResearchDocClient)"
+    }
 
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params, headers=headers, timeout=10)
         if r.status_code != 200:
             logger.error(f"Live Research Failed: HTTP {r.status_code} - {r.text}")
             return f"Live Research Failed: HTTP {r.status_code} (Details in server logs)"

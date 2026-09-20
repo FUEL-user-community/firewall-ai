@@ -50,7 +50,8 @@ class ResponseSynthesizer:
 
         # Safe text accessor
         try:
-            response_text = response.text
+            raw_text = response.text
+            response_text = raw_text if isinstance(raw_text, str) else ""
         except (ValueError, AttributeError):
             response_text = ""
 
@@ -84,11 +85,17 @@ class ResponseSynthesizer:
         Returns the final text string or an error message.
         """
         try:
-            # Handle Gemini edge case: finish_reason=STOP but no content
-            if not response.parts:
+            # Safe parts access guarding against ValueError on safety-filtered candidates
+            try:
+                parts = getattr(response, 'parts', None)
+            except (ValueError, AttributeError):
+                parts = None
+
+            if not parts:
                 finish_reason = "Unknown"
-                if response.candidates:
-                    finish_reason = response.candidates[0].finish_reason
+                candidates = getattr(response, 'candidates', [])
+                if candidates:
+                    finish_reason = getattr(candidates[0], 'finish_reason', "Unknown")
 
                 logger.warning(f"[{trace_id}] [-] Brain returned complete silence (Finish: {finish_reason}).")
 

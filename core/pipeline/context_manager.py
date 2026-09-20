@@ -9,7 +9,10 @@ import re
 import logging
 from typing import Optional, List
 
-import google.generativeai as genai
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    import google.generativeai as genai
 
 from core.pipeline.model_config import MAX_TURNS
 
@@ -80,8 +83,8 @@ class ContextManager:
             if not isinstance(result_text, str) or 'GEMINI_FILE_URI:' not in result_text:
                 continue
 
-            # Strict validation: only accept alphanumeric URIs of expected length (10-25 chars)
-            file_match = re.search(r'GEMINI_FILE_URI:\s*(files/[a-zA-Z0-9]{10,25})\b', result_text)
+            # Robust validation: accept alphanumeric, hyphen, and underscore URIs (8-64 chars)
+            file_match = re.search(r'GEMINI_FILE_URI:\s*(files/[a-zA-Z0-9_-]{8,64})\b', result_text)
             if file_match:
                 file_uri = file_match.group(1)
                 try:

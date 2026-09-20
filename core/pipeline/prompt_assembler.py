@@ -10,6 +10,7 @@ No SDK dependencies. No runtime state. Pure functions + constants.
 import os
 import hashlib
 import logging
+import threading
 import yaml
 from pathlib import Path
 
@@ -144,29 +145,62 @@ def load_range_prompt(persona: str = "neo") -> str:
 
 # Lazy-loaded system prompt — avoids crash at import time if prompts.yaml is missing.
 _SYSTEM_PROMPT_CACHE = None
+_prompt_lock = threading.Lock()
 
 def get_system_prompt() -> str:
-    """Returns the assembled system prompt, loading on first call."""
+    """Returns the assembled system prompt, loading on first call in a thread-safe manner."""
     global _SYSTEM_PROMPT_CACHE
     if _SYSTEM_PROMPT_CACHE is None:
-        _SYSTEM_PROMPT_CACHE = load_system_prompt()
+        with _prompt_lock:
+            if _SYSTEM_PROMPT_CACHE is None:
+                _SYSTEM_PROMPT_CACHE = load_system_prompt()
     return _SYSTEM_PROMPT_CACHE
 
 
+def reset_system_prompt_cache() -> None:
+    """Invalidates the system prompt cache for testing or runtime configuration reload."""
+    global _SYSTEM_PROMPT_CACHE
+    with _prompt_lock:
+        _SYSTEM_PROMPT_CACHE = None
+
+
 class _LazyPromptProxy:
-    """Proxy that defers prompt loading until first string access."""
+    """Proxy that defers prompt loading until first access with transparent string delegation."""
+
     def __str__(self):
         return get_system_prompt()
+
+    def __repr__(self):
+        return repr(get_system_prompt())
+
     def __add__(self, other):
-        return get_system_prompt() + other
+        return get_system_prompt() + str(other)
+
     def __radd__(self, other):
-        return other + get_system_prompt()
+        return str(other) + get_system_prompt()
+
     def __len__(self):
         return len(get_system_prompt())
+
     def __contains__(self, item):
         return item in get_system_prompt()
-    def strip(self):
-        return get_system_prompt().strip()
+
+    def __eq__(self, other):
+        return get_system_prompt() == str(other)
+
+    def __hash__(self):
+        return hash(get_system_prompt())
+
+    def __bool__(self):
+        return bool(get_system_prompt())
+
+    def __getitem__(self, item):
+        return get_system_prompt()[item]
+
+    def __getattr__(self, name):
+        """Delegates all standard string methods (.startswith, .split, .replace, .strip, etc.)."""
+        return getattr(get_system_prompt(), name)
+
 
 # Backward compatible — existing code uses `SYSTEM_PROMPT` as a string constant.
 SYSTEM_PROMPT = _LazyPromptProxy()

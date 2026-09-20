@@ -11,8 +11,10 @@ class CognitiveTraceLogger:
     Tracks cognitive efficiency (Thinking vs Acting).
     """
     
-    def __init__(self):
-        self.trace_dir = "data/traces"
+    def __init__(self, trace_dir: str = None):
+        from pathlib import Path
+        _base_dir = Path(__file__).resolve().parent.parent.parent
+        self.trace_dir = str(trace_dir or (_base_dir / "data" / "traces"))
         os.makedirs(self.trace_dir, exist_ok=True)
 
     def log_trace(self, trace_id: str, target_mode: str, trace_data: list, total_turns: int):

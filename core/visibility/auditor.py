@@ -82,6 +82,12 @@ class Auditor:
                 cls._instance = cls()
         return cls._instance
 
+    @classmethod
+    def reset(cls) -> None:
+        """Reset singleton instance (for testing or reconfiguration) (M3)."""
+        with cls._lock:
+            cls._instance = None
+
     def _init_model(self):
         """Initialize Gemini Flash model for auditing."""
         try:
@@ -171,11 +177,17 @@ class Auditor:
             raw_text = response.text.strip()
             parsed = json.loads(raw_text)
 
+            raw_score = parsed.get("audit_score")
+            try:
+                score_val = float(raw_score) if raw_score is not None else 1.0
+            except (ValueError, TypeError):
+                score_val = 1.0
+
             result = AuditResult(
                 disputes=parsed.get("disputes", []),
                 confirmed=parsed.get("confirmed", []),
                 omissions=parsed.get("omissions", []),
-                audit_score=float(parsed.get("audit_score", 1.0)),
+                audit_score=score_val,
                 summary=parsed.get("summary", ""),
                 raw_response=raw_text,
             )

@@ -336,12 +336,13 @@ class DotenvSecretsProvider(SecretsProvider):
     """
 
     def get(self, key: str) -> str:
-        # Try exact key first, then uppercase version
-        value = os.getenv(key) or os.getenv(key.upper())
+        # Try exact key first, then uppercase version, then underscore normalized (H1)
+        normalized_key = key.upper().replace("-", "_")
+        value = os.getenv(key) or os.getenv(key.upper()) or os.getenv(normalized_key)
         if not value:
             raise ValueError(
                 f"Secret '{key}' not found in environment variables. "
-                f"Add {key.upper()}=your-value to your .env file."
+                f"Add {normalized_key}=your-value to your .env file."
             )
         return value
 
@@ -392,6 +393,13 @@ def get_provider() -> SecretsProvider:
         if _provider is None:
             _provider = _init_provider()
         return _provider
+
+
+def reset_provider() -> None:
+    """Resets the singleton secrets provider instance (for testing or reconfiguration) (M1)."""
+    global _provider
+    with _provider_lock:
+        _provider = None
 
 
 def get_secret(key: str) -> str:

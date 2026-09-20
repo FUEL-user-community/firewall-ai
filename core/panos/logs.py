@@ -45,7 +45,8 @@ def execute_log_query(log_type: str, filter_query: str = None, target_device: st
     client = _get_pool().get_client(target_device)
 
     try:
-        status, result = client.execute_log(query=filter_query or "", nlogs=20)
+        clean_log_type = (log_type or 'traffic').strip().lower()
+        status, result = client.execute_log(log_type=clean_log_type, query=filter_query or "", nlogs=20)
 
         if status == 200:
             sanitizer = ToxicXmlSanitizer()
@@ -54,6 +55,7 @@ def execute_log_query(log_type: str, filter_query: str = None, target_device: st
             return f"Log Query Failed: {result[:200]}"
 
     except Exception as e:
+        logger.error(f"[Logs] Log query execution failed: {e}", exc_info=True)
         return f"Log Query Logic Failed: {e}"
 
 
@@ -101,8 +103,9 @@ def execute_report_discovery(target_device: str = None) -> str:
     for report in candidates:
         try:
             status, result = client.execute_report(report)
+            res_str = result or ""
 
-            if "Illegal value" in result or "Invalid" in result:
+            if "Illegal value" in res_str or "Invalid" in res_str:
                 pass
             else:
                 valid_reports.append(report)
@@ -134,12 +137,28 @@ def execute_live_app_analytics(target_device: str = None) -> str:
         if status != 200:
             return f"Live Analytics Failed: HTTP {status}"
 
+        if not result or not result.strip():
+            return "Live Analytics Failed: Empty response received from device."
+
         root = ET.fromstring(result)
+
+        # Check for error status envelope inside XML root (M2)
+        if root.attrib.get("status") == "error":
+            line_node = root.find(".//line")
+            msg_node = root.find(".//msg") if line_node is None else None
+            if line_node is not None and line_node.text:
+                err_text = line_node.text.strip()
+            elif msg_node is not None and msg_node.text:
+                err_text = msg_node.text.strip()
+            else:
+                err_text = "Unknown firewall error"
+            return f"Live Analytics Failed: {err_text}"
+
         apps = []
         for entry in root.findall(".//entry"):
             app_node = entry.find("application")
             if app_node is not None and app_node.text:
-                apps.append(app_node.text)
+                apps.append(app_node.text.strip())
 
         if not apps:
             return "No active applications found in session table (0 sessions)."
@@ -156,5 +175,6 @@ def execute_live_app_analytics(target_device: str = None) -> str:
 
         return "\n".join(output)
 
-    except Exception as e:
+    except (ET.ParseError, Exception) as e:
+        logger.error(f"[Logs] Live app analytics failed: {e}", exc_info=True)
         return f"Live Analytics Failed: {e}"

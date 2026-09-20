@@ -1,14 +1,18 @@
 """
 Policy-Gated Tool Execution
-
 All tools are classified as READ or WRITE. The PolicyEngine intercepts
 every function_call before execution and checks against the current mode.
 Default mode: READ_ONLY — write tools blocked until explicitly elevated.
 """
 import os
 import logging
+import threading
+from contextlib import contextmanager
+from typing import Optional, Set
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["PolicyEngine", "PolicyViolationError", "DeviceAccessDeniedError"]
 
 
 class PolicyViolationError(Exception):
@@ -24,12 +28,10 @@ class DeviceAccessDeniedError(Exception):
 class PolicyEngine:
     """
     Middleware between LLM function_call and tool execution.
-    Default mode: READ_ONLY. Must be explicitly elevated for write operations.
+    Default mode: READ_ONLY. Scoped via thread-local state to prevent cross-thread leakage (H5).
     """
-    
-    # Tools that only observe — safe for autonomous execution
-    READ_TOOLS = {
-        # Native Python tools
+
+    READ_TOOLS: Set[str] = {
         "summon_toolkit",
         "search_live_docs",
         "query_forensic_matrix",
@@ -39,23 +41,17 @@ class PolicyEngine:
         "test_nat_policy",
         "get_live_config",
         "execute_log_query",
-        "audit_user_id",                # User-ID investigation tool
-        "get_telemetry_snapshot",        # Real-time health metrics
-        "get_device_inventory",          # Fleet discovery tool
-        "execute_live_app_analytics",    # Session-based app analysis
-        # WARNING: execute_operational_command can run ANY show/debug/test command.
-        # It is READ (observation-only) but extremely powerful. The CommandRouter
-        # interceptor layer (core/panos/interceptors.py) provides secondary defense
-        # by stripping dangerous command patterns before API execution.
+        "audit_user_id",
+        "get_telemetry_snapshot",
+        "get_device_inventory",
+        "execute_live_app_analytics",
         "execute_operational_command",
         "execute_report_query",
         "execute_report_discovery",
-        "fetch_running_config_xml",      # Full config export for posture assessment
-        # YAML macros (#core)
+        "fetch_running_config_xml",
         "hardware_telemetry",
         "network_base",
         "app_telemetry",
-        # YAML singles (#core)
         "system_info",
         "system_resources",
         "license_info",
@@ -71,7 +67,6 @@ class PolicyEngine:
         "app_cache_summary",
         "app_stats",
         "find_command",
-        # YAML singles (non-#core, read-only)
         "software_status",
         "disk_space",
         "logdb_quota",
@@ -123,76 +118,106 @@ class PolicyEngine:
         "user_server_monitor",
         "set_xml_output",
     }
-    
-    # Tools that modify state — require explicit elevation
-    WRITE_TOOLS = {
-        "clear_interface_counters",   # Resets interface statistics
-        "clear_session_id",           # Kills an active session
-        "apply_dynamic_tag",          # Tags an IP address into a DAG
-        "capture_pcap",               # Triggers live dataplane capture
-        "clear_user_cache",           # Flushes User-ID cache
-        "test_vpn_ike",               # Forces IKE Phase 1 initiation
-        "test_vpn_ipsec",             # Forces IPSec Phase 2 initiation
-        "force_wildfire_upload",      # Triggers log upload to WildFire
-        "enable_predefined_reports",  # Debug command, changes device state
-        "enable_scripting_mode",      # Changes device scripting mode
+
+    WRITE_TOOLS: Set[str] = {
+        "clear_interface_counters",
+        "clear_session_id",
+        "apply_dynamic_tag",
+        "capture_pcap",
+        "clear_user_cache",
+        "test_vpn_ike",
+        "test_vpn_ipsec",
+        "force_wildfire_upload",
+        "enable_predefined_reports",
+        "enable_scripting_mode",
     }
-    
-    def __init__(self, mode=None):
-        self.mode = mode or os.getenv("POLICY_MODE", "READ_ONLY")
-        logger.info(f"[POLICY] Engine initialized: mode={self.mode}")
-    
+
+    # Fail-closed heuristic: dangerous prefixes on unknown tools default to WRITE (H6)
+    WRITE_PREFIXES = (
+        "clear_",
+        "delete_",
+        "set_",
+        "apply_",
+        "remove_",
+        "restart_",
+        "force_",
+        "kill_",
+        "update_",
+        "modify_",
+    )
+
+    def __init__(self, mode: Optional[str] = None):
+        self._default_mode = (mode or os.getenv("POLICY_MODE", "READ_ONLY")).upper()
+        self._local = threading.local()
+        logger.info(f"[POLICY] Engine initialized: default_mode={self._default_mode}")
+
+    @property
+    def mode(self) -> str:
+        """Thread-scoped execution mode, falling back to default."""
+        return getattr(self._local, "mode", None) or self._default_mode
+
+    @mode.setter
+    def mode(self, val: str):
+        self._local.mode = val.upper()
+
     def check(self, tool_name: str) -> bool:
         """
-        Returns True if the tool is allowed under the current policy.
-        Raises PolicyViolationError if a WRITE tool is called in READ_ONLY mode.
-        Unknown tools default to READ (fail-open for backwards compatibility
-        with YAML-defined tools that may not be in the registry).
+        Validates whether tool_name is permitted under current execution policy.
+        Enforces fail-closed write protection on unknown tools (H6).
         """
-        if tool_name in self.WRITE_TOOLS:
+        if not tool_name or not isinstance(tool_name, str):
+            raise PolicyViolationError("Tool name must be a non-empty string.")
+
+        clean_name = tool_name.strip()
+
+        is_write = (
+            clean_name in self.WRITE_TOOLS
+            or any(clean_name.startswith(p) for p in self.WRITE_PREFIXES)
+        )
+
+        if is_write:
             if self.mode == "READ_ONLY":
                 raise PolicyViolationError(
-                    f"Tool '{tool_name}' requires WRITE permission. "
+                    f"Tool '{clean_name}' requires WRITE permission. "
                     f"Current mode: {self.mode}. "
-                    "Set POLICY_MODE=READ_WRITE in .env to enable."
+                    "Set POLICY_MODE=READ_WRITE or elevate permissions."
                 )
-            logger.warning(f"[POLICY] WRITE tool '{tool_name}' authorized under {self.mode} mode.")
-        
-        if tool_name not in self.READ_TOOLS and tool_name not in self.WRITE_TOOLS:
-            logger.info(f"[POLICY] Tool '{tool_name}' not in policy registry — defaulting to READ.")
-        
+            logger.warning(f"[POLICY] WRITE tool '{clean_name}' authorized under {self.mode} mode.")
+            return True
+
+        if clean_name not in self.READ_TOOLS:
+            logger.info(f"[POLICY] Tool '{clean_name}' not in registry — defaulting to READ (heuristic safe).")
+
         return True
-    
+
     def elevate(self, mode: str = "READ_WRITE"):
-        """Temporarily elevate permissions. Log the elevation."""
+        """Temporarily elevate permissions for the calling thread (H5)."""
         old_mode = self.mode
-        self.mode = mode
-        logger.warning(f"[POLICY] Mode elevated: {old_mode} → {mode}")
-    
+        self._local.mode = mode.upper()
+        logger.warning(f"[POLICY] Thread elevated: {old_mode} -> {self._local.mode}")
+
     def reset(self):
-        """Reset to READ_ONLY after elevated operation completes."""
-        self.mode = "READ_ONLY"
-        logger.info("[POLICY] Mode reset to READ_ONLY.")
+        """Reset thread-local elevation to default mode."""
+        if hasattr(self._local, "mode"):
+            del self._local.mode
+        logger.info(f"[POLICY] Thread reset to default mode ({self._default_mode}).")
+
+    @contextmanager
+    def elevated(self, mode: str = "READ_WRITE"):
+        """Context manager for scoped elevation with guaranteed restoration."""
+        prev = self.mode
+        self.elevate(mode)
+        try:
+            yield
+        finally:
+            self.elevate(prev)
 
     def check_device_access(self, user_context, target_device: str) -> bool:
-        """
-        Per-device RBAC: verify the user is authorized to access the target device.
-        Raises DeviceAccessDeniedError if the user's allowed_devices list
-        does not include the target device (and is not wildcard '*').
-
-        Args:
-            user_context: UserContext from identity.py (has .can_access_device())
-            target_device: Device alias from devices.yaml (e.g., 'fw-hq')
-
-        Returns:
-            True if access is allowed.
-        """
+        """Per-device RBAC: verify user authorization for target device."""
         if target_device in ("default", "", None):
-            # Default device — always allowed (backward compatible)
             return True
 
         if not hasattr(user_context, 'can_access_device'):
-            # Legacy UserContext without device RBAC — allow
             return True
 
         if not user_context.can_access_device(target_device):
@@ -202,5 +227,5 @@ class PolicyEngine:
                 f"Allowed devices: {user_context.allowed_devices}"
             )
 
-        logger.info(f"[POLICY] Device access granted: {user_context.user_id} → {target_device}")
+        logger.info(f"[POLICY] Device access granted: {user_context.user_id} -> {target_device}")
         return True

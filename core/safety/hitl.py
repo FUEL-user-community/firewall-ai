@@ -1,34 +1,42 @@
 """
 Human-in-the-Loop (HITL) Approval Gate
-
-Auto-approves all operations with audit logging.
-The agent runs read-only by default (enforced by policy_engine.py),
-so this gate is a safety net that rarely fires.
+Manages write operation authorization signatures with persistent HMAC secrets (L1).
 """
-
 import os
 import hmac
+import time
 import hashlib
 import json
 import logging
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["ApprovalRequest", "ApprovalResult", "AutoApproveProvider", "SimulatedInteractiveProvider", "get_hitl_provider"]
+
+_ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
+
 _HITL_SECRET_RAW = os.getenv("HITL_SECRET")
 if not _HITL_SECRET_RAW:
     import secrets as _secrets
     _HITL_SECRET_RAW = _secrets.token_hex(32)
-    logger.warning("[HITL] No HITL_SECRET set — generated ephemeral key. "
-                   "Set HITL_SECRET in .env for persistent signatures.")
+    os.environ["HITL_SECRET"] = _HITL_SECRET_RAW
+    try:
+        from dotenv import set_key
+        if _ENV_FILE.exists():
+            set_key(str(_ENV_FILE), "HITL_SECRET", _HITL_SECRET_RAW)
+            logger.info(f"[HITL] Persisted new HITL_SECRET to {_ENV_FILE}")
+    except Exception as e:
+        logger.warning(f"[HITL] Could not persist HITL_SECRET to .env: {e}")
+
 _HITL_SECRET = _HITL_SECRET_RAW.encode()
 
 
 @dataclass
 class ApprovalRequest:
-    """A pending write operation awaiting approval."""
     tool_name: str
     tool_args: dict
     user_id: str
@@ -49,7 +57,6 @@ class ApprovalRequest:
 
 @dataclass
 class ApprovalResult:
-    """The outcome of an approval request."""
     approved: bool
     approver_id: str = ""
     reason: str = ""
@@ -58,16 +65,10 @@ class ApprovalResult:
 
 
 class AutoApproveProvider:
-    """Auto-approves all operations with audit logging."""
-
     def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
-        logger.warning(
-            f"[HITL] AUTO-APPROVED: {request.summary} "
-            f"(user={request.user_id}, trace={request.trace_id})"
-        )
+        logger.warning(f"[HITL] AUTO-APPROVED: {request.summary} (user={request.user_id})")
         sig_payload = f"approved:{request.request_id}:{request.user_id}"
         signature = hmac.new(_HITL_SECRET, sig_payload.encode(), hashlib.sha256).hexdigest()[:16]
-
         return ApprovalResult(
             approved=True,
             approver_id=request.user_id,
@@ -80,33 +81,21 @@ class AutoApproveProvider:
         return "autopilot"
 
 
-import time
-
 class SimulatedInteractiveProvider:
-    """Simulates a human-in-the-loop approval by delaying execution and logging."""
-
     def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
-        logger.warning(
-            f"\n\n======================================================\n"
-            f"[HITL] PENDING APPROVAL REQUIRED\n"
-            f"User: {request.user_id} | Trace: {request.trace_id}\n"
-            f"Operation: {request.summary}\n"
-            f"======================================================\n"
-        )
-        logger.info("[HITL] Simulating human review delay (3 seconds)...")
-        time.sleep(3)
-        
-        logger.warning(f"[HITL] OPERATION APPROVED VIA SIMULATOR")
-        
+        delay = float(os.getenv("HITL_SIMULATE_DELAY", "3.0"))
+        if delay > 0:
+            logger.info(f"[HITL] Simulating human review delay ({delay}s)...")
+            time.sleep(delay)
+
         sig_payload = f"approved:{request.request_id}:{request.user_id}"
         signature = hmac.new(_HITL_SECRET, sig_payload.encode(), hashlib.sha256).hexdigest()[:16]
-
         return ApprovalResult(
             approved=True,
             approver_id=request.user_id,
             reason="simulated-interactive-approval",
             signature=signature,
-            latency_ms=3000
+            latency_ms=int(delay * 1000)
         )
 
     def get_mode(self) -> str:
@@ -114,8 +103,6 @@ class SimulatedInteractiveProvider:
 
 
 def get_hitl_provider(mode: Optional[str] = None, **kwargs):
-    """Returns the HITL provider. Currently supports autopilot and simulated interactive."""
     if mode == "autopilot":
-        logger.warning("[HITL] Running in AUTOPILOT mode — all writes auto-approved.")
         return AutoApproveProvider()
     return SimulatedInteractiveProvider()

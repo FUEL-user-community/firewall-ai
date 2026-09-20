@@ -85,6 +85,18 @@ class GoogleDriveObsidianMapper:
                 cls._instance = cls()
             return cls._instance
 
+    @classmethod
+    def reset(cls):
+        """Reset singleton cartographer instance and shut down background executor (L2)."""
+        with cls._lock:
+            if cls._instance is not None:
+                if hasattr(cls._instance, '_executor'):
+                    try:
+                        cls._instance._shutdown()
+                    except Exception:
+                        pass
+            cls._instance = None
+
     def __init__(self):
         self.enabled = HAS_DRIVE_API and bool(os.getenv("GCP_SERVICE_ACCOUNT_FILE"))
         if not self.enabled:

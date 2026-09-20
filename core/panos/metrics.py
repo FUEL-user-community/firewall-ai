@@ -35,7 +35,18 @@ class MetricsLogger:
                 cls._instance = cls()
         return cls._instance
 
+    @classmethod
+    def reset(cls) -> None:
+        """Reset singleton instance for clean test isolation."""
+        with cls._lock:
+            cls._instance = None
+            cls._initialized = False
+
     def log(self, command: str, stats: dict):
-        """Log conversion metrics to console."""
-        reduction = stats.get('reduction_pct', 0)
+        """Log conversion metrics to console defensively (L2)."""
+        stats_dict = stats if isinstance(stats, dict) else {}
+        try:
+            reduction = float(stats_dict.get('reduction_pct', 0))
+        except (ValueError, TypeError):
+            reduction = 0.0
         logger.debug(f"[METRICS] {command}: {reduction:.1f}% reduction")

@@ -20,16 +20,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Remove files the container doesn't need
+# Remove non-container build artifacts
 RUN rm -rf .git .pytest_cache __pycache__ \
-    slack_service start_slack_agent.bat \
     .env .env.example \
     core/service_account.json
 
 EXPOSE 8888
 
-# Health check — verify the server is responding
+# Health check — verify the server process is alive via lightweight liveness probe
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8888/api/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8888/healthz')" || exit 1
 
 CMD ["python", "server.py"]

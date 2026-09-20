@@ -14,8 +14,8 @@ cards:
 
   autonomous_chain_breaker:
     id: "FT-01"
-    name: "Autonomous Chain Breaker"
-    description: "Detects zero-day factory exploit chains from sequences of LOW/MED alerts using active wargaming"
+    name: "Multi-Stage Exploit Chaining & Lateral Traverse"
+    description: "Evaluates correlated low/medium severity signals against routing and policy to detect active kill-chain assembly"
     severity: "critical"
     schedule: "continuous"
     interval_seconds: 300
@@ -24,24 +24,21 @@ cards:
       - test_security_policy
       - test_routing_fib
     reasoning_prompt: |
-      Human analysts dismiss low/informational severity alerts. An AI adversary
-      uses them as stepping stones. 
-      1. Pull threat_logs. Look for sequences of LOW/MEDIUM alerts from the same source IP.
-      2. PREDICTIVE WARGAMING: If you identify a suspicious source IP, you MUST dynamically simulate 
-         the adversary's next logical attack vector. 
-         a) Use test_routing_fib to see if the firewall has an active return route to the attacker.
-         b) Use test_security_policy to verify if the attacker's IP is allowed to reach critical 
-            internal subnets (e.g., Domain Controllers or DB servers) on lateral ports (e.g., 389, 1433, 22).
-      3. If the simulation reveals that the firewall policy WOULD ALLOW lateral movement from the 
-         attacker's IP to an internal zone, elevate the severity to CRITICAL. If the firewall drops it, 
-         downgrade to CAUTION.
+      Adversaries leverage low-severity reconnaissance signals to assemble multi-stage kill chains prior to lateral traverse.
+      1. Query threat_logs. Identify sequences of low/medium severity indicators clustered from an identical source IP.
+      2. LATERAL TRAVERSE EVALUATION: For any suspicious source address, systematically probe the perimeter:
+         a) Execute test_routing_fib to confirm active routing convergence and return path availability.
+         b) Execute test_security_policy to verify whether the source is permitted lateral traverse into critical 
+            internal assets (e.g. Identity Providers, Database Clusters, Management Subnets) over sensitive ports (e.g. 389, 1433, 22, 445).
+      3. If policy simulation confirms that the firewall permits lateral traverse from the flagged IP to internal segments, 
+         escalate finding to CRITICAL. If hardware enforcement actively drops the traversal, calibrate to CAUTION.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary including the results of the wargame simulation",
+        "finding": "2-3 sentence summary detailing attack vector, target asset exposure, and policy traversal results",
         "evidence": ["tool: key finding", ...],
         "metrics": {"chain_length": N, "source_ips_flagged": N}
       }
@@ -59,8 +56,8 @@ cards:
 
   sub_30_breakout:
     id: "FT-02"
-    name: "Sub-30 Minute Breakout Audit"
-    description: "Detects lateral movement within 5 minutes of VPN authentication"
+    name: "Rapid Ingress-to-Lateral Movement Correlation"
+    description: "Detects unauthorized lateral movement within 5 minutes of remote gateway authentication"
     severity: "critical"
     schedule: "continuous"
     interval_seconds: 300
@@ -68,20 +65,19 @@ cards:
       - auth_logs
       - gp_history
     reasoning_prompt: |
-      Assume breach. Measure the blast radius of compromised identities at
-      machine speed.
-      1. Query gp_history and auth_logs for VPN logins in the last 30 minutes.
-      2. For each assigned IP (user_ip_mapping), run session_filter_source.
-      3. Filter: ignore web-browsing, dns. Focus on ssh, ms-rdp, kerberos, smb.
-      4. Calculate ΔT from VPN auth to first lateral movement.
-         If ΔT < 5 minutes, flag as AI-driven breakout.
+      Quantify the blast radius of compromised credentials by measuring ingress-to-lateral traversal velocity.
+      1. Query gp_history and auth_logs for successful VPN authentications within the preceding 30-minute window.
+      2. For each assigned client IP (user_ip_mapping), execute session_filter_source.
+      3. Filter out baseline web-browsing and DNS; isolate administrative and lateral protocols (SSH, RDP, Kerberos, SMB).
+      4. Calculate the temporal delta (ΔT) between initial gateway authentication and the first lateral connection.
+         If ΔT < 300 seconds, flag as an automated credential compromise pivot.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary with user identity and ΔT",
+        "finding": "2-3 sentence summary detailing authenticated identity, target segment exposure, and verified ΔT velocity",
         "evidence": ["tool: key finding", ...],
         "metrics": {"delta_t_seconds": N, "lateral_sessions": N, "vpn_users_checked": N}
       }
@@ -97,8 +93,8 @@ cards:
 
   polymorphic_evasion:
     id: "FT-03"
-    name: "Polymorphic Evasion Tracker"
-    description: "Detects AI-driven traffic mutation blinding App-ID/Content-ID"
+    name: "App-ID Evasion & Unknown Protocol Inspection"
+    description: "Detects non-standard traffic mutations and classification failures designed to blind Content-ID inspection"
     severity: "critical"
     schedule: "continuous"
     interval_seconds: 300
@@ -108,20 +104,18 @@ cards:
       - global_counters
       - wildfire_status
     reasoning_prompt: |
-      The adversary is mutating C2 traffic faster than Content-ID updates.
-      1. Query session_all for sessions stuck in "unknown-tcp", "unknown-udp",
-         or "insufficient-data" states.
-      2. Cross-reference with global_counters for asymmetric routing drops or
-         application decode errors.
-      3. Check app_cache_summary for high App-ID miss rates (thrashing).
-      4. Verify wildfire_status to ensure unknown files reach the sandbox.
+      Identify evasive command-and-control (C2) flows engineered to bypass App-ID classification via protocol fragmentation or tunneling.
+      1. Query session_all for active sessions categorized under 'unknown-tcp', 'unknown-udp', or 'insufficient-data'.
+      2. Cross-reference with global_counters for asymmetric routing drops, TCP out-of-order errors, or decode failures.
+      3. Inspect app_cache_summary for abnormal App-ID cache miss rates indicative of classification engine thrashing.
+      4. Verify wildfire_status to ensure unclassified payloads are forwarded for behavioral sandboxing.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing unclassified session volume, affected zone boundaries, and inspection impact",
         "evidence": ["tool: key finding", ...],
         "metrics": {"unknown_sessions": N, "cache_miss_rate": N, "source_hosts": N}
       }
@@ -137,8 +131,8 @@ cards:
 
   credential_exhaustion:
     id: "MC-03"
-    name: "Credential Exhaustion Detector"
-    description: "Rapid auth failures followed by success — credential stuffing or brute force"
+    name: "Credential Stuffing & Authentication Anomaly"
+    description: "Detects distributed brute-force or credential stuffing sequences culminating in successful perimeter ingress"
     severity: "critical"
     schedule: "continuous"
     interval_seconds: 300
@@ -147,18 +141,18 @@ cards:
       - gp_history
       - threat_logs
     reasoning_prompt: |
-      Hunt for credential stuffing patterns.
-      1. Query auth_logs for rapid authentication failures (>5 in 60 seconds).
-      2. Check if failures are followed by a successful login from the same source.
-      3. Cross-reference with gp_history for VPN connections from that identity.
-      4. Check threat_logs for brute-force or credential-related signatures.
+      Identify distributed credential stuffing patterns targeting perimeter authentication gateways.
+      1. Query auth_logs for clustered authentication failures (>5 failures within a 60-second window).
+      2. Correlate whether sequential failures are succeeded by an authenticated session from the identical source or identity.
+      3. Cross-reference gp_history to determine if active VPN tunnels were successfully negotiated following failures.
+      4. Inspect threat_logs for corroborating brute-force or credential access signatures.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing source IP provenance, target accounts, and perimeter access outcome",
         "evidence": ["tool: key finding", ...],
         "metrics": {"failed_attempts": N, "success_after_failure": true/false, "source_ips": N}
       }
@@ -178,8 +172,13 @@ cards:
 
   phantom_flow_audit:
     id: "MC-01"
-    name: "Phantom Flow Audit"
-    description: "Compares security policy intent vs. actual routing reality"
+  # ─── PERIODIC CARDS (Every 30 Minutes) ──────────────────────────────
+  # Drift detection and posture monitoring
+
+  phantom_flow_audit:
+    id: "MC-01"
+    name: "Security Policy Intent vs. Forwarding FIB Divergence"
+    description: "Reconciles configured security policies against dataplane routing tables to identify forwarding blackholes or unauthorized transit"
     severity: "caution"
     schedule: "periodic"
     interval_seconds: 1800
@@ -188,20 +187,18 @@ cards:
       - interface_all
       - session_info
     reasoning_prompt: |
-      Verify policy intent matches routing reality.
-      1. Use test_security_policy with representative source/dest pairs
-         (10.0.0.5→8.8.8.8, internal→DMZ, VPN→DC).
-      2. Use test_routing_lookup on the same destinations.
-      3. Use get_live_config to pull zone definitions.
-      4. Flag mismatches: traffic allowed by policy but unroutable,
-         or traffic routable but blocked by policy.
+      Verify that active security policy intent aligns with the underlying Forwarding Information Base (FIB).
+      1. Use test_security_policy across representative source/destination pairs (internal subnets to egress gateways, inter-zone transit, VPN to core).
+      2. Execute test_routing_lookup against the identical destination IP vectors.
+      3. Correlate with get_live_config to extract active zone boundary bindings.
+      4. Flag architectural divergence: traffic permitted by policy that blackholes in routing, or routable paths lacking explicit security policy governance.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing policy-to-routing divergence, affected destination subnets, and operational consequence",
         "evidence": ["tool: key finding", ...],
         "metrics": {"mismatches_found": N, "tests_run": N}
       }
@@ -214,8 +211,8 @@ cards:
 
   silent_drop_debugger:
     id: "MC-02"
-    name: "Silent Drop Debugger"
-    description: "Monitors global counter drops incrementing above baseline"
+    name: "Dataplane Counter Anomaly & Silent Drop Inspection"
+    description: "Monitors global hardware and buffer drop counters incrementing above statistical baselines"
     severity: "caution"
     schedule: "periodic"
     interval_seconds: 1800
@@ -224,17 +221,17 @@ cards:
       - interface_all
       - session_info
     reasoning_prompt: |
-      Hunt for silent packet drops that indicate misconfiguration or attack.
-      1. Query global_counters and look for rapidly incrementing drop counters.
-      2. Check interface_all for CRC errors, input errors, or link flaps.
-      3. Compare with session_info to see if drops correlate with session exhaustion.
+      Inspect hardware dataplane drop counters for abnormal packet discard rates indicative of micro-bursts, MTU mismatches, or volumetric denial-of-service.
+      1. Query global_counters and isolate rapidly incrementing drop reasons (e.g. flow_fwd_l3_mismatch, pkt_alloc_failure).
+      2. Inspect interface_all for physical CRC anomalies, input queue discards, or link state transitions.
+      3. Correlate with session_info to determine if drops coincide with session table or packet buffer exhaustion.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing incrementing drop vectors, interface impact, and service degradation risk",
         "evidence": ["tool: key finding", ...],
         "metrics": {"total_drops": N, "drop_rate_per_sec": N, "interface_errors": N}
       }
@@ -247,8 +244,8 @@ cards:
 
   ghost_in_machine:
     id: "MC-06"
-    name: "Ghost In The Machine"
-    description: "App-ID cache miss rate above threshold — potential evasion"
+    name: "App-ID Classification Evasion & Cache Degradation"
+    description: "Detects elevated App-ID cache miss rates and unclassified session thrashing indicative of classification bypass"
     severity: "caution"
     schedule: "periodic"
     interval_seconds: 1800
@@ -256,18 +253,18 @@ cards:
       - session_all
       - app_stats
     reasoning_prompt: |
-      Detect App-ID engine exhaustion or deliberate evasion.
-      1. Query app_stats for cache hit/miss statistics.
-      2. Query session_all and count sessions with "unknown" applications.
-      3. If cache miss rate > 15% or unknown sessions > 10% of total,
-         flag as potential evasion or App-ID engine degradation.
+      Audit App-ID classification performance for signs of deliberate evasion or engine resource degradation.
+      1. Query app_stats for hardware App-ID cache hit/miss distributions.
+      2. Inspect session_all and quantify the ratio of active sessions designated as 'unknown-tcp', 'unknown-udp', or 'insufficient-data'.
+      3. If the cache miss rate exceeds baseline by >15% or unclassified flows represent >10% of active sessions, 
+         flag as an active evasion vector or App-ID engine degradation.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing App-ID classification miss ratios, unclassified session load, and security posture impact",
         "evidence": ["tool: key finding", ...],
         "metrics": {"cache_miss_rate_pct": N, "unknown_session_pct": N}
       }
@@ -280,8 +277,8 @@ cards:
 
   ai_supply_chain:
     id: "FT-04"
-    name: "AI Supply Chain Sentinel"
-    description: "Monitors byte ratio anomalies on AI/LLM API endpoints"
+    name: "Model Ingestion & External AI Endpoint Exfiltration"
+    description: "Evaluates volumetric byte-ratio asymmetries and egress entropy on external generative AI endpoints"
     severity: "caution"
     schedule: "periodic"
     interval_seconds: 1800
@@ -289,20 +286,18 @@ cards:
       - session_all
       - threat_logs
     reasoning_prompt: |
-      Detect AI supply chain attacks via byte ratio analysis.
-      1. Use session_all to find traffic to known AI endpoints
-         (openai, anthropic, google AI, or internal LLM services).
-      2. Analyze byte ratios: normal = small upload, large download.
-         Inverted ratio (massive upload) = potential model inversion
-         or prompt injection attack.
-      3. Check threat_logs for data-filtering signatures on these flows.
+      Identify unauthorized intellectual property or sensitive dataset exfiltration directed toward external AI/LLM API endpoints.
+      1. Query session_all for active sessions destined for major AI cloud infrastructure (OpenAI, Anthropic, Google Gemini, internal inference clusters).
+      2. Analyze volumetric byte ratios: standard conversational traffic manifests low ingress bytes with high egress tokens. 
+         An inverted ratio (massive outbound uploads) indicates potential intellectual property staging or automated data harvesting.
+      3. Cross-reference threat_logs for data filtering signatures or DLP rule hits on these flows.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing source host provenance, destination AI endpoint, transfer volumetric delta, and data leak exposure",
         "evidence": ["tool: key finding", ...],
         "metrics": {"anomalous_endpoints": N, "inverted_ratio_sessions": N}
       }
@@ -319,27 +314,26 @@ cards:
 
   app_id_integrity:
     id: "SY-01"
-    name: "App-ID Integrity Audit"
-    description: "Identifies rules using 'application: any' and unknown app sessions"
+    name: "App-ID Enforcement & 'Any' Rule Exposure Audit"
+    description: "Quantifies policy surface using unconstrained 'application: any' rules bypassing layer-7 inspection"
     severity: "normal"
     schedule: "daily"
     interval_seconds: 86400
     tool_chain:
       - session_all
     reasoning_prompt: |
-      Audit App-ID integrity across policy and live traffic.
-      1. Use get_live_config xpath=/config/devices/entry/vsys/entry/rulebase/security
-         to pull security rules.
-      2. Count rules using "application: any" — these bypass App-ID entirely.
-      3. Use session_all to count sessions with "unknown" applications.
-      4. Score: (rules_with_app_id / total_rules) * 100 = App-ID coverage %.
+      Audit App-ID policy enforcement coverage across the active security rulebase.
+      1. Extract security rules via get_live_config xpath=/config/devices/entry/vsys/entry/rulebase/security.
+      2. Enumerate permit rules configured with 'application: any'—these bypass deep packet inspection and operate as legacy port-based packet filters.
+      3. Cross-reference with session_all to quantify active sessions traversing these uninspected rules.
+      4. Compute posture metric: (rules_with_strict_app_id / total_permit_rules) * 100 = App-ID Enforcement Index.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
-        "title": "App-ID Coverage: X%",
-        "finding": "2-3 sentence summary",
+        "title": "App-ID Enforcement Index: X%",
+        "finding": "2-3 sentence summary detailing unconstrained rule count, affected inter-zone boundaries, and layer-7 blindspot exposure",
         "evidence": ["tool: key finding", ...],
         "metrics": {"app_id_coverage_pct": N, "any_app_rule_count": N, "unknown_app_session_count": N}
       }
@@ -352,26 +346,25 @@ cards:
 
   threat_prevention_gap:
     id: "SY-02"
-    name: "Threat Prevention Gap Analysis"
-    description: "Identifies rules missing threat prevention profiles"
+    name: "Threat Prevention Profile Coverage & Inspection Blindspots"
+    description: "Identifies permit rules lacking Security Profile groups (Antivirus, Vulnerability, WildFire, Anti-Spyware)"
     severity: "normal"
     schedule: "daily"
     interval_seconds: 86400
     tool_chain:
       - threat_logs
     reasoning_prompt: |
-      Identify gaps in threat prevention coverage.
-      1. Use get_live_config to pull security rules and their profile settings.
-      2. Count rules that ALLOW traffic but have NO security profile group,
-         NO antivirus profile, or NO vulnerability protection profile attached.
-      3. Check threat_logs volume — low volume may indicate profiles are not inspecting.
+      Identify architectural blindspots where permit policies omit threat prevention profile inspection.
+      1. Pull active security rules and associated profile settings via get_live_config.
+      2. Isolate permit rules that omit Security Profile Groups, Antivirus profiles, or Vulnerability Protection profiles.
+      3. Evaluate threat_logs volume: an absence of threat detections on high-throughput perimeter rules indicates decoupled profiles rather than a clean network.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing uninspected rule count, affected zone boundaries, and threat exposure risk",
         "evidence": ["tool: key finding", ...],
         "metrics": {"unprotected_rule_count": N, "total_allow_rules": N, "threat_log_volume": N}
       }
@@ -384,8 +377,8 @@ cards:
 
   temporal_drift:
     id: "SY-05"
-    name: "Temporal Drift Detective"
-    description: "Detects anomalies by comparing current telemetry against historical norms"
+    name: "Temporal Baseline Drift & Anomalous Volume Analysis"
+    description: "Identifies systemic deviations in dataplane load, session throughput, and gateway connections against 30-day baselines"
     severity: "normal"
     schedule: "daily"
     interval_seconds: 86400
@@ -394,18 +387,18 @@ cards:
       - session_info
       - gp_history
     reasoning_prompt: |
-      Compare today's telemetry against historical patterns.
-      1. Run hardware_telemetry for current CPU, memory, disk.
-      2. Query session_info for current session count and throughput.
-      3. Check gp_history for VPN connection volume.
-      4. Flag any metric that deviates significantly from typical values.
+      Benchmark real-time operational telemetry against empirical rolling baselines to detect capacity saturation or anomalous volume shifts.
+      1. Execute hardware_telemetry to pull dataplane CPU load, memory utilization, and storage capacity.
+      2. Query session_info for active concurrent session count and packet forwarding throughput.
+      3. Query gp_history for remote access gateway authentication volume.
+      4. Flag any core metric exhibiting a statistically significant deviation (e.g. > +2.0σ) from historical baselines.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing baseline deviation sigma, affected subsystems, and capacity sustainability forecast",
         "evidence": ["tool: key finding", ...],
         "metrics": {"cpu_load": N, "memory_pct": N, "active_sessions": N, "vpn_connections": N}
       }
@@ -418,8 +411,8 @@ cards:
 
   absence_interpreter:
     id: "SY-06"
-    name: "Absence Interpreter"
-    description: "Reasons about missing data — empty logs may indicate blind spots"
+    name: "Telemetry Absence & Inspection Blindspot Audit"
+    description: "Reasons over negative space — evaluates whether absent threat logs indicate perimeter hygiene or decoupled inspection engines"
     severity: "normal"
     schedule: "daily"
     interval_seconds: 86400
@@ -427,20 +420,19 @@ cards:
       - threat_logs
       - wildfire_status
     reasoning_prompt: |
-      Reason about what SHOULD exist but doesn't.
-      1. Check threat_logs — if empty, determine WHY:
-         - Is WildFire connected? (wildfire_status)
-         - Are there active users? (user_ip_mapping)
-         - If users are active but no threat logs exist, profiles may be detached.
-      2. Check user_ip_mapping — if empty, User-ID agents may be down.
-      3. Score the "intelligence gap" — how much visibility is the firewall missing?
+      Evaluate negative space: reason over expected telemetry that is conspicuously absent from active data streams.
+      1. Inspect threat_logs. If logs are quiescent across high-traffic hours, evaluate root causes:
+         - Is the WildFire cloud subscription operational and connected? (wildfire_status)
+         - Are User-ID mappings active, or are identity agents unresponsive? (user_ip_mapping)
+         - If user traffic is active but threat detections are zero, verify whether inspection profiles are unattached.
+      2. Formulate a telemetry visibility index reflecting perimeter monitoring integrity.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing unobserved expected events, underlying architectural cause, and visibility gap score",
         "evidence": ["tool: key finding", ...],
         "metrics": {"threat_log_entries": N, "wildfire_connected": true/false, "userid_mappings": N}
       }
@@ -453,8 +445,8 @@ cards:
 
   operational_resilience:
     id: "SY-09"
-    name: "Operational Resilience Check"
-    description: "Daily health baseline — CPU, memory, sessions, HA, licenses"
+    name: "Hardware State & Dataplane Operational Resilience"
+    description: "Evaluates comprehensive physical and virtual health — CPU, memory saturation, session table headroom, HA sync, licenses"
     severity: "normal"
     schedule: "daily"
     interval_seconds: 86400
@@ -464,23 +456,23 @@ cards:
       - session_info
       - license_info
     reasoning_prompt: |
-      Produce a daily operational resilience assessment.
-      1. Run hardware_telemetry for CPU, memory, disk, uptime.
-      2. Check ha_status for HA sync and failover readiness.
-      3. Query session_info for session utilization vs capacity.
-      4. Check license_info for expired or expiring licenses.
+      Deliver a comprehensive operational resilience and cluster availability audit.
+      1. Execute hardware_telemetry to capture core CPU, memory utilization, disk partitions, and system uptime.
+      2. Execute ha_status to verify cluster synchronization, heartbeat status, and failover determinism.
+      3. Query session_info to evaluate current session allocation against platform hardware limits.
+      4. Inspect license_info for expired or impending subscription expirations affecting threat engines.
 
-      Severity calibration:
-      - CRITICAL: swap > 0, CPU load/vCPU > 1.5, expired licenses
-      - CAUTION: uptime < 24h, CPU load/vCPU 0.7-1.5, HA out-of-sync
-      - NORMAL: all metrics within bounds
+      Calibration Thresholds:
+      - CRITICAL: Active swap memory utilization (> 0), CPU load/vCPU > 1.5, expired Threat Prevention/WildFire subscriptions.
+      - CAUTION: System uptime < 24h, load/vCPU 0.7-1.5, HA cluster peer synchronization degraded.
+      - NORMAL: All subsystem metrics within nominal operational bounds.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing hardware health status, headroom availability, and operational continuity posture",
         "evidence": ["tool: key finding", ...],
         "metrics": {"cpu_load": N, "memory_pct": N, "active_sessions": N, "session_capacity_pct": N}
       }
@@ -493,8 +485,8 @@ cards:
 
   emergent_threat_correlation:
     id: "SY-10"
-    name: "Emergent Threat Correlation"
-    description: "Cross-correlates all data sources for hidden threat patterns"
+    name: "Multi-Vector Telemetry Correlation & Threat Reconstruction"
+    description: "Cross-correlates multi-surface telemetry (identity, threat logs, session table, routing) to reconstruct distributed attack paths"
     severity: "normal"
     schedule: "daily"
     interval_seconds: 86400
@@ -504,19 +496,18 @@ cards:
       - auth_logs
       - global_counters
     reasoning_prompt: |
-      Execute systematic cross-correlation across all data sources.
-      1. Pull threat_logs, auth_logs, session_info, user_ip_mapping, global_counters.
-      2. SHARED KEY SCAN: IPs across User-ID, traffic, threat, sessions.
-      3. TEMPORAL CORRELATION: Events within 5-minute windows.
-      4. Look for: same IP in auth failure + threat log + active session.
-      5. Produce CORRELATION findings — connections across data sources.
+      Execute multi-dimensional correlation across discrete telemetry planes to reconstruct covert attack trajectories.
+      1. Pull threat_logs, auth_logs, session_info, user_ip_mapping, and global_counters.
+      2. SHARED KEY ANALYSIS: Correlate IP addresses across identity mappings, active session state, and security event logs.
+      3. TEMPORAL CORRELATION: Identify causal event sequences occurring within sliding 300-second windows.
+      4. Synthesize attack narratives: e.g. Gateway auth failure followed by successful pivot, coupled with outbound high-entropy sessions.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing correlated attack vectors, shared pivot identifiers, and comprehensive threat attribution",
         "evidence": ["tool: key finding", ...],
         "metrics": {"correlations_found": N, "sources_queried": N, "shared_ips": N}
       }
@@ -529,8 +520,8 @@ cards:
 
   ha_split_brain:
     id: "MC-05"
-    name: "HA Split-Brain Predictor"
-    description: "Monitors HA sync, path monitoring, and routing peers for split-brain risk"
+    name: "High Availability (HA) Cluster & Split-Brain Risk Audit"
+    description: "Evaluates HA synchronization, path monitoring, and routing neighbor adjacency to anticipate split-brain cluster partitions"
     severity: "normal"
     schedule: "daily"
     interval_seconds: 86400
@@ -539,18 +530,18 @@ cards:
       - routing_bgp_peers
       - routing_ospf_neighbors
     reasoning_prompt: |
-      Predict HA split-brain conditions before they occur.
-      1. Run ha_deep_audit for sync status and path monitoring.
-      2. Check routing_bgp_peers for peer state anomalies.
-      3. Check routing_ospf_neighbors for neighbor adjacency issues.
-      4. If sync is degraded AND routing peers are flapping, split-brain risk is HIGH.
+      Evaluate High Availability (HA) cluster integrity and preempt split-brain partition conditions.
+      1. Execute ha_deep_audit to verify control and dataplane link synchronization and path monitoring reachability.
+      2. Inspect routing_bgp_peers for peer state flapping or route advertisement instability.
+      3. Inspect routing_ospf_neighbors for neighbor adjacency drops or dead-timer expirations.
+      4. If HA link synchronization is degraded concurrently with routing peer flapping, flag split-brain risk as CRITICAL.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing cluster synchronization state, path monitor telemetry, and failover stability risk",
         "evidence": ["tool: key finding", ...],
         "metrics": {"sync_status": "in-sync|out-of-sync", "path_mon_failures": N, "bgp_peer_issues": N}
       }
@@ -567,26 +558,26 @@ cards:
 
   policy_intent_reality:
     id: "SY-04"
-    name: "Policy Intent vs. Reality"
-    description: "Compares configured security/NAT/zone policy against actual traffic patterns"
+    name: "Policy Rulebase Hygiene & Attack Surface Minimization"
+    description: "Identifies zero-hit rules, unconstrained wildcard policies, and architectural zone disparities"
     severity: "normal"
     schedule: "weekly"
     interval_seconds: 604800
     tool_chain:
       - session_info
     reasoning_prompt: |
-      Deep audit of policy configuration vs. operational reality.
-      1. Pull full security rulebase, NAT rules, and zone definitions via get_live_config.
-      2. Identify rules with zero hit counts (unused rules = attack surface).
-      3. Identify overly permissive rules (any/any, application: any).
-      4. Compare zone architecture against active session zones.
+      Conduct a comprehensive hygiene and attack surface audit across the security and NAT rulebase.
+      1. Extract the complete security rulebase, NAT translations, and zone topologies via get_live_config.
+      2. Enumerate dormant rules with zero historical hit counts (dormant permit rules constitute gratuitous attack surface).
+      3. Identify overly permissive wildcard rules (any/any, service: any, application: any).
+      4. Reconcile configured inter-zone policies against active session flow topology.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing dormant rule count, overpermissive policies, and attack surface reduction recommendations",
         "evidence": ["tool: key finding", ...],
         "metrics": {"unused_rules": N, "overpermissive_rules": N, "total_rules": N}
       }
@@ -598,30 +589,30 @@ cards:
 
   zero_trust_posture:
     id: "SY-08"
-    name: "Zero Trust Posture Assessment"
-    description: "Scores the firewall's Zero Trust maturity (0-100)"
+    name: "Zero Trust Architecture (ZTA) Maturity & Compliance Audit"
+    description: "Benchmarks the firewall policy hierarchy against NIST SP 800-207 Zero Trust Architecture standards (0-100 score)"
     severity: "normal"
     schedule: "weekly"
     interval_seconds: 604800
     tool_chain:
       - session_info
     reasoning_prompt: |
-      Score the firewall's Zero Trust posture on a 0-100 scale.
-      1. Pull security rules via get_live_config.
-      2. Deductions:
-         - Rules with "application: any" → -10 per rule
-         - Rules with "service: any" → -5 per rule
-         - Rules without decryption profile → -5 per rule
-         - Rules without security profile group → -10 per rule
-         - Inter-zone rules with "source: any" → -5 per rule
-      3. Start at 100, apply deductions. Minimum 0.
+      Quantify the firewall's Zero Trust Architecture (ZTA) maturity index on a standardized 0-100 scale based on NIST SP 800-207 principles.
+      1. Extract active security policies via get_live_config.
+      2. Deductions applied against baseline:
+         - Rules with 'application: any' -> -10 per rule (Bypasses Layer-7 micro-perimeter)
+         - Rules with 'service: any' -> -5 per rule (Exposes non-standard ports)
+         - Rules lacking SSL Decryption profiles -> -5 per rule (Encrypted traffic blindspot)
+         - Rules lacking Security Profile Groups -> -10 per rule (Omitted threat inspection)
+         - Inter-zone policies with 'source: any' -> -5 per rule (Unconstrained trust boundary)
+      3. Compute normalized maturity score (minimum 0, maximum 100).
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
-        "title": "Zero Trust Score: X/100",
-        "finding": "2-3 sentence summary",
+        "title": "Zero Trust Maturity Index: X/100",
+        "finding": "2-3 sentence summary detailing overall maturity score, primary deduction drivers, and immediate hardening priorities",
         "evidence": ["tool: key finding", ...],
         "metrics": {"zt_score": N, "any_rule_count": N, "no_decrypt_count": N, "no_profile_count": N}
       }
@@ -634,8 +625,8 @@ cards:
 
   microsegmentation_illusion:
     id: "MC-04"
-    name: "Micro-Segmentation Illusion"
-    description: "Validates whether micro-segmentation policy matches actual L2/L3 reality"
+    name: "Micro-Segmentation & L2/L3 Boundary Verification"
+    description: "Validates whether logical security zone boundaries are undermined by shared Layer-2 switching domains"
     severity: "normal"
     schedule: "weekly"
     interval_seconds: 604800
@@ -644,18 +635,18 @@ cards:
       - mac_table
       - session_all
     reasoning_prompt: |
-      Verify micro-segmentation is real, not just policy theater.
-      1. Pull arp_table and mac_table for L2/L3 topology.
-      2. Query session_all for active inter-zone traffic.
-      3. If hosts in different "zones" share the same L2 segment (same MAC/VLAN),
-         micro-segmentation is illusory — an attacker can bypass it with L2 attacks.
+      Verify whether logical micro-segmentation policies are structurally compromised by underlying Layer-2 broadcast adjacency.
+      1. Extract ARP and MAC forwarding tables via arp_table and mac_table.
+      2. Query session_all for active inter-zone communication flows.
+      3. Cross-reference host mappings: if endpoints assigned to distinct security zones share an identical Layer-2 broadcast domain (same VLAN / physical switch fabric),
+         logical perimeter enforcement is compromised by potential ARP spoofing, MAC flooding, or direct L2 lateral movement.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary",
+        "finding": "2-3 sentence summary detailing shared L2 domain exposures, affected zone pairs, and lateral bypass vulnerability",
         "evidence": ["tool: key finding", ...],
         "metrics": {"shared_l2_segments": N, "cross_zone_sessions": N}
       }
@@ -668,28 +659,28 @@ cards:
 
   attack_path_simulator:
     id: "SY-07"
-    name: "Attack Path Simulator"
-    description: "Simulates attacker movement from VPN/external entry points through policy"
+    name: "Ingress-to-Core Attack Vector & Lateral Reachability"
+    description: "Evaluates end-to-end traversal reachability from remote access ingress points to high-value internal infrastructure"
     severity: "normal"
     schedule: "weekly"
     interval_seconds: 604800
     tool_chain:
       - gp_current_users
     reasoning_prompt: |
-      Simulate attack paths from common entry points.
-      1. Get currently connected VPN users via gp_current_users.
-      2. For each VPN user's assigned IP, use test_security_policy to simulate:
-         - VPN IP → Domain Controller (port 389, 445, 88)
-         - VPN IP → Database servers (port 1433, 3306, 5432)
-         - VPN IP → Management interfaces (port 22, 3389)
-      3. Flag any ALLOWED path as an attack vector.
+      Model adversarial lateral reachability from remote access ingress gateways to high-value internal assets.
+      1. Enumerate active remote access client endpoints via gp_current_users.
+      2. For each assigned client IP, execute test_security_policy to simulate traversal reachability toward:
+         - Identity Providers / Active Directory Core (ports 389, 445, 88)
+         - Production Database Clusters (ports 1433, 3306, 5432)
+         - Administrative Management Consoles (ports 22, 3389, 443)
+      3. Flag any unconstrained permit path as an active lateral attack vector.
 
       OUTPUT FORMAT (JSON):
       {
         "triggered": true/false,
         "severity": "critical|caution|normal",
         "title": "short finding title",
-        "finding": "2-3 sentence summary with attack paths discovered",
+        "finding": "2-3 sentence summary detailing reachable high-value target assets, permitting policy rules, and exposure mitigation guidance",
         "evidence": ["tool: key finding", ...],
         "metrics": {"attack_paths_found": N, "users_tested": N, "critical_paths": N}
       }

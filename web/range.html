@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Core Defense | Range BETA</title>
+    <title>Core Defense | Breach Simulator & Attack Range</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -34,16 +34,21 @@
             --accent-crit: #f87171; /* Red for critical/attack */
             --accent-blue: #60a5fa; /* Blue for config */
             
-            --font-ui: 'Inter', sans-serif;
-            --font-mono: 'JetBrains Mono', monospace;
+            --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --font-mono: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --bas-sidebar-width: 480px;
+        }
+
+        html, body, button, input, select, textarea {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         }
 
         html, body {
             height: 100%;
             background: var(--bg-base);
             color: var(--text-main);
-            font-family: var(--font-ui);
             font-size: 14px;
+            line-height: 1.6;
             overflow: hidden;
             display: flex;
             flex-direction: column;
@@ -122,9 +127,10 @@
 
         .workspace {
             display: grid;
-            grid-template-columns: 380px 1fr;
+            grid-template-columns: var(--bas-sidebar-width, 480px) 1fr;
             flex: 1;
             overflow: hidden;
+            position: relative;
         }
 
         /* Left Panel: CLI / Semantic Testing */
@@ -134,72 +140,226 @@
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            position: relative;
+            min-width: 360px;
+            max-width: 850px;
+        }
+
+        /* Drag-to-resize handle */
+        .resize-handle {
+            position: absolute;
+            top: 0;
+            right: -3px;
+            width: 6px;
+            height: 100%;
+            cursor: col-resize;
+            z-index: 50;
+            transition: background 0.15s ease;
+        }
+
+        .resize-handle::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 2px;
+            height: 36px;
+            border-radius: 2px;
+            background: transparent;
+            transition: background 0.15s ease;
+        }
+
+        .resize-handle:hover,
+        .resize-handle.dragging {
+            background: rgba(96, 165, 250, 0.15);
+        }
+
+        .resize-handle:hover::after,
+        .resize-handle.dragging::after {
+            background: var(--accent-blue);
+        }
+
+        body.resizing {
+            cursor: col-resize !important;
+            user-select: none !important;
+        }
+
+        body.resizing * {
+            cursor: col-resize !important;
         }
 
         .panel-header {
-            padding: 12px 16px;
+            height: 48px;
+            padding: 0 16px;
             border-bottom: 1px solid var(--border-color);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            background: #08080b;
+            flex-shrink: 0;
+        }
+
+        .panel-header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .engine-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-neon);
+            box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+            flex-shrink: 0;
         }
 
         .panel-title {
             font-family: var(--font-mono);
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 700;
-            color: var(--text-muted);
+            color: var(--text-bright);
             text-transform: uppercase;
             letter-spacing: 1px;
         }
 
-        /* Live Config Toggle */
-        .toggle-wrapper {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .toggle-label {
+        .range-device-select {
+            background: #0f0f13;
+            border: 1px solid var(--border-highlight);
+            border-radius: 4px;
+            padding: 5px 10px;
+            color: #ccc;
+            font-size: 12px;
             font-family: var(--font-mono);
-            font-size: 10px;
-            color: var(--accent-crit);
-            font-weight: 700;
-            letter-spacing: 0.5px;
+            cursor: pointer;
+            outline: none;
+            transition: all 0.2s;
         }
 
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 32px;
-            height: 18px;
+        .range-device-select:hover, .range-device-select:focus {
+            border-color: #555;
+            color: #fff;
         }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background-color: var(--bg-base);
+
+        .btn-icon {
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
             border: 1px solid var(--border-highlight);
-            transition: .2s;
-            border-radius: 34px;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-family: var(--font-mono);
+            font-size: 14px;
+            transition: all 0.15s;
         }
-        .slider:before {
+
+        .btn-icon:hover {
+            border-color: #666;
+            color: #fff;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .btn-clear-term {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-family: var(--font-mono);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-clear-term:hover {
+            border-color: var(--text-muted);
+            color: var(--text-bright);
+        }
+
+        .cli-send-btn {
+            background: var(--accent-blue);
+            border: none;
+            color: #050508;
+            padding: 5px 12px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .cli-send-btn:hover {
+            background: #93c5fd;
+            box-shadow: 0 0 10px rgba(147, 197, 253, 0.4);
+        }
+
+        .cli-send-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .cli-send-btn .kbd-hint {
+            font-size: 10px;
+            opacity: 0.65;
+        }
+
+        .metric-value.dev {
+            color: var(--accent-blue);
+            font-size: 14px;
+        }
+
+        /* Canvas Error Fallback Card */
+        .canvas-error-card {
             position: absolute;
-            content: "";
-            height: 12px;
-            width: 12px;
-            left: 2px;
-            bottom: 2px;
-            background-color: var(--text-muted);
-            transition: .2s;
-            border-radius: 50%;
+            background: rgba(15, 10, 10, 0.95);
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            border-radius: 8px;
+            padding: 20px 24px;
+            max-width: 480px;
+            text-align: center;
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.8);
+            z-index: 10;
         }
-        input:checked + .slider { border-color: var(--accent-crit); }
-        input:checked + .slider:before {
-            transform: translateX(14px);
-            background-color: var(--accent-crit);
-            box-shadow: 0 0 8px var(--accent-crit);
+
+        .error-icon { font-size: 28px; margin-bottom: 8px; }
+        .error-title { font-size: 15px; font-weight: 700; color: #f87171; margin-bottom: 6px; }
+        .error-msg { font-size: 12px; color: #aaa; margin-bottom: 14px; line-height: 1.5; font-family: var(--font-mono); }
+        .btn-view-spec {
+            background: #222;
+            border: 1px solid #444;
+            color: #eee;
+            padding: 6px 14px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: var(--font-mono);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .btn-view-spec:hover { background: #333; color: #fff; }
+        .raw-spec-box {
+            margin-top: 12px;
+            padding: 10px;
+            background: #050505;
+            border: 1px solid #222;
+            border-radius: 4px;
+            color: #93c5fd;
+            font-size: 11px;
+            text-align: left;
+            max-height: 180px;
+            overflow-y: auto;
+            white-space: pre-wrap;
         }
 
         .terminal-output {
@@ -208,37 +368,187 @@
             overflow-y: auto;
             font-family: var(--font-mono);
             font-size: 12px;
-            line-height: 1.6;
+            line-height: 1.5;
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            gap: 10px;
+            background: #07070a;
         }
 
-        .terminal-output::-webkit-scrollbar { width: 4px; }
+        .terminal-output::-webkit-scrollbar { width: 5px; }
         .terminal-output::-webkit-scrollbar-track { background: transparent; }
-        .terminal-output::-webkit-scrollbar-thumb { background: var(--border-highlight); }
+        .terminal-output::-webkit-scrollbar-thumb { background: var(--border-highlight); border-radius: 3px; }
 
-        .log-entry { display: flex; flex-direction: column; gap: 4px; }
-        .log-meta { color: var(--text-muted); font-size: 10px; }
+        .log-entry {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            border-radius: 4px;
+            animation: fadeInLog 0.2s ease-out;
+        }
+
+        @keyframes fadeInLog {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .log-meta {
+            color: var(--text-muted);
+            font-size: 10px;
+            font-family: var(--font-main);
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .log-content {
+            word-break: break-word;
+            white-space: pre-wrap;
+        }
+
+        .log-entry.log-type-user {
+            border-left: 2px solid var(--accent-blue);
+            background: rgba(96, 165, 250, 0.04);
+        }
+        .log-entry.log-type-agent {
+            border-left: 2px solid var(--accent-neon);
+            background: rgba(52, 211, 153, 0.04);
+        }
+        .log-entry.log-type-agent .log-meta span:first-child {
+            color: var(--accent-neon);
+            font-weight: 600;
+        }
+        .log-entry.log-type-agent .log-content {
+            color: var(--accent-neon);
+        }
+        .log-entry.log-type-sys {
+            border-left: 2px solid var(--accent-warn);
+            background: rgba(251, 191, 36, 0.04);
+        }
+        .log-entry.log-type-crit {
+            border-left: 2px solid var(--accent-crit);
+            background: rgba(248, 113, 113, 0.06);
+        }
+
         .log-user { color: var(--text-bright); }
-        .log-agent { color: var(--accent-blue); }
-        .log-think { color: #a855f7; font-style: italic; }
+        .log-agent { color: var(--accent-neon); }
+        .log-think { color: #c084fc; font-style: italic; }
         .log-sys { color: var(--accent-warn); }
         .log-success { color: var(--accent-neon); }
 
-        .cli-input-area {
-            padding: 16px;
+        /* Scenario Presets Grid */
+        .scenario-presets {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 12px 16px;
+            background: #08080c;
             border-top: 1px solid var(--border-color);
-            background: var(--bg-base);
+            flex-shrink: 0;
+        }
+
+        .presets-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .preset-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+        }
+
+        .preset-hint {
+            font-family: var(--font-mono);
+            font-size: 9px;
+            color: #555;
+            letter-spacing: 0.5px;
+        }
+
+        .presets-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 6px;
+        }
+
+        .preset-pill {
+            background: #0e0e14;
+            border: 1px solid var(--border-highlight);
+            color: var(--text-main);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: var(--font-mono);
+            cursor: pointer;
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            text-align: left;
+        }
+
+        .preset-pill:hover {
+            border-color: var(--accent-blue);
+            color: var(--text-bright);
+            background: #141420;
+            transform: translateY(-1px);
+        }
+
+        .preset-tag {
+            font-size: 9px;
+            font-weight: 700;
+            color: var(--accent-blue);
+            opacity: 0.85;
+            letter-spacing: 0.5px;
+            flex-shrink: 0;
+        }
+
+        .preset-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Framed Input Area */
+        .cli-input-area {
+            padding: 12px 16px;
+            border-top: 1px solid var(--border-color);
+            background: #060608;
+            flex-shrink: 0;
+        }
+
+        .cli-input-box {
             display: flex;
             align-items: center;
             gap: 8px;
+            background: #0b0b0f;
+            border: 1px solid var(--border-highlight);
+            border-radius: 6px;
+            padding: 6px 10px;
+            transition: all 0.2s ease;
+        }
+
+        .cli-input-box:focus-within {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.25);
+            background: #0f0f16;
         }
 
         .cli-prompt {
             color: var(--accent-neon);
             font-family: var(--font-mono);
             font-weight: 700;
+            font-size: 13px;
+            user-select: none;
         }
 
         .cli-input {
@@ -247,11 +557,15 @@
             border: none;
             color: var(--text-bright);
             font-family: var(--font-mono);
-            font-size: 13px;
+            font-size: 12px;
             outline: none;
+            min-width: 0;
         }
         
-        .cli-input::placeholder { color: var(--text-muted); }
+        .cli-input::placeholder {
+            color: #555;
+            font-size: 11px;
+        }
 
         /* Right Panel: The Range Canvas */
         .canvas-panel {
@@ -276,34 +590,45 @@
             top: 24px;
             right: 24px;
             display: flex;
+            align-items: center;
             gap: 16px;
+            z-index: 100;
         }
 
-        .metric-box {
-            background: rgba(10, 10, 10, 0.8);
-            backdrop-filter: blur(8px);
-            border: 1px solid var(--border-color);
+        /* Fullscreen Exit Button */
+        .btn-canvas-exit-fullscreen {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            background: rgba(15, 15, 20, 0.9);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.18);
             border-radius: 4px;
-            padding: 12px 16px;
-            min-width: 120px;
+            color: #f1f5f9;
+            padding: 8px 14px;
+            font-size: 11px;
+            font-family: var(--font-main);
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
         }
 
-        .metric-label {
-            font-size: 10px;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            font-family: var(--font-mono);
-            margin-bottom: 4px;
+        .btn-canvas-exit-fullscreen:hover {
+            background: rgba(220, 38, 38, 0.2);
+            border-color: rgba(248, 113, 113, 0.5);
+            color: #fca5a5;
+            transform: translateY(-1px);
         }
 
-        .metric-value {
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--text-bright);
-            font-family: var(--font-mono);
+        :fullscreen .btn-canvas-exit-fullscreen,
+        :-webkit-full-screen .btn-canvas-exit-fullscreen,
+        .canvas-panel.is-fullscreen .btn-canvas-exit-fullscreen {
+            display: inline-flex;
         }
 
-        .metric-value.warn { color: var(--accent-warn); }
+
 
         /* Diagram Container */
         .diagram-container {
@@ -360,232 +685,116 @@
     <header class="app-header">
         <div class="header-left">
             <div class="brand">
-                <svg class="brand-logo" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
                 <span class="brand-title">CORE DEFENSE</span>
-                <span class="brand-badge">BETA</span>
             </div>
             <nav class="nav-links">
-                <a href="index.html" class="nav-link">Defense Deck</a>
-                <a href="#" class="nav-link active">Range</a>
-                <a href="#" class="nav-link">Policies</a>
+                <a href="index.html" class="nav-link">Threat Console</a>
+                <a href="#" class="nav-link active">Attack Range</a>
             </nav>
+        </div>
+        <div class="header-right">
+            <select id="deviceSelect" class="range-device-select" title="Target Firewall">
+                <option value="default">Default Firewall</option>
+            </select>
+            <button type="button" class="btn-icon" id="btnZoomIn" title="Zoom In">+</button>
+            <button type="button" class="btn-icon" id="btnZoomOut" title="Zoom Out">−</button>
+            <button type="button" class="btn-icon" id="btnZoomReset" title="Reset Zoom">⟲</button>
+            <button type="button" class="btn-icon" id="btnCanvasFullscreen" title="Toggle Fullscreen">⛶</button>
         </div>
     </header>
 
-    <main class="workspace">
+    <main class="workspace" id="workspace">
         
         <!-- Left CLI Panel -->
-        <aside class="cli-panel">
+        <aside class="cli-panel" id="cliPanel">
             <div class="panel-header">
-                <span class="panel-title">Semantic Test CLI</span>
+                <div class="panel-header-left">
+                    <span class="engine-status-dot"></span>
+                    <span class="panel-title">Breach & Attack Simulator (BAS)</span>
+                </div>
+                <button type="button" class="btn-clear-term" id="btnClearTerminal" title="Clear Terminal Logs">Clear</button>
             </div>
             
             <div class="terminal-output" id="terminal">
-                <!-- Logs injected via JS by Agent -->
+                <!-- Logs injected via JS -->
+            </div>
+
+            <!-- Quick Threat Scenarios -->
+            <div class="scenario-presets" id="scenarioPresets">
+                <div class="presets-header">
+                    <span class="preset-label">SIMULATION VECTORS</span>
+                    <span class="preset-hint">CLICK TO LOAD</span>
+                </div>
+                <div class="presets-grid">
+                    <button type="button" class="preset-pill" data-scenario="Map baseline physical topology and verify all zone interfaces.">
+                        <span class="preset-tag">[BASE]</span>
+                        <span class="preset-name">Baseline Topology</span>
+                    </button>
+                    <button type="button" class="preset-pill" data-scenario="Simulate lateral movement attack from Trust zone to DMZ web servers via port 80/443.">
+                        <span class="preset-tag">[LAT]</span>
+                        <span class="preset-name">Trust -> DMZ</span>
+                    </button>
+                    <button type="button" class="preset-pill" data-scenario="Simulate C2 beaconing and exfiltration attempt over HTTPS to untrusted external IP.">
+                        <span class="preset-tag">[C2]</span>
+                        <span class="preset-name">C2 Beaconing</span>
+                    </button>
+                    <button type="button" class="preset-pill" data-scenario="Simulate DNS tunneling exfiltration over UDP port 53 through firewall.">
+                        <span class="preset-tag">[DNS]</span>
+                        <span class="preset-name">DNS Tunneling</span>
+                    </button>
+                </div>
             </div>
 
             <form class="cli-input-area" id="cliForm">
-                <span class="cli-prompt">❯</span>
-                <input type="text" class="cli-input" id="cliInput" placeholder="Initialize threat vector..." autocomplete="off">
+                <div class="cli-input-box">
+                    <span class="cli-prompt">❯</span>
+                    <input type="text" class="cli-input" id="cliInput" placeholder="Simulate attack vector, test policy bypass, or select preset..." autocomplete="off">
+                    <button type="submit" class="cli-send-btn" id="cliSendBtn" title="Run Simulation">
+                        <span>RUN</span>
+                        <span class="kbd-hint">↵</span>
+                    </button>
+                </div>
             </form>
+
+            <!-- Drag resize handle -->
+            <div class="resize-handle" id="rangeResizeHandle" title="Drag to resize BAS sidebar"></div>
         </aside>
 
         <!-- Right Canvas Panel -->
-        <section class="canvas-panel">
-            <!-- Metrics Overlay -->
+        <section class="canvas-panel" id="canvasPanel">
+            <!-- Canvas Overlay (Fullscreen Controls) -->
             <div class="canvas-overlay">
-                <div class="metric-box">
-                    <div class="metric-label">Simulated Threats</div>
-                    <div class="metric-value" id="threatCount">0</div>
-                </div>
-                <div class="metric-box">
-                    <div class="metric-label">Topology Drops</div>
-                    <div class="metric-value warn" id="dropCount">0</div>
-                </div>
+                <button type="button" class="btn-canvas-exit-fullscreen" id="btnExitFullscreen" title="Exit Fullscreen (Esc)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                    <span>CLOSE</span>
+                </button>
             </div>
 
             <!-- Empty State -->
             <div class="empty-state" id="emptyState">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
-                <span>Awaiting Scenario Generation...</span>
+                <span>Awaiting Attack Simulation...</span>
+                <span style="font-size: 11px; opacity: 0.6;">Select an attack vector preset or specify custom bypass scenario</span>
             </div>
 
             <!-- Mermaid Diagram Container -->
             <div class="diagram-container" id="diagramContainer">
                 <div class="mermaid" id="mermaidTarget"></div>
+                <div class="canvas-error-card" id="canvasError" style="display: none;">
+                    <div class="error-icon">!</div>
+                    <div class="error-title">Diagram Render Issue</div>
+                    <div class="error-msg" id="canvasErrorMsg">Mermaid syntax issue encountered.</div>
+                    <button type="button" class="btn-view-spec" id="btnViewSpec">View Raw Topology Spec</button>
+                    <pre class="raw-spec-box" id="rawSpecBox" style="display: none;"></pre>
+                </div>
             </div>
         </section>
 
     </main>
 
-    <script>
-        // Initialize Mermaid with a dark theme that matches the UI
-        mermaid.initialize({ 
-            startOnLoad: false,
-            theme: 'base',
-            themeVariables: {
-                primaryColor: 'transparent',
-                primaryTextColor: '#E0E0E0',
-                primaryBorderColor: '#333',
-                lineColor: '#666',
-                secondaryColor: '#1A1A1A',
-                tertiaryColor: '#050505',
-                nodeBorder: '#333',
-                mainBkg: '#0A0A0A',
-                clusterBkg: 'rgba(255,255,255,0.02)',
-                clusterBorder: '#222',
-                fontSize: '13px',
-                fontFamily: 'JetBrains Mono, monospace'
-            }
-        });
-
-        // DOM Elements
-        const terminal = document.getElementById('terminal');
-        const cliForm = document.getElementById('cliForm');
-        const cliInput = document.getElementById('cliInput');
-        const diagramContainer = document.getElementById('diagramContainer');
-        const mermaidTarget = document.getElementById('mermaidTarget');
-        const emptyState = document.getElementById('emptyState');
-        
-        let commandCount = 0;
-
-        // Helper to append logs to terminal
-        function appendLog(speaker, message, styleClass) {
-            const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second:'2-digit' });
-            const entry = document.createElement('div');
-            entry.className = 'log-entry';
-            
-            let speakerPrefix = '';
-            if(speaker === 'USER') speakerPrefix = 'test_usr';
-            if(speaker === 'NEO') speakerPrefix = 'nodal_agent';
-            if(speaker === 'SYS') speakerPrefix = 'system';
-
-            entry.innerHTML = `
-                <span class="log-meta">${speakerPrefix} [${time}]</span>
-                <span class="${styleClass}">${message}</span>
-            `;
-            terminal.appendChild(entry);
-            terminal.scrollTop = terminal.scrollHeight;
-        }
-
-        cliForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const text = cliInput.value.trim();
-            if (!text) return;
-
-            // 1. User inputs command
-            appendLog('USER', text, 'log-user');
-            cliInput.value = '';
-            commandCount++;
-            
-            // Hide empty state if first command
-            if(commandCount === 1) {
-                emptyState.style.display = 'none';
-            }
-
-            // 2. Agent Backend Integration
-            try {
-                const key = sessionStorage.getItem('nodal_key') || '';
-                const response = await fetch('/api/range/simulate', {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'X-API-Key': key 
-                    },
-                    body: JSON.stringify({ message: text })
-                });
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    
-                    const chunk = decoder.decode(value, { stream: true });
-                    const lines = chunk.split('\n');
-                    
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            const data = JSON.parse(line.slice(6));
-                            
-                            if (data.type === 'status') {
-                                if (data.content.startsWith('[NEO-THINK]')) {
-                                    appendLog('NEO', data.content.replace('[NEO-THINK]', '').trim(), 'log-think');
-                                } else {
-                                    appendLog('SYS', data.content, 'log-sys');
-                                }
-                            } else if (data.type === 'response') {
-                                // Extract JSON from potential markdown blocks (robust parsing)
-                                const jsonMatch = data.content.match(/\{[\s\S]*\}/);
-                                if (jsonMatch) {
-                                    try {
-                                        const payload = JSON.parse(jsonMatch[0]);
-                                        renderAgentDiagram(payload.mermaid, payload.message, payload.threats, payload.drops);
-                                    } catch (err) {
-                                        appendLog('SYS', 'Failed to parse JSON topology payload.', 'log-sys');
-                                        console.error("JSON parse error:", err, jsonMatch[0]);
-                                    }
-                                } else {
-                                    appendLog('SYS', 'Agent returned invalid topology format.', 'log-sys');
-                                    appendLog('NEO', data.content, 'log-agent');
-                                }
-                            } else if (data.type === 'error') {
-                                appendLog('SYS', 'Error: ' + data.content, 'log-sys');
-                            }
-                        }
-                    }
-                }
-            } catch (error) {
-                appendLog('SYS', 'Connection to simulation engine failed.', 'log-sys');
-                console.error(error);
-            }
-            
-        });
-
-        // This function simulates the AI Agent generating raw Mermaid.js markdown based on context
-        // The agent will call this function with real LLM output
-        async function renderAgentDiagram(markdown, agentLogMessage, threats, drops) {
-            
-            appendLog('NEO', agentLogMessage, 'log-agent');
-            document.getElementById('threatCount').innerText = threats;
-            document.getElementById('dropCount').innerText = drops;
-
-            // Clear previous, reset state, render new diagram
-            diagramContainer.classList.remove('active');
-            
-            try {
-                // Generate a unique ID for the mermaid target
-                const id = 'graph-' + Date.now();
-                mermaidTarget.innerHTML = `<div class="mermaid" id="${id}"></div>`;
-                
-                // Render the AI's markdown into SVG
-                const { svg } = await mermaid.render(id, markdown);
-                mermaidTarget.innerHTML = svg;
-                
-                // Initialize pan/zoom
-                const svgElement = mermaidTarget.querySelector('svg');
-                if (svgElement) {
-                    svgPanZoom(svgElement, {
-                        zoomEnabled: true,
-                        controlIconsEnabled: true,
-                        fit: true,
-                        center: true,
-                        minZoom: 0.5,
-                        maxZoom: 10
-                    });
-                }
-                
-                // Reveal with animation
-                setTimeout(() => {
-                    diagramContainer.classList.add('active');
-                }, 100);
-
-            } catch (error) {
-                appendLog('SYS', 'Error rendering agent diagram payload.', 'log-sys');
-                console.error(error);
-            }
-        }
-    </script>
+    <script src="range.js?v=2.6"></script>
 </body>
 </html>

@@ -1,12 +1,6 @@
 """
 PII Scrubbing Layer
-
-Activated via SCRUB_PII=true in .env. Runs on tool OUTPUT before injection
-into LLM context. Masks IPs, serials, and usernames with deterministic tokens
-so the LLM can still correlate entities across tool calls.
-
-Design: Same real value always maps to the same token via SHA-256 prefix.
-e.g., "10.0.0.1" → "[IP_a1b2c3]" consistently across all tool outputs.
+Masks sensitive IPs and serials while preserving standard infrastructure constants (M2).
 """
 import os
 import re
@@ -15,50 +9,69 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# SECURITY: Enable PII scrubbing by default to prevent leaking IPs/Serials to LLM providers
+__all__ = ["scrub"]
+
 SCRUB_PII = os.getenv("SCRUB_PII", "true").lower() == "true"
 
-if not SCRUB_PII:
-    logger.warning("[SCRUBBER] ⚠️ PII Scrubbing is DISABLED. Sensitive data will be sent to the LLM in plaintext.")
+# Allowlist standard non-sensitive network constants to keep route tables readable (M2)
+STANDARD_EXCLUSIONS = {
+    "0.0.0.0",
+    "127.0.0.1",
+    "255.255.255.255",
+    "8.8.8.8",
+    "8.8.4.4",
+    "1.1.1.1",
+    "1.0.0.1",
+}
 
 
 def _deterministic_token(value: str, prefix: str = "ENTITY") -> str:
-    """
-    Generates a consistent token for the same input value.
-    Same IP always maps to same token — preserves cross-tool correlation.
-    """
     short_hash = hashlib.sha256(value.encode()).hexdigest()[:6]
     return f"[{prefix}_{short_hash}]"
 
 
+def _is_valid_ipv4(ip_str: str) -> bool:
+    """Validate 4-octet IPv4 range 0-255."""
+    parts = ip_str.split('.')
+    if len(parts) != 4:
+        return False
+    for p in parts:
+        if not p.isdigit() or not (0 <= int(p) <= 255):
+            return False
+        if len(p) > 1 and p.startswith('0'):
+            return False
+    return True
+
+
 def scrub(text: str) -> str:
     """
-    Masks PII patterns in tool output. No-op when SCRUB_PII is disabled.
-    
-    Patterns masked:
-    - IPv4 addresses (preserves /CIDR suffix)
-    - Serial numbers (skips already-masked {{SERIAL_*}} format)
+    Masks PII patterns in tool output.
+    Preserves default routes and DNS constants from over-masking (M2).
     """
     if not SCRUB_PII:
         return text
-    
+
     if not isinstance(text, str):
         text = str(text)
-    
-    # IPv4 addresses (with optional CIDR)
+
     def _replace_ip(match):
         full = match.group(0)
+        raw_ip = full.split('/', 1)[0] if '/' in full else full
+
+        if not _is_valid_ipv4(raw_ip) or raw_ip in STANDARD_EXCLUSIONS:
+            return full
+
         if '/' in full:
             ip, cidr = full.split('/', 1)
             return _deterministic_token(ip, "IP") + '/' + cidr
         return _deterministic_token(full, "IP")
-    
+
     text = re.sub(
         r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?\b',
         _replace_ip,
         text
     )
-    
+
     # Serial numbers (skip already-masked {{SERIAL_*}} format)
     text = re.sub(
         r'(?<!\{\{)(?:serial(?:[ -]?number)?[:\s]+)([A-Z0-9]{10,})\b',
@@ -66,9 +79,5 @@ def scrub(text: str) -> str:
         text,
         flags=re.IGNORECASE
     )
-    
-    scrub_count = text.count("[IP_") + text.count("[SN_")
-    if scrub_count > 0:
-        logger.info(f"[SCRUB] Masked {scrub_count} PII tokens in tool output.")
-    
+
     return text

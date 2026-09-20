@@ -8,15 +8,44 @@ set -e
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 GREEN='\033[0;32m'
+RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${CYAN}======================================================${NC}"
 echo -e "${CYAN} CORE DEFENSE — Local Vault Setup Wizard${NC}"
 echo -e "${CYAN}======================================================${NC}\n"
 
+# Pre-flight: Check Docker availability
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}[ERROR] Docker CLI not found. Please install Docker.${NC}"
+    exit 1
+fi
+
+if ! docker info > /dev/null 2>&1; then
+    echo -e "${RED}[ERROR] Docker daemon is not running. Please start Docker and retry.${NC}"
+    exit 1
+fi
+
 echo -e "${YELLOW}Starting Vault via Docker Compose...${NC}"
 docker compose up -d vault
-sleep 4
+
+echo -e "${YELLOW}Waiting for Vault to become ready...${NC}"
+MAX_WAIT=30
+WAITED=0
+READY=false
+while [ $WAITED -lt $MAX_WAIT ]; do
+    if docker compose exec -T -e VAULT_TOKEN=root vault vault status >/dev/null 2>&1; then
+        READY=true
+        break
+    fi
+    sleep 1
+    WAITED=$((WAITED + 1))
+done
+
+if [ "$READY" = false ]; then
+    echo -e "${RED}[ERROR] Vault failed to become healthy within ${MAX_WAIT} seconds.${NC}"
+    exit 1
+fi
 
 echo -e "${YELLOW}Configuring AppRole authentication...${NC}"
 docker compose exec -T -e VAULT_TOKEN=root vault vault auth enable approle 2>/dev/null || true
@@ -40,7 +69,7 @@ SECRET_ID=$(docker compose exec -T -e VAULT_TOKEN=root vault vault write -f -fie
 
 clear
 echo -e "${GREEN}======================================================${NC}"
-echo -e "${GREEN}✓ CORE DEFENSE LOCAL VAULT PROVISIONED SUCCESSFULLY${NC}"
+echo -e "${GREEN}[OK] CORE DEFENSE LOCAL VAULT PROVISIONED SUCCESSFULLY${NC}"
 echo -e "${GREEN}======================================================${NC}"
 echo -e "Your local Vault is running at: http://127.0.0.1:8200"
 echo -e "You can log into the Vault UI using the token: root\n"

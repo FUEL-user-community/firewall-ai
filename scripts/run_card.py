@@ -30,15 +30,15 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 
 
 def list_cards():
-    """Print all available card definitions."""
+    """Print all available inspection playbook definitions."""
     from core.engine.card_runner import CardRunner
     cards = CardRunner.load_cards()
 
-    print(f"\n{'═' * 70}")
-    print(f"  CORE DEFENSE — Card Registry ({len(cards)} cards)")
-    print(f"{'═' * 70}\n")
-    print(f"  {'ID':<8} {'KEY':<30} {'SCHEDULE':<12} {'SEVERITY':<10}")
-    print(f"  {'─' * 8} {'─' * 30} {'─' * 12} {'─' * 10}")
+    print(f"\n{'=' * 70}")
+    print(f"  CORE DEFENSE -- Autonomous Inspection Registry ({len(cards)} playbooks)")
+    print(f"{'=' * 70}\n")
+    print(f"  {'ID':<8} {'PLAYBOOK KEY':<30} {'CYCLE':<12} {'SEVERITY':<10}")
+    print(f"  {'-' * 8} {'-' * 30} {'-' * 12} {'-' * 10}")
 
     for key, card in cards.items():
         card_id = card.get("id", "?")
@@ -46,8 +46,8 @@ def list_cards():
         severity = card.get("severity", "normal")
         print(f"  {card_id:<8} {key:<30} {schedule:<12} {severity:<10}")
 
-    print(f"\n  Run a card:  python scripts/run_card.py <card_key>")
-    print(f"  Example:     python scripts/run_card.py operational_resilience\n")
+    print(f"\n  Execute playbook: python scripts/run_card.py <playbook_key>")
+    print(f"  Example:          python scripts/run_card.py operational_resilience\n")
 
 
 def find_card_key(identifier: str) -> str:
@@ -67,78 +67,91 @@ def find_card_key(identifier: str) -> str:
     return None
 
 
-def run_card(card_key: str):
+def run_card(card_key: str, device: str = "default"):
     """Execute a single card and pretty-print the result."""
     from core.engine.card_runner import CardRunner
 
     runner = CardRunner()
     card_def = runner.get_card_def(card_key)
+    if not card_def:
+        print(f"\n  [ERROR] Card definition for '{card_key}' not found.\n")
+        return None
     card_id = card_def.get("id", card_key)
     card_name = card_def.get("name", card_key)
     tools = card_def.get("tool_chain") or []
 
-    print(f"\n{'═' * 70}")
-    print(f"  ▶ Running: {card_id} — {card_name}")
-    print(f"  Tools: {', '.join(tools) if tools else '(none — LLM reasoning only)'}")
-    print(f"{'═' * 70}\n")
+    print(f"\n{'=' * 70}")
+    print(f"  > Running: {card_id} -- {card_name} [Device: {device}]")
+    print(f"  Tools: {', '.join(tools) if tools else '(none -- LLM reasoning only)'}")
+    print(f"{'=' * 70}\n")
 
     start = time.time()
-    result = runner.execute(card_key)
+    result = runner.execute(card_key, device=device)
     elapsed = time.time() - start
 
     if result:
         sev = result.severity.upper()
-        sev_icon = {"CRITICAL": "🔴", "CAUTION": "🟡", "NORMAL": "🟢"}.get(sev, "⚪")
+        sev_icon = {"CRITICAL": "[CRITICAL]", "CAUTION": "[CAUTION]", "NORMAL": "[NORMAL]"}.get(sev, "[INFO]")
 
         # Trust score indicator
         ts = result.trust_score
-        if ts >= 0.7:
-            trust_icon = "🟢"
-        elif ts >= 0.5:
-            trust_icon = "🟡"
-        else:
-            trust_icon = "🔴"
+        trust_icon = "[OK]" if ts >= 0.7 else "[WARN]" if ts >= 0.5 else "[FAIL]"
 
         print(f"  {sev_icon} Severity: {sev}")
         print(f"  {trust_icon} Trust Score: {ts:.0%}")
-        print(f"  📋 Title: {result.title}")
-        print(f"  ⏱  Elapsed: {elapsed:.1f}s")
+
+        # Confidence margin (from hardened logprob extraction)
+        if result.confidence_margin is not None:
+            margin = result.confidence_margin
+            conf_icon = "[HIGH]" if margin >= 0.50 else "[MED]" if margin >= 0.20 else "[LOW]"
+            print(f"  {conf_icon} Confidence Margin: {margin:.1%} (Internal LLM Certainty)")
+
+        # Audit score (from Debate Protocol)
+        if result.audit_result and "audit_score" in result.audit_result:
+            ascore = result.audit_result.get("audit_score", 1.0)
+            audit_icon = "[PASS]" if ascore >= 0.8 else "[WARN]" if ascore >= 0.5 else "[FAIL]"
+            print(f"  {audit_icon} Audit Score: {ascore:.0%} (Debate Protocol)")
+
+        print(f"  Title: {result.title}")
+        print(f"  Elapsed: {elapsed:.1f}s")
 
         # Reasoning trace (thought chain forensics)
         if result.reasoning_trace:
-            print(f"\n  🧠 Reasoning Trace ({len(result.reasoning_trace)} steps):")
-            print(f"  {'─' * 60}")
+            print(f"\n  Reasoning Trace ({len(result.reasoning_trace)} steps):")
+            print(f"  {'-' * 60}")
             for i, step in enumerate(result.reasoning_trace, 1):
                 print(f"    {i}. {step}")
 
         print(f"\n  Finding:")
-        print(f"  {'─' * 60}")
+        print(f"  {'-' * 60}")
         for line in result.finding.split('\n'):
             print(f"    {line}")
 
         if result.evidence:
             print(f"\n  Evidence ({len(result.evidence)} items):")
-            print(f"  {'─' * 60}")
+            print(f"  {'-' * 60}")
             for e in result.evidence:
-                print(f"    • {e}")
+                print(f"    * {e}")
 
         if result.metrics:
             print(f"\n  Metrics:")
-            print(f"  {'─' * 60}")
+            print(f"  {'-' * 60}")
             for k, v in result.metrics.items():
                 print(f"    {k}: {v}")
 
         # Trust warning
         if ts < 0.7:
-            print(f"\n  ⚠️  TRUST WARNING: {int((1-ts)*100)}% of evidence claims could not be verified")
+            print(f"\n  [!] TRUST WARNING: {int((1-ts)*100)}% of evidence claims could not be verified")
             print(f"      against raw tool output. Review findings manually.")
 
         print(f"\n  Full JSON:")
-        print(f"  {'─' * 60}")
+        print(f"  {'-' * 60}")
         full = {
             "card_id": result.card_id,
             "severity": result.severity,
             "trust_score": result.trust_score,
+            "confidence_margin": result.confidence_margin,
+            "audit_result": result.audit_result,
             "title": result.title,
             "finding": result.finding,
             "reasoning_trace": result.reasoning_trace,
@@ -147,57 +160,62 @@ def run_card(card_key: str):
         }
         print(json.dumps(full, indent=2))
     else:
-        print(f"  ⚪ Not triggered (no alert condition met) or deduplicated.")
-        print(f"  ⏱  Elapsed: {elapsed:.1f}s")
+        print(f"  [-] Not triggered (no alert condition met) or deduplicated.")
+        print(f"  Elapsed: {elapsed:.1f}s")
 
     print()
+    return result
 
 
-def run_all():
+def run_all(device: str = "default"):
     """Run every card once, sequentially."""
     from core.engine.card_runner import CardRunner
     cards = CardRunner.load_cards()
 
-    print(f"\n{'═' * 70}")
-    print(f"  Running ALL {len(cards)} cards...")
-    print(f"{'═' * 70}\n")
+    print(f"\n{'=' * 70}")
+    print(f"  Running ALL {len(cards)} cards on device: {device}...")
+    print(f"{'=' * 70}\n")
 
+    executed = 0
     triggered = 0
     failed = 0
     for key in cards:
         try:
-            run_card(key)
-            triggered += 1
+            res = run_card(key, device=device)
+            executed += 1
+            if res:
+                triggered += 1
         except Exception as e:
             print(f"\n  [ERROR] Card '{key}' failed: {e}\n")
             failed += 1
 
-    print(f"\n  Done — {triggered} cards executed, {failed} failed.\n")
+    print(f"\n  Done — {executed} cards executed ({triggered} triggered alerts), {failed} failed.\n")
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
-        print(__doc__)
-        return
+    import argparse
+    parser = argparse.ArgumentParser(description="One-Shot Card Runner CLI for Core Defense")
+    parser.add_argument("card", nargs="?", default=None, help="Card key, card ID (e.g. SY-09), or 'all'")
+    parser.add_argument("--list", action="store_true", help="Show all available cards")
+    parser.add_argument("--device", default="default", help="Target firewall device name from devices.yaml (default: 'default')")
 
-    arg = sys.argv[1]
+    args = parser.parse_args()
 
-    if arg == "--list":
+    if args.list or not args.card:
         list_cards()
         return
 
-    if arg == "all":
-        run_all()
+    if args.card == "all":
+        run_all(device=args.device)
         return
 
-    # Resolve card key
-    card_key = find_card_key(arg)
+    card_key = find_card_key(args.card)
     if not card_key:
-        print(f"\n  x Card '{arg}' not found.\n")
+        print(f"\n  x Card '{args.card}' not found.\n")
         list_cards()
         return
 
-    run_card(card_key)
+    run_card(card_key, device=args.device)
 
 
 if __name__ == "__main__":

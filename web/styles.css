@@ -1364,3 +1364,266 @@ html, body {
 .drift-raw {
     color: #555;
 }
+
+/* ═══════════════════════════════════════════════════════
+   SOC Toolbar, Device Chips & Toast Notifications
+   ═══════════════════════════════════════════════════════ */
+
+.filter-pills {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.deck-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.search-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.search-icon {
+    position: absolute;
+    left: 10px;
+    color: #666;
+    pointer-events: none;
+}
+
+.search-input {
+    background: #0f0f13;
+    border: 1px solid #222;
+    border-radius: 4px;
+    padding: 6px 28px 6px 30px;
+    color: #e0e0e0;
+    font-size: 12px;
+    font-family: inherit;
+    width: 220px;
+    transition: all 0.2s ease;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: #60a5fa;
+    width: 260px;
+    background: #08080c;
+}
+
+.search-shortcut {
+    position: absolute;
+    right: 8px;
+    font-size: 10px;
+    color: #555;
+    background: #1a1a24;
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: 'JetBrains Mono', monospace;
+    pointer-events: none;
+}
+
+.filter-select {
+    background: #0f0f13;
+    border: 1px solid #222;
+    border-radius: 4px;
+    padding: 6px 10px;
+    color: #aaa;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    outline: none;
+    transition: all 0.2s ease;
+}
+
+.filter-select:hover, .filter-select:focus {
+    border-color: #444;
+    color: #fff;
+}
+
+/* ── Card Device & Trust Badges ── */
+.card-device-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.2);
+    color: #93c5fd;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.3px;
+}
+
+.card-trust-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(52, 211, 153, 0.08);
+    border: 1px solid rgba(52, 211, 153, 0.2);
+    color: #6ee7b7;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* ── Card Reasoning Trace ── */
+.card-reasoning {
+    margin: 8px 18px 0;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.2);
+}
+
+.card-reasoning summary {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: #888;
+    cursor: pointer;
+    user-select: none;
+}
+
+.card-reasoning summary:hover { color: #ccc; }
+
+.reasoning-list {
+    padding: 6px 16px 10px 28px;
+    font-size: 11px;
+    color: #999;
+    line-height: 1.6;
+}
+
+/* ── Chat Card Context Banner ── */
+.chat-card-context {
+    padding: 8px 16px;
+    background: rgba(96, 165, 250, 0.08);
+    border-top: 1px solid rgba(96, 165, 250, 0.2);
+    border-bottom: 1px solid rgba(96, 165, 250, 0.1);
+}
+
+.context-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #bfdbfe;
+}
+
+.context-title {
+    flex: 1;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.btn-detach-context {
+    background: transparent;
+    border: none;
+    color: #93c5fd;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    line-height: 1;
+    transition: color 0.15s;
+}
+
+.btn-detach-context:hover { color: #fff; }
+
+/* ── Glassmorphic Toast Notifications ── */
+.toast-container {
+    position: fixed;
+    top: 64px;
+    right: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 3000;
+    pointer-events: none;
+}
+
+.soc-toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-radius: 6px;
+    background: rgba(15, 15, 20, 0.92);
+    backdrop-filter: blur(12px);
+    border: 1px solid #333;
+    color: #eee;
+    font-size: 13px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    animation: toastEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: all 0.25s ease;
+    max-width: 380px;
+}
+
+.soc-toast.toast-exit {
+    opacity: 0;
+    transform: translateX(30px);
+}
+
+.soc-toast.toast-success { border-color: rgba(52, 211, 153, 0.4); color: #a7f3d0; }
+.soc-toast.toast-error { border-color: rgba(248, 113, 113, 0.4); color: #fca5a5; }
+.soc-toast.toast-warning { border-color: rgba(251, 191, 36, 0.4); color: #fde68a; }
+.soc-toast.toast-info { border-color: rgba(96, 165, 250, 0.4); color: #bfdbfe; }
+.toast-icon { font-weight: bold; font-size: 14px; }
+.toast-message { flex: 1; line-height: 1.4; }
+.toast-close {
+    background: transparent;
+    border: none;
+    color: inherit;
+    opacity: 0.6;
+    cursor: pointer;
+    font-size: 14px;
+}
+.toast-close:hover { opacity: 1; }
+
+/* ── Interactive Schedule Modal ── */
+.schedule-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.modal-subtitle {
+    font-size: 12px;
+    color: #666;
+    margin-top: 2px;
+}
+
+.btn-run-card {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    border-radius: 4px;
+    border: 1px solid #333;
+    background: #111;
+    color: #60a5fa;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-run-card:hover {
+    background: #1a2234;
+    border-color: #60a5fa;
+    color: #93c5fd;
+}
+
+.btn-run-card:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    border-color: #333;
+    color: #666;
+}

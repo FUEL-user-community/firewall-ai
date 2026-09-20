@@ -96,7 +96,11 @@ class ToolKeeper:
                     return f"Input Validation Error: {ve}"
                 except Exception as e:
                     return f"Error: {e}"
-            
+
+            tool_func.__name__ = str(tool_id)
+            tool_func.__doc__ = str(desc or f"Execute PAN-OS command: {cmd}")
+            return tool_func
+
         return None
 
     def get_tools(self, active_tray="#core"):
@@ -121,13 +125,14 @@ class ToolKeeper:
         except Exception as e:
             logger.debug(f"[TOOLS] Live research not available: {e}")
         
-        # Rule 3: Security Policy Math
+        # Rule 3: Security Policy & Forwarding Math
         try:
-            from core.panos.ops import test_security_policy, test_nat_policy
+            from core.panos.ops import test_security_policy, test_nat_policy, test_routing_fib
             tools.append(test_security_policy)
             tools.append(test_nat_policy)
+            tools.append(test_routing_fib)
         except Exception as e:
-            logger.warning(f"[TOOLS] Policy Math Init Error: {e}")
+            logger.warning(f"[TOOLS] Policy/Routing Math Init Error: {e}")
 
         # Rule 4: Fleet Inventory
         try:
@@ -154,7 +159,7 @@ class ToolKeeper:
             logger.warning(f"[TOOLS] Drive Knowledge Base Init Error: {e}")
 
 
-        # Rule 3: Scan YAML Registry
+        # Rule 7: Scan YAML Registry
         for tool_id, details in self.commands.items():
             if not isinstance(details, dict): continue
             
@@ -168,5 +173,58 @@ class ToolKeeper:
                     
         # Verification Log
         logger.info(f"[TOOLS] Loaded Tray '{active_tray}': {len(tools)} tools.")
+        return tools
+
+    def get_all_tools(self):
+        """
+        Fetches the complete tool catalog across all trays and categories.
+        Includes all native Python tools + all YAML commands and macros without tray filtering.
+        Used by the Autonomous Inspection Engine (CardRunner) to guarantee full tool availability.
+        """
+        tools = []
+        tools.append(summon_toolkit)
+
+        try:
+            from core.panos.research import search_live_docs
+            tools.append(search_live_docs)
+        except Exception as e:
+            logger.debug(f"[TOOLS] Live research not available: {e}")
+
+        try:
+            from core.panos.ops import test_security_policy, test_nat_policy, test_routing_fib
+            tools.append(test_security_policy)
+            tools.append(test_nat_policy)
+            tools.append(test_routing_fib)
+        except Exception as e:
+            logger.warning(f"[TOOLS] Policy/Routing Math Init Error: {e}")
+
+        try:
+            from core.panos.ops import get_device_inventory
+            tools.append(get_device_inventory)
+        except Exception as e:
+            logger.warning(f"[TOOLS] Device Inventory Init Error: {e}")
+
+        try:
+            from core.panos.config import get_live_config
+            from core.panos.logs import execute_log_query
+            tools.append(get_live_config)
+            tools.append(execute_log_query)
+        except Exception as e:
+            logger.warning(f"[TOOLS] Config/Log Tools Init Error: {e}")
+
+        try:
+            from core.integrations.drive_knowledge import query_knowledge_base
+            tools.append(query_knowledge_base)
+        except Exception as e:
+            logger.warning(f"[TOOLS] Drive Knowledge Base Init Error: {e}")
+
+        # Scan full YAML Registry (unfiltered)
+        for tool_id, details in self.commands.items():
+            if not isinstance(details, dict): continue
+            func = self._create_function(tool_id, details)
+            if func:
+                tools.append(func)
+
+        logger.info(f"[TOOLS] Loaded full tool catalog: {len(tools)} tools.")
         return tools
 

@@ -37,8 +37,14 @@ _legacy/
 
 # OS
 .DS_Store
-Thumbs.db
-
 !core_defense/config/*.json
 
 !certification_report.json
+
+# Internal Audit & Polish Review Notes (Keep local)
+*_review.md
+*_audit.md
+
+# Landing Site (Deployed separately)
+landing_site/
+

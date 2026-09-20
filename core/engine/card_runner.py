@@ -9,17 +9,34 @@ Flow: Load card → Execute tool chain → LLM synthesis → Trigger evaluation
 """
 
 import os
+import re
 import json
 import yaml
 import time
 import inspect
 import logging
 import warnings
+import threading
+import ipaddress
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        genai = None
+
 from core.engine.card_store import CardStore, CardResult
 from core.engine.baseline import BaselineEngine
+from core.pipeline.model_config import (
+    GEMINI_MODEL,
+    TEMP_DEFAULT,
+    EMBEDDING_MODEL,
+    EMBEDDING_DIMENSIONS,
+    get_card_generation_config,
+)
 
 # Fail-soft imports — mirrors brain.py pattern
 try:
@@ -49,8 +66,14 @@ logger = logging.getLogger(__name__)
 # Severity ranking for max() comparison
 _SEVERITY_RANK = {"normal": 0, "caution": 1, "critical": 2}
 
-# Cards YAML path
+# Path to cards definition file
 _CARDS_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "cards.yaml"
+
+# Path to devices fleet definition file
+_DEVICES_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "devices.yaml"
+
+# Shared tool config disabling function calling during card synthesis
+NO_TOOLS_CONFIG = {'function_calling_config': {'mode': 'NONE'}}
 
 
 class CardRunner:
@@ -63,6 +86,8 @@ class CardRunner:
 
     _cards_cache: Optional[Dict] = None
     _cards_mtime: float = 0
+    _cards_lock = threading.Lock()
+    _genai_configured = False
 
     def __init__(self):
         self.store = CardStore.get_instance()
@@ -87,37 +112,69 @@ class CardRunner:
         # Cache ToolKeeper and tool map (avoid re-reading commands.yaml per-card)
         self._tool_map = None
 
+    def _validate_device(self, device: Optional[str]) -> Optional[str]:
+        """
+        Validates target device name against known devices from devices.yaml (C1).
+        Rejects special characters to prevent XML injection into PAN-OS commands.
+        """
+        if not device or device == "default":
+            return None
+
+        # Sanitize characters: allow only alphanumeric, underscores, hyphens
+        if not re.match(r"^[a-zA-Z0-9_-]+$", device):
+            raise ValueError(f"[CardRunner] Invalid device alias format: '{device}'")
+
+        # If devices.yaml exists, verify device alias is declared
+        if _DEVICES_PATH.exists():
+            try:
+                with open(_DEVICES_PATH, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                known_devices = data.get("firewalls", {})
+                if known_devices and device not in known_devices:
+                    raise ValueError(
+                        f"[CardRunner] Device '{device}' not found in devices.yaml. "
+                        f"Configured devices: {list(known_devices.keys())}"
+                    )
+            except ValueError:
+                raise
+            except Exception as e:
+                logger.warning(f"[CardRunner] Could not load devices.yaml for validation: {e}")
+
+        return device
+
     def _init_model(self):
         """Initialize the Gemini model once for reuse across all card executions."""
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                import google.generativeai as genai
+        if genai is None:
+            logger.error("[CardRunner] google-generativeai package not available")
+            return None
 
+        try:
             from core.integrations.secrets import get_secret
             api_key = get_secret('gemini_api_key')
-            genai.configure(api_key=api_key)
+            if not CardRunner._genai_configured:
+                genai.configure(api_key=api_key)
+                CardRunner._genai_configured = True
 
             model = genai.GenerativeModel(
-                model_name=os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
+                model_name=GEMINI_MODEL,
                 system_instruction=(
                     "You are a cybersecurity analysis engine. You receive PAN-OS firewall "
                     "telemetry and produce structured JSON assessments. Be precise, cite evidence, "
                     "and never fabricate data. Respond ONLY with valid JSON."
                 )
             )
-            logger.info("[CardRunner] Gemini model initialized")
+            logger.info(f"[CardRunner] Gemini model initialized ({GEMINI_MODEL})")
             return model
         except Exception as e:
             logger.error(f"[CardRunner] Model init failed (will retry per-card): {e}")
             return None
 
     def _get_tool_map(self) -> Dict:
-        """Lazy-load and cache the tool map from ToolKeeper."""
+        """Lazy-load and cache the complete tool map from ToolKeeper across all categories."""
         if self._tool_map is None:
             from core.pipeline.tool_keeper import ToolKeeper
             keeper = ToolKeeper()
-            all_tools = keeper.get_tools("#core")
+            all_tools = keeper.get_all_tools()
             self._tool_map = {t.__name__: t for t in all_tools}
         return self._tool_map
 
@@ -125,26 +182,27 @@ class CardRunner:
     def load_cards(cls) -> Dict:
         """
         Load and cache card definitions from cards.yaml.
-        Hot-reloads if the file has changed (same pattern as fleet context).
+        Hot-reloads if the file has changed. Thread-safe via class lock.
         """
         if not _CARDS_PATH.exists():
             logger.warning(f"[CardRunner] cards.yaml not found at {_CARDS_PATH}")
             return {}
 
-        mtime = _CARDS_PATH.stat().st_mtime
-        if cls._cards_cache is not None and mtime == cls._cards_mtime:
-            return cls._cards_cache
+        with cls._cards_lock:
+            try:
+                mtime = _CARDS_PATH.stat().st_mtime
+                if cls._cards_cache is not None and mtime == cls._cards_mtime:
+                    return cls._cards_cache
 
-        try:
-            with open(_CARDS_PATH, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            cls._cards_cache = data.get("cards", {})
-            cls._cards_mtime = mtime
-            logger.info(f"[CardRunner] Loaded {len(cls._cards_cache)} card definitions")
-            return cls._cards_cache
-        except Exception as e:
-            logger.error(f"[CardRunner] Failed to load cards.yaml: {e}")
-            return cls._cards_cache or {}
+                with open(_CARDS_PATH, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                cls._cards_cache = data.get("cards", {})
+                cls._cards_mtime = mtime
+                logger.info(f"[CardRunner] Loaded {len(cls._cards_cache)} card definitions")
+                return cls._cards_cache
+            except Exception as e:
+                logger.error(f"[CardRunner] Failed to load cards.yaml: {e}")
+                return cls._cards_cache or {}
 
     def get_card_def(self, card_key: str) -> Optional[Dict]:
         """Get a single card definition by key."""
@@ -168,7 +226,7 @@ class CardRunner:
         6. Compare against baseline
         7. Store result
 
-        Returns CardResult or None if skipped (muted/dedup/error).
+        Returns CardResult or None if skipped (muted/dedup/error/budget).
         """
         card_def = self.get_card_def(card_key)
         if not card_def:
@@ -177,6 +235,13 @@ class CardRunner:
 
         card_id = card_def.get("id", card_key)
         card_name = card_def.get("name", card_key)
+
+        # Validate target device early
+        try:
+            device = self._validate_device(device) or "default"
+        except ValueError as ve:
+            logger.error(f"[CardRunner] {card_id} aborted — invalid device: {ve}")
+            return None
 
         # Check mute
         if self.store.is_muted(card_key):
@@ -195,7 +260,11 @@ class CardRunner:
             tool_outputs = self._run_tool_chain(card_def, device)
 
             # Step 2: LLM synthesis
-            structured = self._synthesize(card_def, tool_outputs)
+            try:
+                structured = self._synthesize(card_def, tool_outputs)
+            except BudgetExceededError as be:
+                logger.warning(f"[CardRunner] {card_id} halted due to budget exceedance: {be}")
+                return None
 
             if not structured:
                 logger.warning(f"[CardRunner] {card_id} — LLM synthesis returned no structured output")
@@ -203,8 +272,9 @@ class CardRunner:
 
             # Step 3: Baseline comparison (escalate only)
             metrics = structured.get("metrics", {})
+            baseline_key = f"{device}:{card_id}" if device and device != "default" else card_id
             if metrics:
-                drift = self.baseline.compare(card_id, metrics)
+                drift = self.baseline.compare(baseline_key, metrics)
                 if drift.has_drift:
                     # Escalate severity if baseline says so
                     current_rank = _SEVERITY_RANK.get(structured.get("severity", "normal"), 0)
@@ -215,7 +285,7 @@ class CardRunner:
                         logger.info(f"[CardRunner] {card_id} severity escalated by baseline: {drift.drift_severity}")
 
                 # Record current metrics for future baseline
-                self.baseline.record(card_id, metrics)
+                self.baseline.record(baseline_key, metrics)
 
             # Step 4: Build CardResult
             # Safety enforcement: ALL WRITE tool actions require approval
@@ -276,9 +346,9 @@ class CardRunner:
             if embedding:
                 result.reasoning_embedding = embedding
                 # Record for future baseline comparisons
-                self.baseline.record_embedding(card_id, embedding)
+                self.baseline.record_embedding(baseline_key, embedding)
                 # Compare against historical baseline
-                drift = self.baseline.compare_embedding(card_id, embedding)
+                drift = self.baseline.compare_embedding(baseline_key, embedding)
                 if drift.has_drift:
                     current_rank = _SEVERITY_RANK.get(result.severity, 0)
                     drift_rank = _SEVERITY_RANK.get(drift.drift_severity, 0)
@@ -312,41 +382,60 @@ class CardRunner:
             logger.error(f"[CardRunner] ✗ {card_id} failed after {elapsed:.1f}s: {e}")
             return None
 
-    def _resolve_identities(self, tool_outputs: List[Dict], device: str) -> List[Dict]:
+    def _resolve_identities(self, tool_outputs: List[Dict], device: Optional[str]) -> List[Dict]:
         """
-        Extracts IPv4 addresses from tool outputs and automatically resolves 
-        User-ID context via PAN-OS, appending it as a hidden tool output.
+        Extracts valid IPv4 addresses from tool outputs and resolves User-ID
+        context via PAN-OS, returning an augmented copy of tool outputs.
+
+        Validates all IPs with ipaddress to prevent invalid IPs (C2).
+        Validates target_device to prevent XML injection (C1).
+        Preserves caller's input list immutability (M1).
         """
-        import re
         try:
             from core.panos.ops import execute_operational_command
         except ImportError:
             return tool_outputs
-            
+
+        # Validate target device parameter
+        try:
+            validated_device = self._validate_device(device)
+        except ValueError as ve:
+            logger.warning(f"[IdentityMiddleware] Device validation failed: {ve}")
+            return tool_outputs
+
         ip_pattern = re.compile(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b')
-        found_ips = set()
-        
+        valid_ips = set()
+
         for t in tool_outputs:
             raw_text = t.get("output", "")
-            # Fragile #4 Fix: Strip XML tags and attributes before scanning for IPs
-            # This prevents matching <entry ip="10.0.0.1"> or PAN-OS version numbers in XML.
+            # Strip XML tags and attributes before scanning for IPs
             clean_text = re.sub(r'<[^>]+>', ' ', raw_text)
-            found_ips.update(ip_pattern.findall(clean_text))
-        
-        # Ignore common non-user IPs (localhost, multicast, etc.)
-        ignore_prefixes = ("0.", "127.", "169.254.", "224.", "239.", "255.")
-        valid_ips = set(ip for ip in found_ips if not ip.startswith(ignore_prefixes))
-        
+            for candidate in ip_pattern.findall(clean_text):
+                try:
+                    ip_obj = ipaddress.IPv4Address(candidate)
+                    # Filter loopback, multicast, link-local, unspecified, and reserved.
+                    # Note: RFC1918 private IPs are intentionally KEPT for enterprise User-ID resolution (M2).
+                    if not (
+                        ip_obj.is_loopback
+                        or ip_obj.is_multicast
+                        or ip_obj.is_link_local
+                        or ip_obj.is_unspecified
+                        or ip_obj.is_reserved
+                    ):
+                        valid_ips.add(str(ip_obj))
+                except ValueError:
+                    # Invalid octet (e.g. 999.999.999.999 or version numbers)
+                    continue
+
         if not valid_ips:
             return tool_outputs
-            
+
         resolved_info = []
-        
-        # Fragile #1 Fix: Single batch API call instead of up to 10 sequential calls.
+
         try:
             cmd = "<show><user><ip-user-mapping><all/></ip-user-mapping></user></show>"
-            uid_xml = execute_operational_command(cmd, target_device=device if device != "default" else None)
-            
+            uid_xml = execute_operational_command(cmd, target_device=validated_device)
+
             # Simple parser to map IPs to Users from the full table
             mapping = {}
             entries = re.findall(r'<entry[^>]*>(.*?)</entry>', str(uid_xml), re.DOTALL)
@@ -355,22 +444,24 @@ class CardRunner:
                 user_match = re.search(r'<user>(.*?)</user>', entry)
                 if ip_match and user_match:
                     mapping[ip_match.group(1)] = user_match.group(1)
-            
-            for ip in valid_ips:
+
+            for ip in sorted(valid_ips):
                 if ip in mapping:
                     resolved_info.append(f"Entity Resolution: IP {ip} belongs to User '{mapping[ip]}'")
-                    
+
         except Exception as e:
             logger.debug(f"[IdentityMiddleware] Batch User-ID lookup failed: {e}")
-                
+
+        # Return a fresh shallow copy rather than mutating caller's list (M1)
+        augmented_outputs = list(tool_outputs)
         if resolved_info:
             logger.info(f"[IdentityMiddleware] Auto-resolved {len(resolved_info)} user identities.")
-            tool_outputs.append({
+            augmented_outputs.append({
                 "tool": "Identity_Middleware",
                 "output": "Automated Context Injection:\n" + "\n".join(resolved_info)
             })
-            
-        return tool_outputs
+
+        return augmented_outputs
 
     def _run_tool_chain(self, card_def: Dict, device: str) -> List[Dict[str, str]]:
         """
@@ -380,6 +471,9 @@ class CardRunner:
         tool_map = self._get_tool_map()
         tool_chain = card_def.get("tool_chain") or []
         outputs = []
+
+        # Validate device alias
+        validated_device = self._validate_device(device)
 
         for tool_name in tool_chain:
             tool_func = tool_map.get(tool_name)
@@ -394,15 +488,22 @@ class CardRunner:
                 # Pass target_device if the tool accepts it
                 sig = inspect.signature(tool_func)
                 if 'target_device' in sig.parameters:
-                    result = tool_func(target_device=device if device != "default" else None)
+                    result = tool_func(target_device=validated_device)
                 else:
                     result = tool_func()
 
+                raw_str = str(result)
+                # Cap per-tool output to prevent context explosion, notifying LLM of truncation (H4)
+                if len(raw_str) > 8000:
+                    truncated_str = raw_str[:8000] + f"\n[... OUTPUT TRUNCATED — original length: {len(raw_str)} chars]"
+                else:
+                    truncated_str = raw_str
+
                 outputs.append({
                     "tool": tool_name,
-                    "output": str(result)[:8000]  # Cap per-tool output to prevent context explosion
+                    "output": truncated_str
                 })
-                logger.debug(f"[CardRunner]   → {tool_name}: {len(str(result))} chars")
+                logger.debug(f"[CardRunner]   → {tool_name}: {len(raw_str)} chars")
 
             except Exception as e:
                 outputs.append({
@@ -412,14 +513,24 @@ class CardRunner:
                 logger.warning(f"[CardRunner]   → {tool_name} failed: {e}")
 
         # Execute Automated Identity Resolution Middleware
-        outputs = self._resolve_identities(outputs, device)
+        outputs = self._resolve_identities(outputs, validated_device)
 
         return outputs
 
-    def _synthesize(self, card_def: Dict, tool_outputs: List[Dict]) -> Optional[Dict]:
+    def _synthesize(self, card_def: Dict, tool_outputs: List[Dict]) -> Optional[Dict[str, Any]]:
         """
-        Send tool outputs + reasoning prompt to LLM for structured synthesis.
-        Returns parsed JSON dict or None on failure.
+        Send tool outputs + reasoning prompt to LLM for structured synthesis (L4).
+
+        Returns:
+            Dict containing parsed JSON assessment with keys:
+            - 'severity' (str): 'normal' | 'caution' | 'critical'
+            - 'title' (str): Short human-readable title
+            - 'finding' (str): Core diagnosis narrative
+            - 'evidence' (List[str]): Grounded claims from tool outputs
+            - 'metrics' (Dict[str, Any]): Quantitative telemetry extracted
+            - 'reasoning_trace' (List[str]): Step-by-step chain of thought
+            - 'triggered' (bool): True if card alert condition met
+            Or None if synthesis fails or budget exceeded.
         """
         reasoning_prompt = card_def.get("reasoning_prompt", "Analyze the tool outputs and report findings.")
 
@@ -445,7 +556,7 @@ class CardRunner:
             "No markdown, no code fences, no explanation — just the JSON."
         )
 
-        raw_text = ""  # Initialize before try to avoid NameError in except
+        raw_text = ""
 
         try:
             model = self._model
@@ -457,31 +568,49 @@ class CardRunner:
                     return None
                 self._model = model
 
-            import google.generativeai as genai
-            from core.pipeline.model_config import get_card_generation_config
-
-            config = get_card_generation_config()
-            config.response_mime_type = "application/json"
+            # Fresh generation config instance without mutating shared object (H2)
+            base_config = get_card_generation_config()
+            config = genai.types.GenerationConfig(
+                temperature=getattr(base_config, 'temperature', TEMP_DEFAULT),
+                max_output_tokens=getattr(base_config, 'max_output_tokens', 4096),
+                response_mime_type="application/json",
+                response_logprobs=True,
+                logprobs=5,
+            )
 
             response = model.generate_content(
                 synthesis_prompt,
                 generation_config=config,
-                tool_config={'function_calling_config': {'mode': 'NONE'}}
+                tool_config=NO_TOOLS_CONFIG
             )
 
-            # Track budget
+            # Track budget — propagate BudgetExceededError (H5)
             if self.budget_guard and hasattr(response, 'usage_metadata'):
+                meta = response.usage_metadata
+                prompt_tokens = getattr(meta, 'prompt_token_count', 0)
+                response_tokens = getattr(meta, 'candidates_token_count', 0)
                 try:
-                    meta = response.usage_metadata
                     self.budget_guard.record_usage(
-                        prompt_tokens=getattr(meta, 'prompt_token_count', 0),
-                        response_tokens=getattr(meta, 'candidates_token_count', 0),
+                        prompt_tokens=prompt_tokens,
+                        response_tokens=response_tokens,
                     )
+                except BudgetExceededError as be:
+                    logger.warning(f"[CardRunner] Budget exceeded during card run: {be}")
+                    raise
                 except Exception as be:
-                    logger.warning(f"[CardRunner] Budget tracking error: {be}")
+                    logger.warning(f"[CardRunner] Budget tracking non-fatal error: {be}")
 
-            # Parse JSON from response
-            raw_text = response.text.strip()
+            # Safely access response.text to handle candidate blocking (BONUS Resilience)
+            try:
+                raw_text = response.text.strip() if hasattr(response, 'text') else ""
+            except (ValueError, AttributeError) as ve:
+                logger.warning(f"[CardRunner] Candidate text blocked by safety or empty: {ve}")
+                return None
+
+            if not raw_text:
+                logger.warning("[CardRunner] Received empty text from Gemini synthesis")
+                return None
+
             parsed = json.loads(raw_text)
 
             # Extract logprobs and attach confidence margin to the result
@@ -492,6 +621,8 @@ class CardRunner:
 
             return parsed
 
+        except BudgetExceededError:
+            raise
         except json.JSONDecodeError as je:
             logger.error(f"[CardRunner] JSON parse error: {je}")
             logger.debug(f"[CardRunner] Raw LLM response: {raw_text[:500]}")
@@ -523,27 +654,21 @@ class CardRunner:
 
         return safe_actions
 
-    def _validate_evidence(self, tool_outputs: List[Dict], evidence: List[str]) -> Dict:
+    def _validate_evidence(self, tool_outputs: List[Dict], evidence: List[str]) -> Dict[str, Any]:
         """
         Fabrication Cross-Validation — compare model's evidence claims
         against raw tool output to detect hallucinated data points.
 
-        Returns:
-            {
-                "verified": [...],
-                "unverified": [...],
-                "trust_score": 0.0-1.0
-            }
+        Strengthened heuristic (M3):
+        - A claim cannot be validated solely by mentioning a tool name.
+        - Requires matching factual data (IPs, numbers) OR high lexical overlap
+          with the specific tool output cited.
         """
-        import re
-
         if not evidence:
             return {"verified": [], "unverified": [], "trust_score": 1.0}
 
         # Combine all raw tool output into one searchable corpus
         raw_corpus = " ".join([t.get("output", "") for t in tool_outputs]).lower()
-
-        # Also include tool names as valid references
         tool_names = {t.get("tool", "").lower() for t in tool_outputs}
 
         verified = []
@@ -554,38 +679,43 @@ class CardRunner:
             grounded = False
 
             # Extract key data points from the claim
-            # 1. IP addresses (e.g., 10.0.0.5, 192.168.1.1)
             ips = re.findall(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', claim)
-            # 2. Numbers with context (e.g., "47 sessions", "0%")
             numbers = re.findall(r'\b\d+(?:\.\d+)?(?:%|sessions?|rules?|entries|connections?)?\b', claim)
-            # 3. Tool name references (e.g., "session_info:", "threat_logs:")
             tool_refs = re.findall(r'(\w+):', claim_lower)
+            matching_tool_refs = [ref for ref in tool_refs if ref in tool_names]
 
-            # Check if key data points appear in raw tool output
-            # IP match — strongest signal
-            if ips:
-                if any(ip in raw_corpus for ip in ips):
+            # 1. IP match — strong signal: verified if candidate IP exists in corpus
+            if ips and any(ip in raw_corpus for ip in ips):
+                grounded = True
+
+            # 2. Tool name reference — MUST be corroborated by numbers, IPs, or specific tool text (M3)
+            elif matching_tool_refs:
+                sig_numbers = [n for n in numbers if len(n) > 1 and n not in ('0', '1', '2')]
+                if sig_numbers and any(n in raw_corpus for n in sig_numbers):
                     grounded = True
-
-            # Tool name reference — the claim cites a tool that actually ran
-            if tool_refs:
-                if any(ref in tool_names for ref in tool_refs):
-                    grounded = True
-
-            # Numeric match — check if the specific numbers appear in tool output
-            if not grounded and numbers:
-                significant_numbers = [n for n in numbers if len(n) > 1 and n not in ('0', '1', '2')]
-                if significant_numbers:
-                    if any(n in raw_corpus for n in significant_numbers):
+                elif not sig_numbers and not ips:
+                    # Pure text assertion citing a tool — compare overlap against that specific tool's output
+                    tool_specific_corpus = " ".join([
+                        t.get("output", "") for t in tool_outputs
+                        if t.get("tool", "").lower() in matching_tool_refs
+                    ]).lower()
+                    claim_words = set(re.findall(r'[a-z]{4,}', claim_lower))
+                    tool_words = set(re.findall(r'[a-z]{4,}', tool_specific_corpus))
+                    if claim_words and len(claim_words & tool_words) / len(claim_words) >= 0.4:
                         grounded = True
 
-            # Keyword overlap — last resort, check for meaningful shared terms
+            # 3. Numeric match without tool reference
+            elif numbers:
+                sig_numbers = [n for n in numbers if len(n) > 1 and n not in ('0', '1', '2')]
+                if sig_numbers and any(n in raw_corpus for n in sig_numbers):
+                    grounded = True
+
+            # 4. Keyword overlap fallback
             if not grounded:
                 claim_words = set(re.findall(r'[a-z]{4,}', claim_lower))
                 corpus_words = set(re.findall(r'[a-z]{4,}', raw_corpus))
                 overlap = claim_words & corpus_words
-                # Need substantial overlap (>40% of claim words) to consider grounded
-                if len(claim_words) > 0 and len(overlap) / len(claim_words) > 0.4:
+                if len(claim_words) > 0 and len(overlap) / len(claim_words) > 0.5:
                     grounded = True
 
             if grounded:
@@ -605,19 +735,17 @@ class CardRunner:
     def _embed_reasoning(self, reasoning_trace: List[str]) -> List[float]:
         """
         Embed the reasoning trace text using the Gemini Embeddings API.
-        Returns a 768-dimensional vector, or empty list on failure.
+        Returns a vector matching EMBEDDING_DIMENSIONS (default 3072) (L1),
+        or empty list on failure / if disabled.
         """
-        import os
-        if os.getenv("DISABLE_EMBEDDINGS", "true").lower() == "true":
+        # Default DISABLE_EMBEDDINGS to 'false' so semantic drift operates by default (M5)
+        if os.getenv("DISABLE_EMBEDDINGS", "false").lower() in ("true", "1", "yes"):
             return []
 
-        if not reasoning_trace:
+        if not reasoning_trace or genai is None:
             return []
 
         try:
-            import google.generativeai as genai
-            from core.pipeline.model_config import EMBEDDING_MODEL, EMBEDDING_DIMENSIONS
-
             # Concatenate reasoning steps into a single text
             trace_text = " ".join(reasoning_trace)
             if len(trace_text) < 20:

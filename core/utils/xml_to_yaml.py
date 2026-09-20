@@ -5,6 +5,7 @@ Strips PII, preserves forensic depth, optimizes for LLM consumption.
 """
 
 
+import sys
 import re
 import hashlib
 import hmac
@@ -263,7 +264,8 @@ class ToxicXmlSanitizer:
             try:
                 root = ET.fromstring(raw_xml.encode('utf-8'))
             except Exception as e:
-                if "junk after document element" in str(e):
+                err_str = str(e).lower()
+                if "junk after document element" in err_str or "extra content at the end of the document" in err_str:
                     # Multi-root safety: Wrap in a virtual root
                     wrapped = f"<root>\n{raw_xml}\n</root>"
                     root = ET.fromstring(wrapped.encode('utf-8'))

@@ -95,4 +95,7 @@ def get_card_generation_config() -> genai.types.GenerationConfig:
     return genai.types.GenerationConfig(
         temperature=TEMP_DEFAULT,
         max_output_tokens=4096,
+        response_logprobs=True,
+        logprobs=5,
     )
+

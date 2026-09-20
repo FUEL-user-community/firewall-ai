@@ -45,6 +45,9 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
         start_page (int): Starting page number (inclusive) for 'read_slice'.
         end_page (int): Ending page number (inclusive) for 'read_slice'.
     """
+    if not action or not isinstance(action, str):
+        return "Error: 'action' parameter is required ('list_contents' or 'read_slice')."
+
     service, err_msg = _init_drive_service()
     if not service:
         return f"Error: Google Drive API not configured. Details: {err_msg}"
@@ -53,7 +56,8 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
     if not folder_id:
         return "Error: Missing KNOWLEDGE_BASE_FOLDER_ID or GOOGLE_DRIVE_FOLDER_ID in environment."
 
-    if action == 'list_contents':
+    clean_action = action.strip().lower()
+    if clean_action == 'list_contents':
         if not target:
             # List all documents
             query = f"'{folder_id}' in parents and trashed = false"
@@ -88,7 +92,7 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
         except Exception as e:
             return f"Error listing Knowledge Base contents: {e}"
 
-    elif action == 'read_slice':
+    elif clean_action == 'read_slice':
         if not target or not start_page or not end_page:
             return "Error: 'read_slice' requires 'target', 'start_page', and 'end_page'."
             
@@ -131,6 +135,14 @@ def _extract_pdf_pages(service, file_id: str, start_page: int, end_page: int) ->
         
         reader = pypdf.PdfReader(fh)
         total_pages = len(reader.pages)
+
+        # Bounds validation (M2)
+        if start_page > end_page:
+            return f"Error: start_page ({start_page}) cannot be greater than end_page ({end_page})."
+        if start_page < 1:
+            return f"Error: start_page ({start_page}) must be >= 1."
+        if (end_page - start_page + 1) > 50:
+            return f"Error: Requested slice ({end_page - start_page + 1} pages) exceeds 50-page maximum limit per call."
         
         # 1-indexed to 0-indexed translation, handle bounds
         start_idx = max(0, start_page - 1)

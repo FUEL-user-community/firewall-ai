@@ -1,0 +1,49 @@
+# ═══════════════════════════════════════════════════════════════════
+# Core Defense — Firewall Health Thresholds & Operational Rules
+# ═══════════════════════════════════════════════════════════════════
+# No coding required. Modify any number below to adjust health alerts.
+# Restart the server or run a new health check to apply changes.
+# ═══════════════════════════════════════════════════════════════════
+
+# System Uptime Rules
+uptime:
+  warn_if_under_hours: 12
+  rationale: "Recent reboot detected — investigate whether this was scheduled or caused by a crash"
+
+# Memory & Swap Rules
+memory:
+  swap_warn_above_mb: 0
+  rationale: "Active swap indicates physical memory exhaustion on dedicated appliance"
+
+# Processor (CPU) Rules
+cpu:
+  load_per_core_caution: 0.75     # Alert if load per core exceeds 75%
+  load_per_core_critical: 1.50    # Critical if load per core exceeds 150%
+  idle_caution_under_pct: 50.0    # Alert if CPU idle drops below 50%
+  idle_critical_under_pct: 20.0   # Critical if CPU idle drops below 20%
+  suppress_load_alert_if_idle_above_pct: 70.0  # I/O wait can inflate load avg while CPU is actually free
+
+# Storage & Disk Partition Rules (Partition-Smart)
+storage:
+  # Critical OS and Configuration Partitions (/ and /opt/pancfg)
+  # If these fill up, commits fail and the firewall management plane hangs.
+  system_partitions:
+    caution_pct: 85
+    critical_pct: 95
+
+  # Traffic and Threat Log Storage (/opt/panlogs)
+  # PAN-OS automatically purges older logs when this partition reaches 90-95%.
+  # Normal operation is high utilization; do NOT alert at 80%.
+  log_partitions:
+    caution_pct: 92
+    critical_pct: 97
+
+# Device-Specific Overrides (Optional)
+# Target specific firewalls from config/devices.yaml by name.
+device_overrides:
+  # Example for a lab firewall that reboots constantly:
+  # fw-lab:
+  #   uptime:
+  #     warn_if_under_hours: 1
+  #   cpu:
+  #     load_per_core_caution: 1.20

@@ -114,8 +114,9 @@ class ToolExecutor:
 
         result = None  # Guards set result on block, execution sets it on success
 
-        # --- 1. GHOST TOOL GUARD ---
-        if fname not in manifest_str and fname != "summon_toolkit":
+        # --- 1. GHOST TOOL GUARD (Exact token set matching - H3) ---
+        manifest_tools = {t.strip() for t in manifest_str.split(",") if t.strip()}
+        if fname not in manifest_tools and fname != "summon_toolkit":
             logger.warning(f"[{trace_id}] [-] Hallucination Blocked: {fname}")
             result = f"ERROR: Tool '{fname}' unknown. Available: [{manifest_str}]"
             blocked_by = "ghost"
@@ -216,7 +217,9 @@ class ToolExecutor:
     # -----------------------------------------------------------------
     def _execute_with_cache(self, fname, fargs, trace_id):
         """Execute a tool with caching. Returns (result, ops_count, drive_slice_info)."""
-        cache_key = f"{fname}:{str(sorted(str(k) + '=' + str(v) for k, v in fargs.items()))}"
+        import json
+        clean_args = json.dumps(fargs, sort_keys=True, default=str)
+        cache_key = f"{fname}:{clean_args}"
         now = datetime.now()
         ops_count = 0
         drive_slice_info = None

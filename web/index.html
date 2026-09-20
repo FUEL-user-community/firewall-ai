@@ -137,13 +137,12 @@
            Wide Chat — Bigger Font When Panel Is Expanded
            ═══════════════════════════════════════════════════════ */
 
-        .chat-panel.wide-mode .msg-bubble,
-        .chat-panel.wide-mode .msg-neo .msg-bubble {
-            font-size: 14px;
+        .chat-panel.wide-mode .msg-content {
+            font-size: 13px;
         }
 
-        .chat-panel.wide-mode .chat-input-bar input {
-            font-size: 14px;
+        .chat-panel.wide-mode .chat-input-box input {
+            font-size: 13px;
         }
 
         /* ═══════════════════════════════════════════════════════
@@ -311,47 +310,94 @@
             background: #FFFFFF;
         }
 
-        .header-counters {
-            display: flex;
-            gap: 8px;
-            margin-left: 24px;
-        }
-
-        .counter-badge {
-            display: flex;
+        .perimeter-status-chip {
+            display: inline-flex;
             align-items: center;
-            justify-content: center;
-            min-width: 28px;
-            height: 24px;
-            padding: 0 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: 700;
+            gap: 8px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
             font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.02);
+            color: #a0aec0;
+            user-select: none;
+            margin-left: 20px;
         }
 
-        .counter-critical {
-            background: transparent;
-            color: #f87171;
-            border: 1px solid #333;
-        }
-
-        .counter-critical.active {
-            border-color: #f87171;
-            color: #f87171;
-        }
-
-        .counter-caution {
-            background: transparent;
-            color: #fbbf24;
-            border: 1px solid #333;
-        }
-
-        .counter-normal {
-            background: transparent;
+        .perimeter-status-chip.nominal {
+            border-color: rgba(52, 211, 153, 0.25);
+            background: rgba(52, 211, 153, 0.05);
             color: #34d399;
-            border: 1px solid #333;
         }
+
+        .perimeter-status-chip.nominal:hover {
+            border-color: rgba(52, 211, 153, 0.5);
+            background: rgba(52, 211, 153, 0.1);
+            box-shadow: 0 0 12px rgba(52, 211, 153, 0.2);
+        }
+
+        .perimeter-status-chip.critical {
+            border-color: rgba(248, 113, 113, 0.5);
+            background: rgba(248, 113, 113, 0.12);
+            color: #f87171;
+            box-shadow: 0 0 12px rgba(248, 113, 113, 0.25);
+            animation: statusPulseCrit 2s infinite;
+        }
+
+        .perimeter-status-chip.critical:hover {
+            border-color: rgba(248, 113, 113, 0.8);
+            background: rgba(248, 113, 113, 0.18);
+        }
+
+        .perimeter-status-chip.caution {
+            border-color: rgba(251, 191, 36, 0.5);
+            background: rgba(251, 191, 36, 0.1);
+            color: #fbbf24;
+            box-shadow: 0 0 10px rgba(251, 191, 36, 0.2);
+        }
+
+        .perimeter-status-chip.caution:hover {
+            border-color: rgba(251, 191, 36, 0.8);
+            background: rgba(251, 191, 36, 0.18);
+        }
+
+        @keyframes statusPulseCrit {
+            0% { box-shadow: 0 0 4px rgba(248, 113, 113, 0.2); }
+            50% { box-shadow: 0 0 14px rgba(248, 113, 113, 0.45); }
+            100% { box-shadow: 0 0 4px rgba(248, 113, 113, 0.2); }
+        }
+
+        .status-pulse-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+            transition: all 0.2s ease;
+        }
+
+        .status-pulse-dot.nominal {
+            background: #34d399;
+            box-shadow: 0 0 8px #34d399;
+        }
+
+        .status-pulse-dot.critical {
+            background: #f87171;
+            box-shadow: 0 0 8px #f87171;
+        }
+
+        .status-pulse-dot.caution {
+            background: #fbbf24;
+            box-shadow: 0 0 8px #fbbf24;
+        }
+
+        /* Legacy counter fallbacks */
+        .counter-badge { display: none; }
 
         .btn-icon {
             width: 32px;
@@ -424,53 +470,162 @@
             grid-area: filter;
             display: flex;
             align-items: center;
-            gap: 6px;
-            padding: 16px 24px 8px 24px;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 14px 24px 10px 24px;
+            flex-wrap: wrap;
+            border-bottom: 1px solid #141414;
         }
 
-        .filter-btn {
+        .scope-chips {
             display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .deck-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .search-wrap {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 10px;
+            color: #666;
+            pointer-events: none;
+        }
+
+        .search-input {
+            background: #0f0f13;
+            border: 1px solid #222;
+            border-radius: 4px;
+            padding: 6px 28px 6px 30px;
+            color: #e0e0e0;
+            font-size: 12px;
+            font-family: inherit;
+            width: 220px;
+            transition: all 0.2s ease;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: #60a5fa;
+            width: 260px;
+            background: #08080c;
+        }
+
+        .search-shortcut {
+            position: absolute;
+            right: 8px;
+            font-size: 10px;
+            color: #555;
+            background: #1a1a24;
+            border: 1px solid #333;
+            border-radius: 3px;
+            padding: 1px 5px;
+            font-family: 'JetBrains Mono', monospace;
+            pointer-events: none;
+        }
+
+        .filter-select {
+            background: #0f0f13;
+            border: 1px solid #222;
+            border-radius: 4px;
+            padding: 6px 10px;
+            color: #aaa;
+            font-size: 12px;
+            font-family: inherit;
+            cursor: pointer;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .filter-select:hover, .filter-select:focus {
+            border-color: #444;
+            color: #fff;
+        }
+
+        .scope-chip {
+            display: inline-flex;
             align-items: center;
             gap: 6px;
             padding: 6px 14px;
             border-radius: 4px;
-            border: 1px solid transparent;
-            background: transparent;
-            color: #777;
+            border: 1px solid #222;
+            background: rgba(255, 255, 255, 0.02);
+            color: #8892b0;
             font-family: inherit;
-            font-size: 13px;
-            font-weight: 500;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            outline: none;
+            user-select: none;
+        }
+
+        .scope-chip:hover {
+            color: #ffffff;
+            border-color: #444;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .scope-chip.active {
+            border-color: #3b82f6;
+            background: rgba(59, 130, 246, 0.12);
+            color: #ffffff;
+            box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
+        }
+
+        .scope-chip[data-scope="action"].active {
+            border-color: #f87171;
+            background: rgba(248, 113, 113, 0.12);
+            color: #ffffff;
+            box-shadow: 0 0 8px rgba(248, 113, 113, 0.25);
+        }
+
+        .scope-count {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 16px;
+            height: 16px;
+            padding: 0 4px;
+            border-radius: 8px;
+            background: #f87171;
+            color: #0b0e14;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .filter-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 4px;
+            border: 1px solid #222;
+            background: #111;
+            color: #aaa;
+            font-family: inherit;
+            font-size: 12px;
             cursor: pointer;
             transition: all 0.2s;
         }
 
         .filter-btn:hover {
-            color: #E0E0E0;
-            background: #111;
-        }
-
-        .filter-btn.active {
-            border-color: #333;
-            color: #FFFFFF;
-            background: #1A1A1A;
-        }
-
-        .filter-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-        }
-
-        .dot-all {
-            background: #666;
-        }
-
-        .dot-critical {
-            background: #f87171;
-        }
-
-        .dot-caution {
-            background: #fbbf24;
+            color: #fff;
+            border-color: #444;
         }
 
         .card-deck {
@@ -665,8 +820,8 @@
             display: flex;
             flex-direction: column;
             height: 100%;
-            border-left: 1px solid #1A1A1A;
-            background: linear-gradient(180deg, #050505 0%, #080808 100%);
+            border-left: 1px solid #1f2430;
+            background: #08080b;
             overflow: hidden;
             box-shadow: -4px 0 24px rgba(0, 0, 0, 0.5);
             position: relative;
@@ -687,21 +842,26 @@
         }
 
         .chat-header {
-            padding: 16px 20px;
-            border-bottom: 1px solid #1A1A1A;
+            height: 48px;
+            padding: 0 16px;
+            border-bottom: 1px solid #1f2430;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            background: #08080b;
+            flex-shrink: 0;
         }
 
         .chat-header-title {
             display: flex;
             align-items: center;
             gap: 10px;
-            font-weight: 600;
-            font-size: 13px;
-            color: #E0E0E0;
-            letter-spacing: 0.5px;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 11px;
+            font-weight: 700;
+            color: #ffffff;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
 
         .status-dot {
@@ -709,38 +869,44 @@
             height: 8px;
             border-radius: 50%;
             background: #34d399;
-            box-shadow: 0 0 8px #34d399;
-            animation: pulse 2s infinite;
+            box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+            flex-shrink: 0;
         }
 
-        @keyframes pulse {
-            0% {
-                opacity: 0.5;
-                box-shadow: 0 0 0 #34d399;
-            }
+        .chat-ctrl-btn {
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            border: 1px solid #222;
+            background: transparent;
+            color: #777;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-size: 14px;
+        }
 
-            50% {
-                opacity: 1;
-                box-shadow: 0 0 8px #34d399;
-            }
-
-            100% {
-                opacity: 0.5;
-                box-shadow: 0 0 0 #34d399;
-            }
+        .chat-ctrl-btn:hover {
+            color: #fff;
+            border-color: #555;
+            background: rgba(255, 255, 255, 0.05);
         }
 
         .chat-messages {
             flex: 1;
             overflow-y: auto;
-            padding: 20px;
+            padding: 16px;
             display: flex;
             flex-direction: column;
-            gap: 16px;
+            gap: 10px;
+            background: #07070a;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         }
 
         .chat-messages::-webkit-scrollbar {
-            width: 4px;
+            width: 5px;
         }
 
         .chat-messages::-webkit-scrollbar-track {
@@ -749,91 +915,165 @@
 
         .chat-messages::-webkit-scrollbar-thumb {
             background: #222;
+            border-radius: 3px;
         }
 
-        /* Chat Message Bubbles */
+        /* Structured Telemetry Log Cards (Harmonized with BAS Sidebar) */
         .msg {
             display: flex;
             flex-direction: column;
             gap: 4px;
-            max-width: 100%;
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            border-radius: 4px;
+            animation: fadeInLog 0.2s ease-out;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        @keyframes fadeInLog {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .msg-meta {
+            color: #64748b;
+            font-size: 10px;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .msg-content {
+            font-size: 12px;
+            line-height: 1.5;
+            color: #e2e8f0;
+            word-break: break-word;
         }
 
         .msg-user {
-            align-self: flex-end;
-        }
-
-        .msg-neo {
-            align-self: flex-start;
-        }
-
-        .msg-bubble {
-            padding: 12px 16px;
-            border-radius: 12px;
-            font-size: 13px;
-            line-height: 1.5;
-        }
-
-        .msg-user .msg-bubble {
-            background: #1A1A1A;
-            color: #FFFFFF;
-            border-bottom-right-radius: 4px;
-            border: 1px solid #222;
-        }
-
-        .msg-neo .msg-bubble {
+            border-left: 3px solid #60a5fa;
             background: rgba(96, 165, 250, 0.04);
-            border: 1px solid rgba(96, 165, 250, 0.15);
-            color: #bfdbfe;
-            border-bottom-left-radius: 4px;
-            box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.02);
         }
 
+        .msg-user .msg-content {
+            color: #ffffff;
+        }
+
+        .msg-neo,
+        .msg-agent {
+            border-left: 3px solid #34d399;
+            background: rgba(52, 211, 153, 0.04);
+        }
+
+        .msg-neo .msg-content,
+        .msg-agent .msg-content {
+            color: #34d399;
+        }
+
+        .msg-neo .msg-meta span:first-child,
+        .msg-agent .msg-meta span:first-child {
+            color: #34d399;
+            font-weight: 600;
+        }
+
+        .msg-sys {
+            border-left: 3px solid #fbbf24;
+            background: rgba(251, 191, 36, 0.04);
+        }
+
+        .msg-crit {
+            border-left: 3px solid #f87171;
+            background: rgba(248, 113, 113, 0.06);
+        }
+
+        /* Framed Input Area (Harmonized with BAS Sidebar) */
         .chat-input-bar {
-            padding: 16px 20px;
-            border-top: 1px solid #1A1A1A;
-            display: flex;
-            gap: 12px;
-            background: rgba(5, 5, 5, 0.8);
-            backdrop-filter: blur(8px);
+            padding: 12px 16px;
+            border-top: 1px solid #1f2430;
+            background: #060608;
+            flex-shrink: 0;
         }
 
-        .chat-input-bar input {
-            flex: 1;
-            background: #0A0A0A;
-            border: 1px solid #222;
-            border-radius: 20px;
-            padding: 12px 18px;
-            color: #FFF;
-            font-family: inherit;
-            font-size: 13px;
-            outline: none;
-            transition: all 0.2s ease;
-        }
-
-        .chat-input-bar input:focus {
-            border-color: #60a5fa;
-            background: #000;
-            box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.1);
-        }
-
-        .chat-input-bar button {
-            background: #60a5fa;
-            color: #000;
-            border: none;
-            border-radius: 50%;
-            width: 42px;
-            height: 42px;
+        .chat-input-box {
             display: flex;
             align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: all 0.2s;
+            gap: 8px;
+            background: #0b0b0f;
+            border: 1px solid #1f2430;
+            border-radius: 6px;
+            padding: 6px 10px;
+            transition: all 0.2s ease;
+            width: 100%;
+            box-sizing: border-box;
         }
 
-        .chat-input-bar button:hover {
+        .chat-input-box:focus-within {
+            border-color: #60a5fa;
+            box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.25);
+            background: #0f0f16;
+        }
+
+        .chat-prompt-symbol {
+            color: #34d399;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-weight: 700;
+            font-size: 13px;
+            user-select: none;
+        }
+
+        .chat-input-box input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #ffffff;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 12px;
+            outline: none;
+            min-width: 0;
+            padding: 0;
+        }
+
+        .chat-input-box input::placeholder {
+            color: #555;
+            font-size: 11px;
+        }
+
+        .chat-send-btn {
+            background: #60a5fa;
+            border: none;
+            color: #050508;
+            padding: 5px 12px;
+            border-radius: 4px;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .chat-send-btn:hover {
             background: #93c5fd;
-            transform: scale(1.05);
+            box-shadow: 0 0 10px rgba(147, 197, 253, 0.4);
+        }
+
+        .chat-send-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .chat-send-btn .kbd-hint {
+            font-size: 10px;
+            opacity: 0.65;
         }
     
 .modal-overlay {
@@ -860,6 +1100,18 @@
     animation: fadeInUp 0.3s ease-out;
 }
 
+.modal-card.schedule-modal-card {
+    max-width: 980px;
+    width: 92vw;
+    max-height: 88vh;
+    background: #0A0A0E;
+    border: 1px solid #20202A;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 24px 72px rgba(0, 0, 0, 0.75);
+}
+
 .modal-header {
     display: flex;
     align-items: center;
@@ -868,10 +1120,71 @@
     border-bottom: 1px solid rgba(255,255,255,0.06);
 }
 
+.modal-header.schedule-modal-header {
+    padding: 16px 24px;
+    background: #08080B;
+    border-bottom: 1px solid #1A1A22;
+}
+
+.schedule-header-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.schedule-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.schedule-engine-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #34d399;
+    box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+    flex-shrink: 0;
+}
+
 .modal-header h2 {
     font-size: 16px;
     font-weight: 700;
     color: #f0f0f8;
+}
+
+.modal-subtitle {
+    font-size: 12px;
+    color: #666;
+}
+
+.schedule-header-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.schedule-stat-chip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #888;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.schedule-stat-chip strong {
+    color: #E0E0E0;
+}
+
+.schedule-stat-chip.stat-active strong {
+    color: #34d399;
+}
+
+.schedule-stat-chip.stat-paused strong {
+    color: #fbbf24;
 }
 
 .btn-close-modal {
@@ -884,60 +1197,362 @@
 
 .btn-close-modal:hover { color: #aaa; }
 
-.modal-body {
-    padding: 16px 24px;
-    overflow-y: auto;
-    max-height: 60vh;
+/* ── Schedule Hub Toolbar ── */
+.schedule-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 24px;
+    background: #07070B;
+    border-bottom: 1px solid #181822;
+    flex-shrink: 0;
 }
 
-/* Schedule entries */
-.schedule-entry {
+.schedule-tabs-row {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 12px;
-    padding: 10px 0;
-    border-bottom: 1px solid rgba(255,255,255,0.03);
+    flex-wrap: wrap;
 }
 
-.schedule-entry:last-child { border-bottom: none; }
-
-.schedule-name {
-    flex: 1;
-    font-size: 13px;
-    color: #ccc;
+.schedule-tabs {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
 }
 
-.schedule-id {
-    font-size: 11px;
-    font-family: 'JetBrains Mono', monospace;
-    color: #555;
-    min-width: 50px;
-}
-
-.schedule-freq {
-    font-size: 11px;
-    color: #666;
-    padding: 2px 8px;
+.schedule-tab {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #777;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 10px;
     border-radius: 4px;
-    background: rgba(255,255,255,0.03);
-    min-width: 70px;
-    text-align: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
 
-.schedule-last {
-    font-size: 11px;
-    color: #555;
+.schedule-tab:hover {
+    color: #ccc;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.schedule-tab.active {
+    color: #fff;
+    background: #14141E;
+    border-color: #2D2D3E;
+}
+
+.tab-count {
     font-family: 'JetBrains Mono', monospace;
-    min-width: 60px;
-    text-align: right;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #888;
+}
+
+.schedule-tab.active .tab-count {
+    background: #60a5fa;
+    color: #050508;
+    font-weight: 700;
+}
+
+.schedule-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-batch-action {
+    background: transparent;
+    border: 1px solid #22222E;
+    color: #888;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.btn-batch-action:hover {
+    color: #fff;
+    border-color: #444;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.schedule-controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.schedule-search-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #0D0D12;
+    border: 1px solid #1E1E28;
+    border-radius: 6px;
+    padding: 5px 10px;
+    flex: 1;
+    max-width: 360px;
+}
+
+.schedule-search-box:focus-within {
+    border-color: #60a5fa;
+    box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.2);
+}
+
+.schedule-search-input {
+    background: transparent;
+    border: none;
+    color: #E0E0E0;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    outline: none;
+    flex: 1;
+}
+
+.schedule-search-input::placeholder { color: #555; }
+
+.btn-clear-search {
+    background: transparent;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 2px;
+}
+
+.btn-clear-search:hover { color: #aaa; }
+
+.schedule-status-filter {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: #0D0D12;
+    border: 1px solid #1E1E28;
+    border-radius: 4px;
+    padding: 2px;
+}
+
+.status-filter-btn {
+    background: transparent;
+    border: none;
+    color: #777;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 3px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.status-filter-btn:hover { color: #ccc; }
+
+.status-filter-btn.active {
+    background: #1C1C28;
+    color: #fff;
+    font-weight: 600;
+}
+
+/* ── Schedule Grid Body & Playbook Cards ── */
+.schedule-grid-body {
+    padding: 16px 24px;
+    overflow-y: auto;
+    flex: 1;
+    background: #08080C;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+    gap: 12px;
+    align-content: start;
+}
+
+.schedule-grid-body::-webkit-scrollbar { width: 6px; }
+.schedule-grid-body::-webkit-scrollbar-track { background: #07070A; }
+.schedule-grid-body::-webkit-scrollbar-thumb { background: #22222E; border-radius: 3px; }
+.schedule-grid-body::-webkit-scrollbar-thumb:hover { background: #333345; }
+
+.playbook-card {
+    background: #0D0D14;
+    border: 1px solid #1A1A24;
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: all 0.2s ease;
+}
+
+.playbook-card:hover {
+    border-color: #2D2D3E;
+    background: #101018;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.playbook-card.card-paused {
+    opacity: 0.55;
+    border-color: #161620;
+}
+
+.playbook-card.card-paused:hover {
+    opacity: 0.85;
+}
+
+.playbook-card-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.playbook-title-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+}
+
+.playbook-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.playbook-id-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    color: #60a5fa;
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.2);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+.playbook-severity-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+}
+.playbook-severity-dot.sev-critical { background: #f87171; box-shadow: 0 0 6px rgba(248, 113, 113, 0.6); }
+.playbook-severity-dot.sev-caution { background: #fbbf24; box-shadow: 0 0 6px rgba(251, 191, 36, 0.6); }
+.playbook-severity-dot.sev-normal { background: #34d399; }
+
+.playbook-cadence-pill {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+.playbook-cadence-pill.cadence-continuous {
+    color: #34d399;
+    background: rgba(52, 211, 153, 0.08);
+    border: 1px solid rgba(52, 211, 153, 0.2);
+}
+
+.playbook-cadence-pill.cadence-periodic {
+    color: #60a5fa;
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.2);
+}
+
+.playbook-cadence-pill.cadence-daily {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.2);
+}
+
+.playbook-cadence-pill.cadence-weekly {
+    color: #c084fc;
+    background: rgba(192, 132, 252, 0.08);
+    border: 1px solid rgba(192, 132, 252, 0.2);
+}
+
+.playbook-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #FFFFFF;
+    line-height: 1.35;
+}
+
+.playbook-desc {
+    font-size: 11px;
+    color: #888;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.playbook-card-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.playbook-timing {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: #666;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.playbook-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.btn-run-card {
+    background: transparent;
+    border: 1px solid #22222E;
+    color: #888;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s ease;
+}
+
+.btn-run-card:hover {
+    border-color: #60a5fa;
+    color: #fff;
+    background: rgba(96, 165, 250, 0.08);
+}
+
+.btn-run-card:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
 .schedule-toggle {
     position: relative;
-    width: 36px;
-    height: 20px;
+    width: 34px;
+    height: 18px;
     appearance: none;
-    background: #1a1a2a;
+    background: #161622;
     border-radius: 10px;
     outline: none;
     cursor: pointer;
@@ -955,8 +1570,8 @@
     position: absolute;
     top: 2px;
     left: 2px;
-    width: 14px;
-    height: 14px;
+    width: 12px;
+    height: 12px;
     background: #666;
     border-radius: 50%;
     transition: all 0.2s;
@@ -965,6 +1580,19 @@
 .schedule-toggle:checked::before {
     transform: translateX(16px);
     background: #34d399;
+}
+
+.sched-empty-state {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 20px;
+    color: #666;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 8px;
+    text-align: center;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1325,6 +1953,230 @@
     border: 1px solid rgba(251, 191, 36, 0.3);
 }
 
+/* ── Deck Empty State ── */
+.deck-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 64px 20px;
+    text-align: center;
+    background: rgba(255, 255, 255, 0.015);
+    border: 1px dashed #222;
+    border-radius: 8px;
+    margin: 20px 0;
+}
+
+.deck-empty-icon {
+    margin-bottom: 14px;
+}
+
+.deck-empty-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #eee;
+    margin-bottom: 6px;
+}
+
+.deck-empty-desc {
+    font-size: 13px;
+    color: #777;
+    max-width: 380px;
+    line-height: 1.5;
+}
+
+/* ── Card Device & Trust Badges ── */
+.card-device-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.2);
+    color: #93c5fd;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.3px;
+}
+
+.card-trust-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(52, 211, 153, 0.08);
+    border: 1px solid rgba(52, 211, 153, 0.2);
+    color: #6ee7b7;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* ── Card Reasoning Trace ── */
+.card-reasoning {
+    margin: 8px 18px 0;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.2);
+}
+
+.card-reasoning summary {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: #888;
+    cursor: pointer;
+    user-select: none;
+}
+
+.card-reasoning summary:hover {
+    color: #ccc;
+}
+
+.reasoning-list {
+    padding: 6px 16px 10px 28px;
+    font-size: 11px;
+    color: #999;
+    line-height: 1.6;
+}
+
+/* ── Chat Card Context Banner ── */
+.chat-card-context {
+    padding: 8px 16px;
+    background: rgba(96, 165, 250, 0.08);
+    border-top: 1px solid rgba(96, 165, 250, 0.2);
+    border-bottom: 1px solid rgba(96, 165, 250, 0.1);
+}
+
+.context-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #bfdbfe;
+}
+
+.context-title {
+    flex: 1;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.btn-detach-context {
+    background: transparent;
+    border: none;
+    color: #93c5fd;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    line-height: 1;
+    transition: color 0.15s;
+}
+
+.btn-detach-context:hover {
+    color: #fff;
+}
+
+/* ── Glassmorphic Toast Notifications ── */
+.toast-container {
+    position: fixed;
+    top: 64px;
+    right: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 3000;
+    pointer-events: none;
+}
+
+.soc-toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-radius: 6px;
+    background: rgba(15, 15, 20, 0.92);
+    backdrop-filter: blur(12px);
+    border: 1px solid #333;
+    color: #eee;
+    font-size: 13px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    animation: toastEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: all 0.25s ease;
+    max-width: 380px;
+}
+
+.soc-toast.toast-exit {
+    opacity: 0;
+    transform: translateX(30px);
+}
+
+@keyframes toastEnter {
+    from { opacity: 0; transform: translateY(-10px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.soc-toast.toast-success { border-color: rgba(52, 211, 153, 0.4); color: #a7f3d0; }
+.soc-toast.toast-error { border-color: rgba(248, 113, 113, 0.4); color: #fca5a5; }
+.soc-toast.toast-warning { border-color: rgba(251, 191, 36, 0.4); color: #fde68a; }
+.soc-toast.toast-info { border-color: rgba(96, 165, 250, 0.4); color: #bfdbfe; }
+.toast-icon { font-weight: bold; font-size: 14px; }
+.toast-message { flex: 1; line-height: 1.4; }
+.toast-close {
+    background: transparent;
+    border: none;
+    color: inherit;
+    opacity: 0.6;
+    cursor: pointer;
+    font-size: 14px;
+}
+.toast-close:hover { opacity: 1; }
+
+/* ── Interactive Schedule Modal ── */
+.schedule-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.modal-subtitle {
+    font-size: 12px;
+    color: #666;
+    margin-top: 2px;
+}
+
+.btn-run-card {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    border-radius: 4px;
+    border: 1px solid #333;
+    background: #111;
+    color: #60a5fa;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-run-card:hover {
+    background: #1a2234;
+    border-color: #60a5fa;
+    color: #93c5fd;
+}
+
+.btn-run-card:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    border-color: #333;
+    color: #666;
+}
+
 </style>
 </head>
 
@@ -1333,55 +2185,87 @@
     <header class="app-header">
         <div class="header-left">
             <div class="brand">
-                <svg class="brand-logo" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    stroke-width="2">
-                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-                </svg>
                 <span class="brand-title">CORE DEFENSE</span>
-                <span class="brand-badge">BETA</span>
-                <button class="btn-icon" id="btnSchedule" title="Card Schedule" style="margin-left: 12px; width: 24px; height: 24px; border:none; background: transparent; color:#666; cursor:pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></button>
-                <button class="btn-icon" id="btnToggleChat" title="Open Chat" style="width: 24px; height: 24px; border:none; background: transparent; color:#666; cursor:pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+                <button class="btn-icon" id="btnSchedule" title="Autonomous Inspection Engine" style="margin-left: 12px; width: 24px; height: 24px; border:none; background: transparent; color:#666; cursor:pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></button>
+                <button class="btn-icon" id="btnToggleChat" title="Open SOC Copilot" style="width: 24px; height: 24px; border:none; background: transparent; color:#666; cursor:pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
             </div>
             <nav class="nav-links">
-                <a href="#" class="nav-link active">Defense Deck</a>
-                <a href="range.html" class="nav-link">Range</a>
-                <a href="#" class="nav-link">Policies</a>
+                <a href="#" class="nav-link active">Threat Console</a>
+                <a href="range.html" class="nav-link">Attack Range</a>
             </nav>
-            <div class="header-counters">
-                <div class="counter-badge counter-critical" id="countCritical">0</div>
-                <div class="counter-badge counter-caution" id="countCaution">0</div>
-                <div class="counter-badge counter-normal" id="countNormal">0</div>
+            <div class="perimeter-status-chip nominal" id="perimeterStatusChip" title="19 Playbooks Active (Click to open Autonomous Inspection Hub)">
+                <span class="status-pulse-dot nominal"></span>
+                <span class="status-chip-text" id="perimeterStatusText">19 PLAYBOOKS ACTIVE</span>
             </div>
-        </div>
-        <div class="header-right">
-            <button class="btn-icon">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="3"></circle>
-                    <path
-                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
-                    </path>
-                </svg>
-            </button>
         </div>
     </header>
 
     <main class="dashboard" id="dashboard">
 
-        <!-- Filter Bar -->
+        <!-- Filter Bar / SOC Command Toolbar -->
         <div class="filter-bar">
-            <button class="filter-btn active">
-                <div class="filter-dot dot-all"></div> All Cards
-            </button>
-            <button class="filter-btn">
-                <div class="filter-dot dot-critical"></div> Critical
-            </button>
-            <button class="filter-btn">
-                <div class="filter-dot dot-caution"></div> Caution
-            </button>
+            <div class="scope-chips" id="scopeChips">
+                <button type="button" class="scope-chip active" data-scope="all" title="View all security vectors">
+                    <span class="scope-label">ALL VECTORS</span>
+                </button>
+                <button type="button" class="scope-chip" data-scope="action" title="View findings requiring operator action">
+                    <span class="scope-label">ACTION REQUIRED</span>
+                    <span class="scope-count" id="scopeCountAction" style="display: none;">0</span>
+                </button>
+                <button type="button" class="scope-chip" data-scope="exposures" title="Filter by uninspected rules and boundary exposure corridors">
+                    <span class="scope-label">EXPOSURES</span>
+                </button>
+                <button type="button" class="scope-chip" data-scope="lateral" title="Filter by kill-chain traversal, C2 beaconing, and DNS tunnels">
+                    <span class="scope-label">LATERAL</span>
+                </button>
+                <button type="button" class="scope-chip" data-scope="policy" title="Filter by zero-trust drift, decryption blindspots, and rule hygiene">
+                    <span class="scope-label">POLICY AUDIT</span>
+                </button>
+            </div>
+
+            <div class="deck-controls">
+                <div class="search-wrap">
+                    <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    <input type="search" id="cardSearch" class="search-input" placeholder="Search findings, IP, rules, CVE... (/)" autocomplete="off">
+                    <span class="search-shortcut">/</span>
+                </div>
+
+                <select id="deviceFilter" class="filter-select" title="Target Firewall Fleet">
+                    <option value="all">Fleet: All Firewalls</option>
+                </select>
+
+                <select id="sortSelect" class="filter-select" title="Sort Findings">
+                    <option value="severity">Sort: Severity</option>
+                    <option value="newest">Sort: Newest</option>
+                    <option value="oldest">Sort: Oldest</option>
+                </select>
+
+                <button class="btn-icon" id="btnRefreshDeck" title="Refresh Findings (Ctrl+R)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                </button>
+            </div>
         </div>
 
         <!-- Card Deck Container -->
         <div class="card-deck" id="cardDeck">
+            <!-- Empty State -->
+            <div class="deck-empty" id="deckEmpty" style="display: none;">
+                <div class="deck-empty-icon">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="1.5">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        <polyline points="9 12 11 14 15 10"/>
+                    </svg>
+                </div>
+                <h3 class="deck-empty-title">Fleet Perimeter Nominal</h3>
+                <p class="deck-empty-desc" id="deckEmptyDesc">Zero active security findings pending remediation across your firewall fleet.</p>
+                <button class="filter-btn" id="btnClearFilters" style="display: none; margin-top: 10px;">Reset Filters</button>
+            </div>
             <!-- Cards injected via JS -->
         </div>
 
@@ -1393,7 +2277,7 @@
 
             <!-- Collapsed icon strip -->
             <div class="chat-collapsed-strip" id="chatCollapsedStrip">
-                <button class="collapsed-chat-btn" id="btnExpandFromStrip" title="Open Chat (Ctrl+K)">
+                <button class="collapsed-chat-btn" id="btnExpandFromStrip" title="Open SOC Copilot (Ctrl+K)">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                     </svg>
@@ -1408,7 +2292,7 @@
                 <div class="chat-header">
                     <div class="chat-header-title">
                         <div class="status-dot" id="statusDot"></div>
-                        <span id="statusText" style="display:none;"></span>NEO
+                        <span id="statusText" style="display:none;"></span>NEO COPILOT
                     </div>
                     <div class="chat-header-controls">
                         <button class="chat-ctrl-btn" id="btnFullscreenChat" title="Maximize chat">
@@ -1428,102 +2312,97 @@
                     </div>
                 </div>
                 <div class="chat-messages" id="messages">
-                    <div class="msg msg-neo">
-                        <div class="msg-bubble">How can I best assist you?</div>
+                    <div class="msg msg-agent">
+                        <div class="msg-meta">
+                            <span>[NEO-COPILOT]</span>
+                            <span>READY</span>
+                        </div>
+                        <div class="msg-content">Perimeter telemetry active. Query firewall posture, drift investigation, or policy enforcement reality.</div>
+                    </div>
+                </div>
+                <div class="chat-card-context" id="chatCardContext" style="display: none;">
+                    <div class="context-chip">
+                        <span class="context-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+                        <span class="context-title" id="contextCardTitle">Investigating Finding</span>
+                        <button type="button" class="btn-detach-context" id="btnDetachContext" title="Detach investigation context">&#x2715;</button>
                     </div>
                 </div>
                 <form class="chat-input-bar" id="chatForm">
-                    <input type="text" id="input" name="input" placeholder="Query Neo..." autocomplete="off">
-                    <button type="submit" id="sendBtn">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2">
-                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
-                        </svg>
-                    </button>
+                    <div class="chat-input-box">
+                        <span class="chat-prompt-symbol">&gt;</span>
+                        <input type="text" id="input" name="input" placeholder="Query Neo copilot..." autocomplete="off">
+                        <button type="submit" id="sendBtn" class="chat-send-btn">
+                            <span>ASK</span>
+                            <span class="kbd-hint">&#8629;</span>
+                        </button>
+                    </div>
                 </form>
             </div>
         </div>
 
     </main>
 
-    <script>
-        // Array to be populated by the AI Agent
-        let activeAlerts = [];
 
-        function renderCards(alertsToRender) {
-            const deck = document.getElementById('cardDeck');
-            deck.innerHTML = '';
-
-            let crit = 0, caut = 0, norm = 0;
-
-            alertsToRender.forEach(alert => {
-                if (alert.severity === 'critical') crit++;
-                if (alert.severity === 'caution') caut++;
-                if (alert.severity === 'normal') norm++;
-
-                const card = document.createElement('div');
-                card.className = `defense-card severity-${alert.severity}`;
-
-                card.innerHTML = `
-                    <div class="card-header">
-                        <div>
-                            <div class="card-title">${alert.title}</div>
-                            <div class="card-meta">
-                                <span>${alert.id}</span>
-                                <span>•</span>
-                                <span>${alert.ip}</span>
-                                <span>•</span>
-                                <span>${alert.time}</span>
-                            </div>
-                        </div>
-                        <span class="card-severity-badge badge-${alert.severity}">${alert.severity}</span>
-                    </div>
-                    <div class="card-body">
-                        <p>${alert.desc}</p>
-                    </div>
-                    <div class="card-actions">
-                        ${alert.severity === 'critical' || alert.severity === 'caution' ?
-                        `<button class="card-action-btn action-primary">Investigate</button>
-                             <button class="card-action-btn action-danger">Block IP</button>` :
-                        `<button class="card-action-btn action-approve">Acknowledge</button>`
-                    }
-                        <button class="card-action-btn action-mute">Mute</button>
-                    </div>
-                `;
-                deck.appendChild(card);
-            });
-
-            // Update DOM counters
-            const elCrit = document.getElementById('countCritical');
-            const elCaut = document.getElementById('countCaution');
-
-            elCrit.innerText = crit;
-            elCaut.innerText = caut;
-            document.getElementById('countNormal').innerText = norm;
-
-            // Toggle active styling based on presence of criticals
-            if (crit > 0) {
-                elCrit.classList.add('active');
-            } else {
-                elCrit.classList.remove('active');
-            }
-        }
-
-        // NOTE: Chat form, toggleChat, keyboard shortcuts, and filters
-        // are all handled by app.js — no duplicates here.
-
-        // The agent will call renderCards(activeAlerts) when data is loaded
-    </script>
-
-<!-- ── Schedule Modal ── -->
+    <!-- ── Schedule Modal: Autonomous Inspection Management Hub ── -->
     <div class="modal-overlay" id="scheduleModal" style="display: none;">
-        <div class="modal-card">
-            <div class="modal-header">
-                <h2>Card Schedule</h2>
-                <button class="btn-close-modal" id="btnCloseSchedule">✕</button>
+        <div class="modal-card schedule-modal-card">
+            <div class="modal-header schedule-modal-header">
+                <div class="schedule-header-text">
+                    <div class="schedule-title-row">
+                        <span class="schedule-engine-dot"></span>
+                        <h2>Autonomous Inspection Engine</h2>
+                    </div>
+                    <div class="schedule-subtitle">Autonomous perimeter threat hunting, health verifications, and compliance playbooks</div>
+                    <div class="schedule-header-meta">
+                        <span class="schedule-stat-chip">Total Playbooks: <strong id="schedStatTotal">0</strong></span>
+                        <span class="schedule-stat-chip stat-active">Active: <strong id="schedStatActive">0</strong></span>
+                        <span class="schedule-stat-chip stat-paused">Paused: <strong id="schedStatPaused">0</strong></span>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-modal" id="btnCloseSchedule" title="Close modal">✕</button>
             </div>
-            <div class="modal-body" id="scheduleBody">
-                <!-- Schedule entries injected here -->
+
+            <!-- Toolbar: Cadence Tabs & Search/Controls -->
+            <div class="schedule-toolbar">
+                <div class="schedule-tabs-row">
+                    <div class="schedule-tabs" id="scheduleTabs">
+                        <button type="button" class="schedule-tab active" data-tab="all">
+                            All <span class="tab-count" id="tabCountAll">0</span>
+                        </button>
+                        <button type="button" class="schedule-tab" data-tab="continuous">
+                            Continuous (5m) <span class="tab-count" id="tabCountContinuous">0</span>
+                        </button>
+                        <button type="button" class="schedule-tab" data-tab="periodic">
+                            Periodic (30m) <span class="tab-count" id="tabCountPeriodic">0</span>
+                        </button>
+                        <button type="button" class="schedule-tab" data-tab="daily">
+                            Daily Audits <span class="tab-count" id="tabCountDaily">0</span>
+                        </button>
+                        <button type="button" class="schedule-tab" data-tab="weekly">
+                            Weekly Baselines <span class="tab-count" id="tabCountWeekly">0</span>
+                        </button>
+                    </div>
+                    <div class="schedule-actions">
+                        <button type="button" class="btn-batch-action" id="btnEnableAllCards" title="Enable all registered playbooks">Enable All</button>
+                        <button type="button" class="btn-batch-action" id="btnDisableAllCards" title="Pause all registered playbooks">Pause All</button>
+                    </div>
+                </div>
+                <div class="schedule-controls-row">
+                    <div class="schedule-search-box">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input type="text" class="schedule-search-input" id="schedSearchInput" placeholder="Filter by ID (FT-01), name, or keyword..." autocomplete="off">
+                        <button type="button" class="btn-clear-search" id="btnSchedClearSearch" style="display: none;">✕</button>
+                    </div>
+                    <div class="schedule-status-filter" id="schedStatusFilter">
+                        <button type="button" class="status-filter-btn active" data-status="all">All</button>
+                        <button type="button" class="status-filter-btn" data-status="active">Active</button>
+                        <button type="button" class="status-filter-btn" data-status="paused">Paused</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="schedule-grid-body" id="scheduleBody">
+                <!-- Playbook cards injected here -->
             </div>
         </div>
     </div>
@@ -1611,8 +2490,10 @@
     </audio>
 
     
-    <script src="app.js"></script>
+    <!-- ── SOC Glassmorphic Toast Container ── -->
+    <div class="toast-container" id="toastContainer"></div>
 
+    <script src="app.js?v=3.0"></script>
 </body>
 
 </html>

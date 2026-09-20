@@ -10,6 +10,7 @@ between CRITICAL (52%) and CAUTION (47%), that 5% margin should trigger
 human review — not blind trust in the output text.
 """
 
+import re
 import math
 import logging
 from dataclasses import dataclass, field
@@ -17,8 +18,38 @@ from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# Severity tokens we specifically watch for in logprobs
-_SEVERITY_TOKENS = {"critical", "caution", "normal", "warning", "high", "medium", "low"}
+# Canonical mapping from synonyms and BPE subwords to core severity tiers
+_SEVERITY_CANONICAL_MAP = {
+    # Critical tier
+    "critical": "critical",
+    "crit": "critical",
+    "severe": "critical",
+    "sever": "critical",
+    "fatal": "critical",
+    "high": "critical",
+    "p1": "critical",
+
+    # Caution tier
+    "caution": "caution",
+    "caut": "caution",
+    "warning": "caution",
+    "warn": "caution",
+    "medium": "caution",
+    "med": "caution",
+    "moderate": "caution",
+    "p2": "caution",
+
+    # Normal tier
+    "normal": "normal",
+    "norm": "normal",
+    "low": "normal",
+    "info": "normal",
+    "healthy": "normal",
+    "clean": "normal",
+    "p3": "normal",
+}
+
+_CLEAN_TOKEN_RE = re.compile(r'[^a-zA-Z0-9]')
 
 # If the margin between top-2 tokens for a severity decision is below this,
 # the model is internally uncertain and should flag for human review.
@@ -39,10 +70,11 @@ def extract_logprobs(response) -> LogprobResult:
     """
     Extract logprob data from a Gemini API response.
 
-    Looks for severity-related tokens in the logprob candidates and computes:
-    1. confidence_margin — the probability gap between the top-2 severity tokens
-    2. entropy_score — Shannon entropy of the full token distribution
-    3. severity_distribution — probability of each severity level
+    Cleans JSON-quoted and subword tokens, clusters synonyms into canonical
+    severity tiers ('critical', 'caution', 'normal'), and computes:
+    1. confidence_margin — the probability gap between the top-2 canonical tiers
+    2. entropy_score — normalized Shannon entropy across active tiers
+    3. severity_distribution — probability mass allocated to each tier
 
     Falls back gracefully if the model/endpoint doesn't support logprobs.
     """
@@ -63,9 +95,9 @@ def extract_logprobs(response) -> LogprobResult:
             return result
 
         # Iterate through all token positions looking for severity decisions
-        chosen_logprobs = getattr(logprobs_result, 'chosen_candidates', [])
         top_candidates_list = getattr(logprobs_result, 'top_candidates', [])
 
+        tier_probs = {"critical": 0.0, "caution": 0.0, "normal": 0.0}
         severity_found = False
 
         for i, top_candidates in enumerate(top_candidates_list):
@@ -73,33 +105,39 @@ def extract_logprobs(response) -> LogprobResult:
             if not candidates:
                 continue
 
-            # Check if any of the top-K tokens at this position are severity tokens
             token_probs = []
             for cand in candidates:
-                token = getattr(cand, 'token', '').strip().lower()
+                raw_token = getattr(cand, 'token', '')
+                clean_token = _CLEAN_TOKEN_RE.sub('', raw_token).lower()
                 log_prob = getattr(cand, 'log_probability', None)
                 if log_prob is not None:
                     prob = math.exp(log_prob)
-                    token_probs.append((token, prob))
+                    token_probs.append((clean_token or raw_token.strip(), prob))
 
-                    if token in _SEVERITY_TOKENS:
-                        result.severity_distribution[token] = round(prob, 4)
+                    canonical_tier = _SEVERITY_CANONICAL_MAP.get(clean_token)
+                    if canonical_tier:
+                        tier_probs[canonical_tier] += prob
                         severity_found = True
 
             # Store top tokens for this position (for debugging/display)
             if token_probs:
                 result.top_tokens.append({t: round(p, 4) for t, p in token_probs[:5]})
 
-        # Compute confidence margin from severity distribution
-        if result.severity_distribution:
+        # Filter to active tiers and compute margin
+        if severity_found:
+            total_mass = sum(tier_probs.values())
+            if total_mass > 0:
+                result.severity_distribution = {k: round(v / total_mass, 4) for k, v in tier_probs.items() if v > 0}
+            else:
+                result.severity_distribution = {k: round(v, 4) for k, v in tier_probs.items() if v > 0}
+
             sorted_probs = sorted(result.severity_distribution.values(), reverse=True)
             if len(sorted_probs) >= 2:
                 result.confidence_margin = round(sorted_probs[0] - sorted_probs[1], 4)
             elif len(sorted_probs) == 1:
                 result.confidence_margin = round(sorted_probs[0], 4)
 
-        # Compute Shannon entropy across all severity probabilities
-        if result.severity_distribution:
+            # Compute Shannon entropy across canonical severity tiers
             result.entropy_score = _shannon_entropy(list(result.severity_distribution.values()))
 
         # Determine if this should escalate to HITL
@@ -119,9 +157,15 @@ def extract_logprobs(response) -> LogprobResult:
 
 
 def _shannon_entropy(probs: List[float]) -> float:
-    """Compute Shannon entropy from a probability distribution."""
+    """Compute normalized Shannon entropy from a probability distribution (M2)."""
+    if not probs:
+        return 0.0
+    total = sum(p for p in probs if p > 0)
+    if total <= 0:
+        return 0.0
     entropy = 0.0
     for p in probs:
         if p > 0:
-            entropy -= p * math.log2(p)
+            p_norm = p / total
+            entropy -= p_norm * math.log2(p_norm)
     return round(entropy, 4)

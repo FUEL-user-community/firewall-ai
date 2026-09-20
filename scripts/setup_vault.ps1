@@ -9,9 +9,39 @@ Write-Host " CORE DEFENSE — Local Vault Setup Wizard" -ForegroundColor Cyan
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Pre-flight: Check Docker availability
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Write-Host "[ERROR] Docker CLI not found. Please install and start Docker Desktop." -ForegroundColor Red
+    exit 1
+}
+
+$dockerCheck = docker info 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Docker daemon is not running. Please start Docker Desktop and retry." -ForegroundColor Red
+    exit 1
+}
+
 Write-Host "Starting Vault via Docker Compose..." -ForegroundColor Yellow
 docker compose up -d vault
-Start-Sleep -Seconds 4
+
+Write-Host "Waiting for Vault to become ready..." -ForegroundColor Yellow
+$maxWait = 30
+$waited = 0
+$ready = $false
+while ($waited -lt $maxWait) {
+    docker compose exec -T -e VAULT_TOKEN=root vault vault status 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
+        $ready = $true
+        break
+    }
+    Start-Sleep -Seconds 1
+    $waited++
+}
+
+if (-not $ready) {
+    Write-Host "[ERROR] Vault failed to become healthy within $maxWait seconds." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host "Configuring AppRole authentication..." -ForegroundColor Yellow
 docker compose exec -T -e VAULT_TOKEN=root vault vault auth enable approle 2>$null
@@ -36,7 +66,7 @@ $secretId = (docker compose exec -T -e VAULT_TOKEN=root vault vault write -f -fi
 
 Clear-Host
 Write-Host "======================================================" -ForegroundColor Green
-Write-Host "✓ CORE DEFENSE LOCAL VAULT PROVISIONED SUCCESSFULLY" -ForegroundColor Green
+Write-Host "[OK] CORE DEFENSE LOCAL VAULT PROVISIONED SUCCESSFULLY" -ForegroundColor Green
 Write-Host "======================================================" -ForegroundColor Green
 Write-Host "Your local Vault is running at: http://127.0.0.1:8200"
 Write-Host "You can log into the Vault UI using the token: root"

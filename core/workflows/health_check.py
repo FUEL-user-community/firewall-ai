@@ -1,24 +1,69 @@
 """
 Deterministic Health Check Workflow
 
-Executes a fixed sequence of tool calls, applies threshold checks in Python,
-and sends only a structured summary to the LLM for final synthesis.
-The LLM never orchestrates the tools — it only writes the report.
+Executes a fixed sequence of tool calls, applies threshold checks in Python
+loaded from config/health_rules.yaml, and sends a structured summary to the LLM
+for final synthesis. The LLM never orchestrates the tools — it only writes the report.
 """
 import re
 import logging
+from pathlib import Path
+import yaml
 
 logger = logging.getLogger(__name__)
 
+_RULES_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "health_rules.yaml"
 
-# Thresholds (Python-enforced, not prompt-injected)
-THRESHOLDS = {
-    "uptime_caution_hours": 24,
-    "swap_caution_mb": 0,
-    "load_per_vcpu_caution": 0.7,
-    "load_per_vcpu_critical": 1.5,
-    "disk_caution_pct": 80,
+# Built-in fallback defaults in case config file is missing or invalid
+_FALLBACK_RULES = {
+    "uptime": {"warn_if_under_hours": 12, "rationale": "Recent reboot detected"},
+    "memory": {"swap_warn_above_mb": 0},
+    "cpu": {
+        "load_per_core_caution": 0.75,
+        "load_per_core_critical": 1.50,
+        "idle_caution_under_pct": 50.0,
+        "idle_critical_under_pct": 20.0,
+        "suppress_load_alert_if_idle_above_pct": 70.0,
+    },
+    "storage": {
+        "system_partitions": {"caution_pct": 85, "critical_pct": 95},
+        "log_partitions": {"caution_pct": 92, "critical_pct": 97},
+    },
 }
+
+
+def load_health_rules(target_device: str = None) -> dict:
+    """
+    Loads health check threshold rules from config/health_rules.yaml.
+    Applies device-specific overrides if configured.
+    Falls back gracefully to safe defaults if the file is missing or invalid.
+    """
+    rules = {k: dict(v) for k, v in _FALLBACK_RULES.items()}
+    if _RULES_FILE.exists():
+        try:
+            with open(_RULES_FILE, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+                if isinstance(loaded, dict):
+                    # Merge base sections
+                    for section in ("uptime", "memory", "cpu", "storage"):
+                        if section in loaded and isinstance(loaded[section], dict):
+                            rules[section] = {**rules.get(section, {}), **loaded[section]}
+
+                    # Apply optional device-specific overrides
+                    dev_overrides = loaded.get("device_overrides", {})
+                    if target_device and isinstance(dev_overrides, dict) and target_device in dev_overrides:
+                        dev_rule = dev_overrides[target_device]
+                        for section, section_rules in dev_rule.items():
+                            if section in rules and isinstance(section_rules, dict):
+                                rules[section].update(section_rules)
+        except Exception as e:
+            logger.warning(f"[HealthCheck] Error reading health_rules.yaml: {e}. Using safe fallbacks.")
+
+    return rules
+
+
+# Backward-compatibility alias
+THRESHOLDS = load_health_rules()
 
 
 def _parse_telemetry(raw_output: str) -> dict:
@@ -28,9 +73,9 @@ def _parse_telemetry(raw_output: str) -> dict:
     """
     metrics = {}
     
-    # Uptime: "up X day(s), HH:MM" or "up HH:MM"
-    uptime_days = re.search(r'up\s+(\d+)\s+day', raw_output)
-    uptime_hours = re.search(r'up\s+(\d+):(\d+)', raw_output)
+    # Uptime: "up X day(s), HH:MM" or "up HH:MM" or "uptime: X day(s)"
+    uptime_days = re.search(r'(?:uptime[:\s]+|up\s+)(\d+)\s+day', raw_output, re.IGNORECASE)
+    uptime_hours = re.search(r'(?:uptime[:\s]+|up\s+)(\d+):(\d+)', raw_output, re.IGNORECASE)
     if uptime_days:
         metrics['uptime_hours'] = int(uptime_days.group(1)) * 24
     elif uptime_hours:
@@ -38,20 +83,15 @@ def _parse_telemetry(raw_output: str) -> dict:
     else:
         metrics['uptime_hours'] = None
     
-    # Swap: PAN-OS format is "Swap:  4095996k total,        0k used,  4095996k free"
-    # Anchor on "total" then capture the "used" value after it.
+    # Swap: PAN-OS format is "Swap:  4095996k total,        0k used" or "KiB Swap:  2048000 total,        0 used"
     swap_used_match = re.search(
-        r'[Ss]wap.*?(\d+)\s*k\s+total[,\s]+(\d+)\s*k\s+used',
+        r'[Ss]wap.*?(\d+)\s*k?\s+used',
         raw_output
     )
     if swap_used_match:
-        metrics['swap_mb'] = int(swap_used_match.group(2)) // 1024  # group(2) = used
+        metrics['swap_mb'] = int(swap_used_match.group(1)) // 1024  # group(1) = used in KB
     else:
-        # Fallback: if format doesn't match, try generic (but flag as uncertain)
-        swap_fallback = re.search(r'[Ss]wap[^:]*:\s*(\d+)', raw_output)
-        metrics['swap_mb'] = int(swap_fallback.group(1)) // 1024 if swap_fallback else 0
-        if swap_fallback:
-            logger.warning("[PARSE] Swap: used 'total' fallback regex - value may be inaccurate")
+        metrics['swap_mb'] = 0
     
     # Load average (1-min): "load average: X.XX, Y.YY, Z.ZZ"
     load_match = re.search(r'load averages?:\s*([\d.]+)', raw_output)
@@ -66,65 +106,109 @@ def _parse_telemetry(raw_output: str) -> dict:
     metrics['mem_total_mb'] = int(mem_match.group(1)) if mem_match else None
     
     # vCPU count (default 2 for PA-VM)
-    vcpu_match = re.search(r'(\d+)\s*(?:cpus?|cores?|processors?)', raw_output, re.IGNORECASE)
+    vcpu_match = re.search(r'(?:num(?:ber)?-?(?:of-)?cpus?|cores?)\s*[:=]?\s*(\d+)', raw_output, re.IGNORECASE)
+    if not vcpu_match:
+        vcpu_match = re.search(r'(?<![\.\d])\b(\d+)\s+[^\S\r\n]*(?:cpus?|cores?|processors?)\b', raw_output, re.IGNORECASE)
     metrics['vcpu_count'] = int(vcpu_match.group(1)) if vcpu_match else 2
+
+    # Disk partitions: parses both standard df output and YAML filesystem dumps
+    disks = []
+    # Match standard CLI df table: /dev/sda3 3.8G 1.5G 2.1G 43% /opt/pancfg
+    for match in re.finditer(r'^\s*(\S+)\s+\S+\s+\S+\s+\S+\s+(\d+)%\s+(\S+)', raw_output, re.MULTILINE):
+        disks.append({"filesystem": match.group(1), "pct": int(match.group(2)), "mount": match.group(3)})
+    # Fallback to YAML key extraction if already converted by ToxicXmlSanitizer
+    if not disks:
+        for match in re.finditer(r'usage_pct:\s*[\'"]?(\d+)[\'"]?.*?mounted_on:\s*[\'"]?(\S+)[\'"]?', raw_output, re.DOTALL):
+            disks.append({"filesystem": match.group(2).strip('\'"'), "pct": int(match.group(1)), "mount": match.group(2).strip('\'"')})
+    metrics['disks'] = disks
     
     return metrics
 
 
-def _apply_thresholds(metrics: dict) -> list:
+def _apply_thresholds(metrics: dict, target_device: str = None, rules: dict = None) -> list:
     """
-    Applies Python-enforced thresholds.
+    Applies declarative rules loaded from config/health_rules.yaml.
     Returns list of (subsystem, verdict, detail) tuples.
-    
-    NOTE: We apply cross-referencing logic here (e.g., suppressing CPU load alerts 
-    if CPU idle is high) deterministically in Python. This prevents the LLM from 
-    hallucinating or misinterpreting the complex relationships between these metrics.
     """
     findings = []
+    r = rules or load_health_rules(target_device)
     
-    # Uptime
+    # 1. Uptime
     uptime = metrics.get('uptime_hours')
+    warn_uptime = r.get("uptime", {}).get("warn_if_under_hours", 12)
     if uptime is not None:
-        if uptime < THRESHOLDS['uptime_caution_hours']:
-            findings.append(("Uptime", "CAUTION", f"{uptime}h — recent reboot detected, investigate cause"))
+        if uptime < warn_uptime:
+            rationale = r.get("uptime", {}).get("rationale", "Recent reboot detected")
+            findings.append(("Uptime", "CAUTION", f"{uptime}h (Threshold: <{warn_uptime}h) — {rationale}"))
         else:
             findings.append(("Uptime", "NORMAL", f"{uptime}h"))
     
-    # Swap
+    # 2. Swap
     swap = metrics.get('swap_mb', 0)
-    if swap > THRESHOLDS['swap_caution_mb']:
-        findings.append(("Swap", "CAUTION", f"{swap}MB active — memory pressure on dedicated appliance"))
+    warn_swap = r.get("memory", {}).get("swap_warn_above_mb", 0)
+    if swap > warn_swap:
+        findings.append(("Swap", "CAUTION", f"{swap}MB active (Threshold: >{warn_swap}MB) — memory pressure detected"))
     else:
         findings.append(("Swap", "NORMAL", "Inactive"))
     
-    # CPU Load (normalized to vCPU count)
-    # Cross-reference: suppress load CAUTION if CPU idle > 70% (I/O wait inflates load avg)
+    # 3. CPU Load (Normalized to vCPU count)
     load = metrics.get('load_avg')
     vcpus = metrics.get('vcpu_count', 2)
     idle = metrics.get('cpu_idle_pct')
-    if load is not None and vcpus:
+    cpu_r = r.get("cpu", {})
+    if load is not None and vcpus and vcpus > 0:
         ratio = load / vcpus
-        idle_override = idle is not None and idle > 70
+        suppress_threshold = cpu_r.get("suppress_load_alert_if_idle_above_pct", 70.0)
+        idle_override = idle is not None and idle > suppress_threshold
         
-        if ratio > THRESHOLDS['load_per_vcpu_critical'] and not idle_override:
-            findings.append(("CPU Load", "CRITICAL", f"Load/vCPU={ratio:.2f} (load={load}, cores={vcpus})"))
-        elif ratio > THRESHOLDS['load_per_vcpu_caution'] and not idle_override:
-            findings.append(("CPU Load", "CAUTION", f"Load/vCPU={ratio:.2f} (load={load}, cores={vcpus})"))
-        elif ratio > THRESHOLDS['load_per_vcpu_caution'] and idle_override:
-            findings.append(("CPU Load", "NORMAL", f"Load/vCPU={ratio:.2f} (load={load}, cores={vcpus}) [suppressed: {idle}% idle]"))
+        crit_load = cpu_r.get("load_per_core_critical", 1.50)
+        caut_load = cpu_r.get("load_per_core_caution", 0.75)
+
+        if ratio > crit_load and not idle_override:
+            findings.append(("CPU Load", "CRITICAL", f"Load/vCPU={ratio:.2f} (load={load}, cores={vcpus}) [Limit: {crit_load}]"))
+        elif ratio > caut_load and not idle_override:
+            findings.append(("CPU Load", "CAUTION", f"Load/vCPU={ratio:.2f} (load={load}, cores={vcpus}) [Limit: {caut_load}]"))
+        elif ratio > caut_load and idle_override:
+            findings.append(("CPU Load", "NORMAL", f"Load/vCPU={ratio:.2f} (cores={vcpus}) [Suppressed: {idle}% CPU idle]"))
         else:
-            findings.append(("CPU Load", "NORMAL", f"Load/vCPU={ratio:.2f} (load={load}, cores={vcpus})"))
+            findings.append(("CPU Load", "NORMAL", f"Load/vCPU={ratio:.2f} (cores={vcpus})"))
     
-    # CPU Idle
-    idle = metrics.get('cpu_idle_pct')
+    # 4. CPU Idle
     if idle is not None:
-        if idle < 20:
-            findings.append(("CPU Idle", "CRITICAL", f"{idle}% idle"))
-        elif idle < 50:
-            findings.append(("CPU Idle", "CAUTION", f"{idle}% idle"))
+        caut_idle = cpu_r.get("idle_caution_under_pct", 50.0)
+        crit_idle = cpu_r.get("idle_critical_under_pct", 20.0)
+        if idle < crit_idle:
+            findings.append(("CPU Idle", "CRITICAL", f"{idle}% idle (Critical limit: <{crit_idle}%)"))
+        elif idle < caut_idle:
+            findings.append(("CPU Idle", "CAUTION", f"{idle}% idle (Caution limit: <{caut_idle}%)"))
         else:
             findings.append(("CPU Idle", "NORMAL", f"{idle}% idle"))
+
+    # 5. Storage (Partition-Smart: Log Storage vs System Storage)
+    disks = metrics.get('disks', [])
+    if disks:
+        storage_r = r.get("storage", {})
+        sys_cfg = storage_r.get("system_partitions", {"caution_pct": 85, "critical_pct": 95})
+        log_cfg = storage_r.get("log_partitions", {"caution_pct": 92, "critical_pct": 97})
+
+        issues = []
+        max_disk = max(disks, key=lambda d: d['pct'])
+        for d in disks:
+            mount, pct = d['mount'], d['pct']
+            is_log = "log" in mount.lower()
+            cfg = log_cfg if is_log else sys_cfg
+
+            if pct >= cfg["critical_pct"]:
+                issues.append(("CRITICAL", f"{mount} at {pct}% capacity (Critical limit: {cfg['critical_pct']}%)"))
+            elif pct >= cfg["caution_pct"]:
+                issues.append(("CAUTION", f"{mount} at {pct}% capacity (Caution limit: {cfg['caution_pct']}%)"))
+
+        if issues:
+            issues.sort(key=lambda x: 0 if x[0] == "CRITICAL" else 1)
+            for verdict, detail in issues:
+                findings.append(("Disk", verdict, detail))
+        else:
+            findings.append(("Disk", "NORMAL", f"Max partition usage {max_disk['pct']}% ({max_disk['mount']})"))
     
     return findings
 
@@ -153,13 +237,11 @@ def run_health_check(tool_executor, target_device: str = None) -> str:
         return f"HEALTH CHECK FAILED: hardware_telemetry returned: {raw_output}"
     
     metrics = _parse_telemetry(str(raw_output))
-    findings = _apply_thresholds(metrics)
+    findings = _apply_thresholds(metrics, target_device=target_device)
     
     # Build structured summary for LLM
     lines = ["HEALTH CHECK RESULTS (deterministic workflow):"]
     lines.append("")
-    
-    has_issues = any(v != "NORMAL" for _, v, _ in findings)
     
     for subsystem, verdict, detail in findings:
         marker = "⚠️" if verdict == "CAUTION" else ("🔴" if verdict == "CRITICAL" else "✅")
@@ -168,7 +250,7 @@ def run_health_check(tool_executor, target_device: str = None) -> str:
     lines.append("")
     lines.append(f"Parsed metrics: {metrics}")
     
-    # Fix 3: Multi-CAUTION escalation directive
+    # Multi-CAUTION escalation directive
     caution_count = sum(1 for _, v, _ in findings if v in ("CAUTION", "CRITICAL"))
     if caution_count >= 2:
         lines.append("")
@@ -181,3 +263,4 @@ def run_health_check(tool_executor, target_device: str = None) -> str:
     lines.append(str(raw_output)[:2000])
     
     return "\n".join(lines)
+
