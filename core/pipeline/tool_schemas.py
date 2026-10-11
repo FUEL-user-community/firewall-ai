@@ -6,7 +6,7 @@ Tools without a schema in TOOL_SCHEMAS fall through to existing tool executor va
 """
 
 from pydantic import BaseModel, field_validator
-from typing import Optional, Union
+from typing import Optional
 import re
 import ipaddress
 
@@ -133,8 +133,8 @@ class TestRoutingFibArgs(BaseModel):
 class TestPbfPolicyArgs(BaseModel):
     source: str
     destination: str
-    destination_port: Optional[Union[str, int]] = "443"
-    protocol: Optional[Union[str, int]] = "6"
+    destination_port: Optional[str] = "443"
+    protocol: Optional[str] = "6"
     from_zone: Optional[str] = None
     application: Optional[str] = None
     target_device: Optional[str] = None

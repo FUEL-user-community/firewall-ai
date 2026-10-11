@@ -12,7 +12,7 @@ import time
 import logging
 import ipaddress
 import threading
-from typing import Optional, Union
+from typing import Optional
 from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
 from xml.sax.saxutils import escape
 
@@ -278,10 +278,10 @@ def test_routing_fib(ip: str = None, virtual_router: str = "default", target_dev
 
 
 def test_pbf_policy(
-    source: str,
-    destination: str,
-    destination_port: Union[int, str] = 443,
-    protocol: Union[int, str] = 6,
+    source: str = None,
+    destination: str = None,
+    destination_port: str = "443",
+    protocol: str = "6",
     from_zone: Optional[str] = None,
     application: Optional[str] = None,
     target_device: Optional[str] = None
