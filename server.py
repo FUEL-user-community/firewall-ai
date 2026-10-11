@@ -16,7 +16,7 @@ import queue
 import threading
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Optional, List
+from typing import Optional
 from collections import OrderedDict
 
 # Load .env before anything else
@@ -64,6 +64,7 @@ def _cache_investigation(trace_id: str, query: str, verdict: str, receipts: list
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="Investigation query or message")
+    device: Optional[str] = Field("default", description="Target firewall device alias from devices.yaml")
 
 class ExportDocRequest(BaseModel):
     trace_id: str = Field(..., min_length=1, description="Trace ID of the investigation to export")
@@ -258,6 +259,9 @@ async def chat(payload: ChatRequest, request: Request):
             status_code=400
         )
     
+    target_device = (payload.device or "default").strip()
+    effective_device = None if target_device in ("all", "default", "") else target_device
+
     async def generate():
         """Stream the investigation response with granular status updates."""
         try:
@@ -277,6 +281,7 @@ async def chat(payload: ChatRequest, request: Request):
                     user_message,
                     user_id="web-user",
                     status_callback=status_callback,
+                    target_device=effective_device,
                     abort_event=abort_event,
                     return_details=True
                 )
@@ -347,6 +352,36 @@ async def chat(payload: ChatRequest, request: Request):
             "X-Accel-Buffering": "no",
         }
     )
+
+
+@app.get("/api/telemetry")
+async def get_telemetry(device: Optional[str] = "default"):
+    """
+    Returns real-time telemetry snapshot (active sessions, throughput, cps, CPU)
+    for the specified firewall without running dangerous unbounded CLI dumps.
+    """
+    try:
+        from core.panos.ops import get_telemetry_snapshot
+        effective_device = None if device in ("all", "default", "", None) else device.strip()
+        stats = get_telemetry_snapshot(target_device=effective_device)
+        return JSONResponse(content={
+            "success": True,
+            "device": device or "default",
+            **stats
+        })
+    except Exception as e:
+        logger.warning(f"[TELEMETRY] Failed to capture snapshot: {e}")
+        return JSONResponse(content={
+            "success": False,
+            "device": device or "default",
+            "active_sessions": 0,
+            "mgmt_cpu": 0.0,
+            "data_cpu": 0.0,
+            "cps": 0,
+            "throughput_kbps": 0,
+            "error": str(e)
+        })
+
 
 @app.get("/api/investigations/{trace_id}/receipts")
 async def get_investigation_receipts(trace_id: str):
@@ -572,12 +607,6 @@ async def setup(payload: SetupRequest, request: Request):
         except Exception as e:
             logger.debug(f"[SETUP] Secrets provider reset: {e}")
 
-        try:
-            from core.visibility.auditor import Auditor
-            Auditor.reset()
-        except Exception as e:
-            logger.debug(f"[SETUP] Auditor reset: {e}")
-        
         return JSONResponse(content={
             "success": True,
             "passphrase": api_access_key

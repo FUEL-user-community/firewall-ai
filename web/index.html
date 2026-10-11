@@ -41,10 +41,10 @@
                 <span>New chat</span>
             </button>
             <a href="range.html" class="nav-link-btn" title="Open Attack Range Simulation">Attack Range &rarr;</a>
-            <!-- Perimeter Status Chip (Hidden to keep header clean) -->
-            <div class="perimeter-status-chip" id="perimeterStatusChip" style="display: none;" aria-hidden="true">
+            <!-- Perimeter Status Chip (Live Telemetry & Health) -->
+            <div class="perimeter-status-chip" id="perimeterStatusChip" title="Real-time firewall telemetry">
                 <span class="status-pulse-dot"></span>
-                <span class="status-chip-text" id="perimeterStatusText"></span>
+                <span class="status-chip-text" id="perimeterStatusText">Telemetry: Initializing...</span>
             </div>
         </div>
     </header>
@@ -152,6 +152,18 @@
                 <button type="submit" id="loginBtn">Connect</button>
             </form>
             <div id="loginError" class="login-error"></div>
+        </div>
+    </div>
+
+    <!-- Operator Authorization HITL Text Popup (Pure Text, No Images) -->
+    <div class="text-popup-overlay" id="hitlTextPopup" style="display: none;" onclick="if(event.target === this) closeHitlTextPopup()">
+        <div class="text-popup-card">
+            <div class="text-popup-title">Operator Authorization Required</div>
+            <p class="text-popup-body">Unbounded 'show session all' was blocked to protect management CPU and high-availability stability. Do you want to authorize an operator override to run this command?</p>
+            <div class="text-popup-actions">
+                <button type="button" class="text-popup-btn text-popup-cancel" onclick="closeHitlTextPopup()">Cancel</button>
+                <button type="button" class="text-popup-btn text-popup-confirm" onclick="confirmHitlTextOverride()">Authorize Override</button>
+            </div>
         </div>
     </div>
 

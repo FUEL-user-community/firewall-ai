@@ -15,7 +15,6 @@ from core.safety.policy_engine import PolicyEngine, PolicyViolationError
 from core.safety.budget_guard import BudgetGuard, BudgetExceededError
 from core.safety.circuit_breaker import CircuitBreaker, CircuitBreakerError
 from core.safety.scrubber import scrub
-from core.safety.semantic_drift_gate import SemanticDriftGate
 from core.safety.hitl import ApprovalRequest, AutoApproveProvider, SimulatedInteractiveProvider, get_hitl_provider
 
 
@@ -175,32 +174,7 @@ def test_scrubber_preserves_standard_network_constants():
     assert "[SN_" in result
 
 
-# ─── 7. Semantic Drift Gate Tests ────────────────────────────────────
-
-def test_semantic_drift_gate_dimension_clamping():
-    """Verify M3: vectors clamped and dimension mismatch handled safely."""
-    gate = SemanticDriftGate()
-    gate.MIN_TURNS = 1
-
-    # Mock embed_fn to return controlled vectors
-    gate._embed_fn = lambda text: [1.0, 0.0, 0.0] if "firewall" in text else [0.0, 1.0, 0.0]
-
-    # Turn 0: baseline accumulates
-    r0 = gate.check("firewall investigation start", trace_id="t1", turn=0)
-    assert r0.allowed is True
-
-    # Turn 1: same context
-    r1 = gate.check("firewall investigation continues", trace_id="t1", turn=1)
-    assert r1.allowed is True
-
-    # Turn 2: completely diverged context (orthogonal vector)
-    r2 = gate.check("completely unrelated topic cooking recipes", trace_id="t1", turn=2)
-    assert r2.allowed is False
-    assert r2.severity == "critical"
-    assert -1.0 <= r2.similarity <= 1.0
-
-
-# ─── 8. HITL Provider Tests ──────────────────────────────────────────
+# ─── 7. HITL Provider Tests ──────────────────────────────────────────
 
 def test_hitl_signature_generation():
     """Verify HITL approval produces valid deterministic HMAC signature."""

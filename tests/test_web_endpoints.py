@@ -38,6 +38,8 @@ def test_static_index_html():
     assert 'id="toastContainer"' in res_index.text
     assert 'id="messages"' in res_index.text
     assert 'id="input"' in res_index.text
+    assert 'id="hitlTextPopup"' in res_index.text
+    assert 'id="perimeterStatusChip"' in res_index.text
 
 
 def test_static_range_html():
@@ -87,6 +89,14 @@ def test_active_telemetry_endpoints(ensure_auth_key):
     # Receipts 404 for unknown trace
     res_receipts = client.get("/api/investigations/unknown-trace-id-999/receipts", headers=headers)
     assert res_receipts.status_code == 404
+
+    # Real-time telemetry endpoint contract check
+    res_telem = client.get("/api/telemetry?device=default", headers=headers)
+    assert res_telem.status_code == 200
+    telem_data = res_telem.json()
+    assert "success" in telem_data
+    assert "active_sessions" in telem_data
+    assert "mgmt_cpu" in telem_data
 
 
 def test_range_simulate_validation(ensure_auth_key):

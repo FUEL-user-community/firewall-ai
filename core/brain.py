@@ -53,7 +53,6 @@ def _load_devices_config() -> dict:
 # Standard Absolute Imports
 from core.pipeline.tool_keeper import ToolKeeper
 from core.safety.circuit_breaker import CircuitBreaker, CircuitBreakerError
-from core.safety.semantic_drift_gate import SemanticDriftGate
 
 # Secrets management -- fail-soft
 try:
@@ -145,7 +144,6 @@ class InvestigationState:
     manifest_str: str
     base_config: Any
     circuit_breaker: CircuitBreaker
-    drift_gate: SemanticDriftGate
     tool_executor: ToolExecutor
     status_callback: Optional[Callable[[str], None]] = None
     target_mode: str = "default"
@@ -437,7 +435,6 @@ class CoreBrain:
         """Initializes thread-safe, request-scoped safety governors and state."""
         trace_id = str(uuid.uuid4())[:DEFAULT_TRACE_ID_LEN]
         circuit_breaker = CircuitBreaker(max_steps=30, max_loops=4)
-        drift_gate = SemanticDriftGate()
 
         tool_executor = ToolExecutor(
             policy=self.policy,
@@ -472,7 +469,6 @@ class CoreBrain:
             manifest_str=manifest_str,
             base_config=base_config,
             circuit_breaker=circuit_breaker,
-            drift_gate=drift_gate,
             tool_executor=tool_executor,
             status_callback=status_callback,
             target_mode=target_mode or "default",
@@ -685,38 +681,6 @@ class CoreBrain:
 
         return result
 
-    def _evaluate_semantic_drift(
-        self,
-        turn_result: TurnPartsResult,
-        state: InvestigationState,
-        turn: int,
-        **kwargs
-    ) -> Optional[str]:
-        """Evaluates semantic drift gate on accumulated reasoning."""
-        if not turn_result.turn_reasoning_parts:
-            return None
-
-        combined_reasoning = "\n".join(turn_result.turn_reasoning_parts)
-        gate_result = state.drift_gate.check(combined_reasoning, state.trace_id, turn)
-
-        if state.investigation_trace:
-            state.investigation_trace[-1]["drift_score"] = round(gate_result.similarity, 3)
-            state.investigation_trace[-1]["drift_severity"] = gate_result.severity
-
-        state.emit(f"[DRIFT:{gate_result.severity}:{gate_result.similarity:.3f}:T{turn}]")
-        if not gate_result.allowed:
-            logger.error(f"[{state.trace_id}] [SHIELD] Semantic Drift Gate Tripped: {gate_result.message}")
-            try:
-                from core.pipeline.cognitive_trace import CognitiveTraceLogger
-                trace_logger = CognitiveTraceLogger()
-                trace_logger.log_trace(state.trace_id, kwargs.get('target_mode', state.target_mode), state.investigation_trace, turn + 1)
-            except Exception as trace_err:
-                logger.debug(f"[{state.trace_id}] Trace log skipped: {trace_err}")
-            return f"[HALTED] Investigation halted by Semantic Drift Safety Gate\n\n{gate_result.message}"
-        elif gate_result.severity == "caution":
-            state.emit(f"[DRIFT-CAUTION] {gate_result.message}")
-
-        return None
 
     def _handle_tool_tray_pivot(
         self,
@@ -1005,10 +969,6 @@ class CoreBrain:
             # Check for dynamic tool tray pivot (e.g. summon_toolkit)
             pivot_directive = self._handle_tool_tray_pivot(turn_result, state)
 
-            # Enforce semantic drift safety boundary
-            drift_error = self._evaluate_semantic_drift(turn_result, state, turn, **kwargs)
-            if drift_error:
-                return _wrap_return(drift_error)
 
             # Feed tool execution results back to model
             if turn_result.tool_parts:

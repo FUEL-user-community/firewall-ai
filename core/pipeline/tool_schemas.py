@@ -6,7 +6,7 @@ Tools without a schema in TOOL_SCHEMAS fall through to existing tool executor va
 """
 
 from pydantic import BaseModel, field_validator
-from typing import Optional
+from typing import Optional, Union
 import re
 import ipaddress
 
@@ -93,6 +93,7 @@ class ExecuteOperationalCommandArgs(BaseModel):
     cmd: Optional[str] = None
     command: Optional[str] = None
     target_device: Optional[str] = None
+    hitl_approved: Optional[bool] = False
 
     def model_dump(self, *args, **kwargs):
         """Ensure canonical 'cmd' argument is always supplied to execute_operational_command (H2)."""
@@ -102,7 +103,8 @@ class ExecuteOperationalCommandArgs(BaseModel):
             raise ValueError("Operational command ('cmd' or 'command') is required.")
         return {
             "cmd": effective_cmd.strip(),
-            "target_device": data.get("target_device")
+            "target_device": data.get("target_device"),
+            "hitl_approved": data.get("hitl_approved", False)
         }
 
 
@@ -128,14 +130,46 @@ class TestRoutingFibArgs(BaseModel):
         raise ValueError(f"'{v}' is not a valid IP address, CIDR, or FQDN")
 
 
+class TestPbfPolicyArgs(BaseModel):
+    source: str
+    destination: str
+    destination_port: Optional[Union[str, int]] = "443"
+    protocol: Optional[Union[str, int]] = "6"
+    from_zone: Optional[str] = None
+    application: Optional[str] = None
+    target_device: Optional[str] = None
+
+    @field_validator('source', 'destination')
+    @classmethod
+    def validate_ip_or_any(cls, v):
+        if v in ("any", ""):
+            return v
+        try:
+            ipaddress.ip_network(v, strict=False)
+            return v
+        except ValueError:
+            pass
+        fqdn_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9\.\-]+$'
+        if re.match(fqdn_pattern, v):
+            return v
+        raise ValueError(f"'{v}' is not a valid IP address, CIDR, FQDN, or 'any'")
+
+
+class GetTelemetrySnapshotArgs(BaseModel):
+    target_device: Optional[str] = None
+
+
 # Registry: tool function name → schema class
 # Tools not in this registry use existing tool executor validation.
 TOOL_SCHEMAS = {
     "test_security_policy": TestSecurityPolicyArgs,
     "test_nat_policy": TestNatPolicyArgs,
     "test_routing_fib": TestRoutingFibArgs,
+    "test_pbf_policy": TestPbfPolicyArgs,
+    "get_telemetry_snapshot": GetTelemetrySnapshotArgs,
     "get_live_config": GetLiveConfigArgs,
     "execute_log_query": ExecuteLogQueryArgs,
     "execute_operational_command": ExecuteOperationalCommandArgs,
 }
+
 

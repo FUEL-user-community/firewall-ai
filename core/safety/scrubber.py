@@ -1,6 +1,6 @@
 """
 PII Scrubbing Layer
-Masks sensitive IPs and serials while preserving standard infrastructure constants (M2).
+Masks hardware serial numbers while preserving real IP addresses for accurate diagnostics.
 """
 import os
 import re

@@ -4,9 +4,8 @@ Tests tool registry loading, Pydantic argument schemas, ghost tool matching,
 tool execution caching, prompt assembly, and cognitive trace logging.
 """
 
-import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from core.pipeline.tool_keeper import ToolKeeper, summon_toolkit
 from core.pipeline.tool_schemas import (
@@ -32,6 +31,7 @@ def test_tool_keeper_loads_single_commands_and_macros():
     assert "summon_toolkit" in tool_names
     # Verify native tools
     assert "test_security_policy" in tool_names
+    assert "test_pbf_policy" in tool_names
     assert "get_live_config" in tool_names
 
     # Verify single commands from commands.yaml (e.g. system_info, session_info)
@@ -119,6 +119,123 @@ def test_tool_executor_safe_call_kwarg_sanitization():
     # Pass hallucinated argument 'invented_arg'
     result = ToolExecutor.safe_call(sample_tool, {"device": "fw-hq", "invented_arg": "hack"})
     assert result == "Device: fw-hq"
+
+
+def test_tool_executor_unbounded_session_hitl_override():
+    """Verify ToolExecutor intercepts unbounded 'show session all', requests HITL, and strips self-approvals."""
+    from core.safety.policy_engine import PolicyEngine
+    from core.safety.hitl import ApprovalResult
+
+    mock_tool = MagicMock(return_value="session-data")
+    mock_tool.__name__ = "execute_operational_command"
+
+    policy = PolicyEngine(mode="READ_ONLY")
+    hitl_mock = MagicMock()
+    breaker = MagicMock()
+    executor = ToolExecutor(policy=policy, hitl=hitl_mock, circuit_breaker=breaker, tools=[mock_tool])
+
+    # 1. Denied branch
+    hitl_mock.request_approval.return_value = ApprovalResult(approved=False, reason="Too risky")
+    part_mock = MagicMock()
+    part_mock.function_call.name = "execute_operational_command"
+    part_mock.function_call.args = {"cmd": "show session all"}
+
+    res_denied = executor.execute_function_call(
+        part=part_mock,
+        manifest_str="execute_operational_command",
+        trace_id="tr-1",
+        user_id="alice",
+        drive_call_history={},
+        turn=0,
+        thought_signatures=[]
+    )
+    assert res_denied.blocked_by == "hitl"
+    assert "HITL DENIED" in str(res_denied.response_part.function_response.response["result"])
+    assert not mock_tool.called
+
+    # 2. Approved branch with counter-logic: LLM attempts self-approval
+    hitl_mock.reset_mock()
+    hitl_mock.request_approval.return_value = ApprovalResult(approved=True, signature="abc123sig")
+    part_mock.function_call.args = {"cmd": "show   session   all", "hitl_approved": True}
+
+    res_approved = executor.execute_function_call(
+        part=part_mock,
+        manifest_str="execute_operational_command",
+        trace_id="tr-2",
+        user_id="bob",
+        drive_call_history={},
+        turn=0,
+        thought_signatures=[]
+    )
+    assert res_approved.blocked_by == ""
+    assert hitl_mock.request_approval.called
+    assert mock_tool.called
+    call_kwargs = mock_tool.call_args[1]
+    assert call_kwargs.get("hitl_approved") is True
+
+
+def test_tool_executor_device_access_rbac():
+    """Verify ToolExecutor enforces per-device RBAC via PolicyEngine.check_device_access."""
+    from core.safety.policy_engine import PolicyEngine
+
+    mock_tool = MagicMock(return_value="inventory-data")
+    mock_tool.__name__ = "get_device_inventory"
+
+    policy = PolicyEngine(mode="READ_ONLY")
+    breaker = MagicMock()
+    executor = ToolExecutor(policy=policy, hitl=None, circuit_breaker=breaker, tools=[mock_tool])
+
+    class MockUserContext:
+        def __init__(self, user_id, allowed):
+            self.user_id = user_id
+            self.role = "operator"
+            self.allowed_devices = allowed
+
+        def can_access_device(self, dev):
+            return dev in self.allowed_devices
+
+    # 1. Denied device access
+    user_restricted = MockUserContext("alice", ["fw-hq"])
+    part_mock = MagicMock()
+    part_mock.function_call.name = "get_device_inventory"
+    part_mock.function_call.args = {"target_device": "fw-restricted-branch"}
+
+    res_denied = executor.execute_function_call(
+        part=part_mock,
+        manifest_str="get_device_inventory",
+        trace_id="tr-rbac-1",
+        user_id=user_restricted,
+        drive_call_history={},
+        turn=0,
+        thought_signatures=[]
+    )
+    assert res_denied.blocked_by == "rbac"
+    assert "DEVICE ACCESS DENIED" in str(res_denied.response_part.function_response.response["result"])
+    assert not mock_tool.called
+
+    # 2. Allowed device access
+    mock_tool.reset_mock()
+    part_mock.function_call.args = {"target_device": "fw-hq"}
+    res_allowed = executor.execute_function_call(
+        part=part_mock,
+        manifest_str="get_device_inventory",
+        trace_id="tr-rbac-2",
+        user_id=user_restricted,
+        drive_call_history={},
+        turn=0,
+        thought_signatures=[]
+    )
+    assert res_allowed.blocked_by == ""
+    assert mock_tool.called
+
+
+def test_tool_keeper_registers_telemetry_snapshot():
+    """Verify get_telemetry_snapshot is registered in #core and all_tools catalog."""
+    keeper = ToolKeeper()
+    core_names = [t.__name__ for t in keeper.get_tools("#core")]
+    all_names = [t.__name__ for t in keeper.get_all_tools()]
+    assert "get_telemetry_snapshot" in core_names
+    assert "get_telemetry_snapshot" in all_names
 
 
 # ─── 4. Cognitive Trace Logger Tests ──────────────────────────────────

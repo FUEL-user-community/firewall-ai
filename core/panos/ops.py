@@ -12,7 +12,7 @@ import time
 import logging
 import ipaddress
 import threading
-from typing import Optional
+from typing import Optional, Union
 from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
 from xml.sax.saxutils import escape
 
@@ -27,6 +27,7 @@ __all__ = [
     "test_security_policy",
     "test_routing_fib",
     "test_nat_policy",
+    "test_pbf_policy",
     "get_telemetry_snapshot",
     "get_device_inventory",
     "apply_dynamic_tag",
@@ -276,6 +277,97 @@ def test_routing_fib(ip: str = None, virtual_router: str = "default", target_dev
         return f"ERROR: [test_routing_fib] failed. Reason: {str(e)}. NO ROUTE DATA WAS RETRIEVED."
 
 
+def test_pbf_policy(
+    source: str,
+    destination: str,
+    destination_port: Union[int, str] = 443,
+    protocol: Union[int, str] = 6,
+    from_zone: Optional[str] = None,
+    application: Optional[str] = None,
+    target_device: Optional[str] = None
+) -> str:
+    """
+    Simulates a packet against the Policy-Based Forwarding (PBF) rulebase.
+    PBF rules evaluate BEFORE the Virtual Router FIB lookup. If a PBF rule matches,
+    it overrides standard routing table forwarding and forces egress via a specific
+    interface or next-hop.
+
+    Use this when:
+    - Verifying SD-WAN or multi-ISP egress paths
+    - Diagnosing unexpected egress interfaces or asymmetric return drops
+    - Determining if traffic bypasses the default FIB route table
+
+    Args:
+        source (str): Source IP address (e.g., '10.0.1.5'). Required.
+        destination (str): Destination IP address (e.g., '172.16.20.10'). Required.
+        destination_port (int or str): Destination port (e.g., 443, 80). Default: 443.
+        protocol (int or str): IP protocol number (6=TCP, 17=UDP). Default: 6.
+        from_zone (str): Ingress security zone (e.g., 'trust', 'lan'). Optional.
+        application (str): App-ID name (e.g., 'web-browsing', 'ssl'). Optional.
+        target_device (str): Device name from fleet inventory. Uses default if not specified.
+    """
+    if not source or not str(source).strip():
+        return "ERROR: [test_pbf_policy] source IP address is required."
+    if not destination or not str(destination).strip():
+        return "ERROR: [test_pbf_policy] destination IP address is required."
+
+    source_clean = source.strip()
+    destination_clean = destination.strip()
+    port_clean = str(destination_port).strip() if destination_port else "443"
+
+    # Counter-logic defense: validate IP addresses/CIDRs
+    for ip_val, name in [(source_clean, "source"), (destination_clean, "destination")]:
+        try:
+            ipaddress.ip_network(ip_val, strict=False)
+        except ValueError:
+            return f"ERROR: [test_pbf_policy] Invalid {name} IP address '{ip_val}'."
+
+    # Counter-logic defense: map named protocols ('tcp', 'udp', 'icmp') to numbers
+    proto_map = {"tcp": "6", "udp": "17", "icmp": "1"}
+    proto_raw = str(protocol).strip().lower() if protocol else "6"
+    protocol_clean = proto_map.get(proto_raw, proto_raw)
+
+    if not re.match(r'^\d+$', protocol_clean) or not (1 <= int(protocol_clean) <= 255):
+        return f"ERROR: [test_pbf_policy] Invalid protocol '{protocol}'. Must be a valid protocol number (1-255) or name ('tcp', 'udp', 'icmp')."
+
+    # Port validation
+    if not re.match(r'^\d+$', port_clean) or not (1 <= int(port_clean) <= 65535):
+        return f"ERROR: [test_pbf_policy] Invalid port number '{port_clean}'. Must be 1-65535."
+
+    root = Element("test")
+    pbf = SubElement(root, "pbf-policy-match")
+    if from_zone and str(from_zone).strip():
+        SubElement(pbf, "from").text = str(from_zone).strip()
+    SubElement(pbf, "source").text = source_clean
+    SubElement(pbf, "destination").text = destination_clean
+    SubElement(pbf, "protocol").text = protocol_clean
+    SubElement(pbf, "destination-port").text = port_clean
+    if application and str(application).strip():
+        SubElement(pbf, "application").text = str(application).strip()
+
+    xml_cmd = tostring(root, encoding="unicode")
+    logger.info(f"[PBFMath] Testing: {source_clean} → {destination_clean}:{port_clean}/proto={protocol_clean} on {target_device or 'default'}")
+
+    try:
+        client = _get_pool().get_client(target_device)
+        status, result = client.execute_op(xml_cmd)
+
+        if status == 200:
+            if "No rule matched" in result or "no rule" in result.lower():
+                return "PBF Policy Match: No PBF rule matched. Traffic falls through to standard Virtual Router FIB routing."
+            sanitizer = ToxicXmlSanitizer()
+            try:
+                yaml_output, stats = sanitizer.convert_string(result, return_stats=True)
+                return yaml_output
+            except Exception as e:
+                logger.error(f"[PBFMath] XML→YAML conversion failed: {e}")
+                return f"Raw PBF Result: {result[:1000]}"
+        else:
+            return f"ERROR: [test_pbf_policy] PAN-OS returned HTTP {status}. {result[:500]}. NO PBF DATA WAS RETRIEVED."
+    except Exception as e:
+        return f"ERROR: [test_pbf_policy] failed. Reason: {str(e)}. NO PBF DATA WAS RETRIEVED."
+
+
 def test_nat_policy(source: str, destination: str, port: str,
                     protocol: str = "6", target_device: str = None) -> str:
     """
@@ -328,7 +420,11 @@ def test_nat_policy(source: str, destination: str, port: str,
         return f"ERROR: [test_nat_policy] failed. Reason: {str(e)}. NO NAT DATA WAS RETRIEVED."
 
 
-def execute_operational_command(cmd: str, target_device: str = None) -> str:
+def execute_operational_command(
+    cmd: str,
+    target_device: str = None,
+    hitl_approved: bool = False
+) -> str:
     """
     Executes a PAN-OS operational (show/debug/test) command and returns sanitized output.
     This is the general-purpose command executor — use it for any 'show' command
@@ -343,6 +439,7 @@ def execute_operational_command(cmd: str, target_device: str = None) -> str:
             Examples: 'show system info', 'show session all filter source 10.0.0.5',
             'show application name web-browsing', 'show running security-policy'.
         target_device (str): Device name from fleet inventory (e.g., 'fw-hq'). Uses default if not specified.
+        hitl_approved (bool): Explicit operator authorization token from HITL gate. Default: False.
     """
     if not cmd or not isinstance(cmd, str):
         return "ERROR: [execute_operational_command] Command cannot be empty."
@@ -382,6 +479,23 @@ def execute_operational_command(cmd: str, target_device: str = None) -> str:
     if "show routing route" in effective_cmd and "type" not in effective_cmd and "destination" not in effective_cmd and "count" not in effective_cmd:
         logger.info("[Ops] Appending count 50 to unbounded routing query to prevent token overflow.")
         effective_cmd = f"{effective_cmd} count 50"
+
+    # Management Plane Protection: Guard against unbounded session dumps (DoS risk on high-throughput firewalls)
+    # Counter-logic defense: handle multiple spaces/tabs, empty filter arguments, and word boundaries
+    cmd_lower = effective_cmd.lower()
+    if re.search(r'\bshow\s+session\s+all\b', cmd_lower):
+        has_valid_filter = bool(re.search(r'\bfilter\s+\S+', cmd_lower))
+        if not has_valid_filter:
+            if not hitl_approved:
+                logger.warning(f"[Ops] Blocked unbounded '{effective_cmd}' to prevent management plane CPU exhaustion.")
+                return (
+                    "SAFETY INTERCEPTOR: Unbounded 'show session all' is blocked to protect firewall "
+                    "management plane CPU (mgmtsrvr) and prevent HA heartbeat failover on production chassis. "
+                    "Please provide a filter, e.g.: 'show session all filter source <ip>', 'show session all filter destination <ip>', "
+                    "'show session all filter application <app>', or request operator approval (HITL) to override."
+                )
+            logger.warning(f"[Ops] Unbounded session dump '{effective_cmd}' executed under explicit operator HITL override.")
+
 
     logger.info(f"Executing OP on {target_device or 'default'}: {effective_cmd}")
 

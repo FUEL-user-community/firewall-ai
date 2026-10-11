@@ -194,3 +194,77 @@ def test_security_policy_requires_source_and_destination():
     assert "source IP address is required" in res1
     res2 = panos_ops.test_security_policy(source="10.0.0.1", destination="", port="443")
     assert "destination IP address is required" in res2
+
+
+def test_pbf_policy_validation_and_no_match(mock_client_pool):
+    """Verify test_pbf_policy validates input and cleanly parses 'No rule matched'."""
+    _, mock_client = mock_client_pool
+
+    # 1. Validation
+    assert "source IP address is required" in panos_ops.test_pbf_policy(source="", destination="172.16.20.10")
+    assert "destination IP address is required" in panos_ops.test_pbf_policy(source="10.0.1.5", destination="")
+    assert "Invalid port number" in panos_ops.test_pbf_policy(source="10.0.1.5", destination="172.16.20.10", destination_port="999999")
+    # Counter-logic tests: IP syntax validation & protocol normalization
+    assert "Invalid source IP address" in panos_ops.test_pbf_policy(source="not_an_ip", destination="172.16.20.10")
+    assert "Invalid destination IP address" in panos_ops.test_pbf_policy(source="10.0.1.5", destination="not_an_ip")
+    assert "Invalid protocol" in panos_ops.test_pbf_policy(source="10.0.1.5", destination="172.16.20.10", protocol="999")
+
+    # 2. Protocol name mapping ('tcp' -> 6)
+    mock_client.execute_op.return_value = (200, "<response status='success'><result>No rule matched</result></response>")
+    res_proto = panos_ops.test_pbf_policy(source="10.0.1.5", destination="172.16.20.10", protocol="tcp")
+    assert "No PBF rule matched" in res_proto
+
+    # 3. No rule match fallback
+    res = panos_ops.test_pbf_policy(source="10.0.1.5", destination="172.16.20.10", destination_port="443", from_zone="trust")
+    assert "No PBF rule matched" in res
+    assert "Virtual Router FIB" in res
+
+    # 4. Successful match
+    mock_client.execute_op.return_value = (200, "<response status='success'><result><rule>Direct-SDWAN-PBF</rule><action>Forward</action><egress-interface>ethernet1/2</egress-interface></result></response>")
+    res_match = panos_ops.test_pbf_policy(source="10.0.1.5", destination="172.16.20.10", destination_port="443")
+    assert "Direct-SDWAN-PBF" in res_match
+    assert "ethernet1/2" in res_match
+
+
+def test_execute_operational_command_unbounded_session_safety_interceptor(mock_client_pool):
+    """Verify management plane protection interceptor blocks unbounded 'show session all'."""
+    _, mock_client = mock_client_pool
+
+    # Unbounded show session all should be blocked by interceptor without hitting client
+    res = panos_ops.execute_operational_command("show session all")
+    assert "SAFETY INTERCEPTOR" in res
+    assert "Unbounded 'show session all' is blocked" in res
+    assert not mock_client.execute_op.called
+
+    # Counter-logic test 1: multi-whitespace bypass attempt 'show   session   all'
+    res_spaces = panos_ops.execute_operational_command("show   session   all")
+    assert "SAFETY INTERCEPTOR" in res_spaces
+    assert not mock_client.execute_op.called
+
+    # Counter-logic test 2: empty filter evasion attempt 'show session all filter'
+    res_empty_filter = panos_ops.execute_operational_command("show session all filter")
+    assert "SAFETY INTERCEPTOR" in res_empty_filter
+    assert not mock_client.execute_op.called
+
+    # Filtered show session all must be allowed through
+    mock_client.execute_op.return_value = (200, "<response status='success'><result><entry/></result></response>")
+    res_filtered = panos_ops.execute_operational_command("show session all filter source 10.0.1.5")
+    assert "SAFETY INTERCEPTOR" not in res_filtered
+    assert mock_client.execute_op.called
+
+    # Counter-logic test 3: safe session commands ('show session meter') must not be intercepted
+    mock_client.execute_op.reset_mock()
+    mock_client.execute_op.return_value = (200, "<response status='success'><result><meter/></result></response>")
+    res_meter = panos_ops.execute_operational_command("show session meter")
+    assert "SAFETY INTERCEPTOR" not in res_meter
+    assert mock_client.execute_op.called
+
+    # Counter-logic test 4: HITL operator override allows unbounded show session all through
+    mock_client.execute_op.reset_mock()
+    mock_client.execute_op.return_value = (200, "<response status='success'><result><entry name='1'/></result></response>")
+    res_override = panos_ops.execute_operational_command("show session all", hitl_approved=True)
+    assert "SAFETY INTERCEPTOR" not in res_override
+    assert mock_client.execute_op.called
+
+
+

@@ -39,6 +39,7 @@ class PolicyEngine:
         "test_security_policy",
         "test_routing_fib",
         "test_nat_policy",
+        "test_pbf_policy",
         "get_live_config",
         "execute_log_query",
         "audit_user_id",

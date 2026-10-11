@@ -218,6 +218,12 @@ html, body {
     color: var(--accent-crit);
 }
 
+.perimeter-status-chip.warning {
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.2);
+    color: #fbbf24;
+}
+
 .status-pulse-dot {
     width: 6px;
     height: 6px;
@@ -289,6 +295,106 @@ html, body {
     max-width: 580px;
     margin-bottom: 40px;
     line-height: 1.5;
+}
+
+/* ── HITL Text Popup (Pure Text Modal, Zero Images) ── */
+.text-popup-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(6px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+}
+
+.text-popup-card {
+    background: #18191c;
+    border: 1px solid var(--border-medium, #2e3138);
+    border-radius: 14px;
+    padding: 24px 28px;
+    max-width: 440px;
+    width: 90%;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+    text-align: left;
+}
+
+.text-popup-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-bright, #ffffff);
+    margin-bottom: 10px;
+}
+
+.text-popup-body {
+    font-size: 13px;
+    color: var(--text-secondary, #9da3af);
+    line-height: 1.5;
+    margin-bottom: 22px;
+}
+
+.text-popup-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.text-popup-btn {
+    padding: 8px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    border: 1px solid transparent;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.text-popup-cancel {
+    background: transparent;
+    border-color: var(--border-medium, #2e3138);
+    color: var(--text-secondary, #9da3af);
+}
+
+.text-popup-cancel:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-primary, #e2e4e9);
+}
+
+.text-popup-confirm {
+    background: var(--gemini-blue, #4285f4);
+    color: #ffffff;
+}
+
+.text-popup-confirm:hover {
+    background: #3367d6;
+}
+
+/* ── Inline HITL Action (Pure Text) ── */
+.hitl-text-action {
+    margin-top: 10px;
+}
+
+.hitl-plain-btn {
+    background: none;
+    border: none;
+    color: var(--gemini-blue, #4285f4);
+    padding: 4px 0;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: underline;
+    font-family: inherit;
+    display: inline-block;
+    transition: color 0.15s ease;
+}
+
+.hitl-plain-btn:hover {
+    color: #60a5fa;
 }
 
 

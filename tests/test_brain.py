@@ -96,7 +96,6 @@ def test_investigation_state_and_callback():
         manifest_str="tool_a, tool_b",
         base_config={},
         circuit_breaker=MagicMock(),
-        drift_gate=MagicMock(),
         tool_executor=MagicMock(),
         status_callback=lambda msg: cb_calls.append(msg),
     )
@@ -139,7 +138,6 @@ def test_turn_parts_reasoning_extraction():
         manifest_str="test_tool",
         base_config={},
         circuit_breaker=mock_breaker,
-        drift_gate=mock_gate,
         tool_executor=mock_executor,
     )
 
@@ -175,7 +173,6 @@ def test_license_context_prompt_injection():
         manifest_str="test_tool",
         base_config={},
         circuit_breaker=MagicMock(),
-        drift_gate=MagicMock(),
         tool_executor=MagicMock(),
     )
 
@@ -186,7 +183,7 @@ def test_license_context_prompt_injection():
 
 def test_devices_config_mtime_caching():
     """Verify _load_devices_config caches content and reloads on mtime update."""
-    from core.brain import _load_devices_config, _DEVICES_CONFIG_PATH
+    from core.brain import _load_devices_config
     data1 = _load_devices_config()
     assert isinstance(data1, dict)
     assert "firewalls" in data1
@@ -256,7 +253,6 @@ def test_tool_tray_hot_swapping():
         manifest_str="old_tool",
         base_config={},
         circuit_breaker=MagicMock(),
-        drift_gate=MagicMock(),
         tool_executor=mock_executor,
     )
     state.prev_turn_tools = ["summon_toolkit"]
@@ -378,7 +374,22 @@ def test_gemini_38_flash_generation_config_and_range_mode():
 
     # 3. Mode classification and thinking level
     assert classify_mode("test attack path", target_mode="range") == "range"
+    assert classify_mode("Why is traffic from 10.0.1.5 blocked?") == "investigate"
+    assert classify_mode("Packets dropped reaching 172.16.20.10 on port 443") == "investigate"
+    assert classify_mode("10.0.1.5 to 192.168.1.1") == "investigate"
+    assert classify_mode("show system info") == "diagnostic"
+    assert classify_mode("Check PBF match for 10.0.1.5") == "investigate"
+    assert classify_mode("Is tunnel.1 down?") == "investigate"
+    assert classify_mode("Root cause of packet loss") == "investigate"
+
+    # Counter-logic tests: verify word boundaries prevent false positives
+    assert classify_mode("show fiber interface ethernet1/1") == "diagnostic"  # 'fiber' != 'fib'
+    assert classify_mode("download running-config backup") == "diagnostic"   # 'download' != 'down'
+    assert classify_mode("show interface history on 10.0.0.1") == "diagnostic"  # 'history' != 'to'
+    assert classify_mode("show root certificate") == "diagnostic"  # 'root' without 'cause' != incident
+
     assert get_thinking_level("range") == THINKING_LEVEL_RANGE
+    assert get_thinking_level("investigate") == "high"
     assert THINKING_LEVEL_RANGE == "medium"
     assert RANGE_PROBE_LIMIT == 7
 

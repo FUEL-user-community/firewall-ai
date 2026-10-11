@@ -1,5 +1,4 @@
 import os
-import sys
 import yaml
 import logging
 from core.panos.ops import execute_operational_command
@@ -127,19 +126,21 @@ class ToolKeeper:
         
         # Rule 3: Security Policy & Forwarding Math
         try:
-            from core.panos.ops import test_security_policy, test_nat_policy, test_routing_fib
+            from core.panos.ops import test_security_policy, test_nat_policy, test_routing_fib, test_pbf_policy
             tools.append(test_security_policy)
             tools.append(test_nat_policy)
             tools.append(test_routing_fib)
+            tools.append(test_pbf_policy)
         except Exception as e:
             logger.warning(f"[TOOLS] Policy/Routing Math Init Error: {e}")
 
-        # Rule 4: Fleet Inventory
+        # Rule 4: Fleet Inventory & Telemetry
         try:
-            from core.panos.ops import get_device_inventory
+            from core.panos.ops import get_device_inventory, get_telemetry_snapshot
             tools.append(get_device_inventory)
+            tools.append(get_telemetry_snapshot)
         except Exception as e:
-            logger.warning(f"[TOOLS] Device Inventory Init Error: {e}")
+            logger.warning(f"[TOOLS] Device Inventory/Telemetry Init Error: {e}")
 
         # Rule 5: Config Inspection & Log Forensics
         try:
@@ -191,18 +192,20 @@ class ToolKeeper:
             logger.debug(f"[TOOLS] Live research not available: {e}")
 
         try:
-            from core.panos.ops import test_security_policy, test_nat_policy, test_routing_fib
+            from core.panos.ops import test_security_policy, test_nat_policy, test_routing_fib, test_pbf_policy
             tools.append(test_security_policy)
             tools.append(test_nat_policy)
             tools.append(test_routing_fib)
+            tools.append(test_pbf_policy)
         except Exception as e:
             logger.warning(f"[TOOLS] Policy/Routing Math Init Error: {e}")
 
         try:
-            from core.panos.ops import get_device_inventory
+            from core.panos.ops import get_device_inventory, get_telemetry_snapshot
             tools.append(get_device_inventory)
+            tools.append(get_telemetry_snapshot)
         except Exception as e:
-            logger.warning(f"[TOOLS] Device Inventory Init Error: {e}")
+            logger.warning(f"[TOOLS] Device Inventory/Telemetry Init Error: {e}")
 
         try:
             from core.panos.config import get_live_config

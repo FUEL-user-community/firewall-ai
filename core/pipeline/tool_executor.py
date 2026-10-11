@@ -130,25 +130,47 @@ class ToolExecutor:
                 result = f"POLICY BLOCKED: {pve}"
                 blocked_by = "policy"
 
-        # --- 2.5 DEVICE ACCESS (single-user web app — all devices accessible) ---
+        # --- 2.5 DEVICE ACCESS GATE ---
+        if result is None and self.policy:
+            target_device = fargs.get("target_device")
+            if target_device:
+                try:
+                    from core.safety.policy_engine import DeviceAccessDeniedError
+                    self.policy.check_device_access(user_id, target_device)
+                except DeviceAccessDeniedError as dade:
+                    logger.warning(f"[{trace_id}] [RBAC] {dade}")
+                    result = f"DEVICE ACCESS DENIED: {dade}"
+                    blocked_by = "rbac"
 
         # --- 3. HITL GATE ---
         if result is None and self.hitl and self.policy:
-            if fname in self.policy.WRITE_TOOLS:
-                if ApprovalRequest:
-                    approval_request = ApprovalRequest(
-                        tool_name=fname,
-                        tool_args=fargs,
-                        user_id=user_id,
-                        trace_id=trace_id
-                    )
-                    approval = self.hitl.request_approval(approval_request)
-                    if not approval.approved:
-                        logger.warning(f"[{trace_id}] [HITL] DENIED: {fname} ({approval.reason})")
-                        result = f"HITL DENIED: {fname} was rejected by the approval gate. Reason: {approval.reason}"
-                        blocked_by = "hitl"
-                    else:
-                        logger.info(f"[{trace_id}] [HITL] APPROVED: {fname} (sig={approval.signature})")
+            is_write_op = fname in self.policy.WRITE_TOOLS
+            is_unbounded_session = False
+
+            if fname == "execute_operational_command":
+                cmd_val = str(fargs.get("cmd") or fargs.get("command") or "").lower()
+                if re.search(r'\bshow\s+session\s+all\b', cmd_val) and not re.search(r'\bfilter\s+\S+', cmd_val):
+                    is_unbounded_session = True
+                    # Counter-logic defense: Strip any self-declared approval argument fabricated by LLM
+                    fargs.pop("hitl_approved", None)
+
+            if (is_write_op or is_unbounded_session) and ApprovalRequest:
+                approval_request = ApprovalRequest(
+                    tool_name=fname,
+                    tool_args=fargs,
+                    user_id=user_id,
+                    trace_id=trace_id
+                )
+                approval = self.hitl.request_approval(approval_request)
+                if not approval.approved:
+                    logger.warning(f"[{trace_id}] [HITL] DENIED: {fname} ({approval.reason})")
+                    result = f"HITL DENIED: {fname} was rejected by the approval gate. Reason: {approval.reason}"
+                    blocked_by = "hitl"
+                else:
+                    logger.info(f"[{trace_id}] [HITL] APPROVED: {fname} (sig={approval.signature})")
+                    if is_unbounded_session:
+                        fargs["hitl_approved"] = True
+
 
         # --- 4. DRIVE DEDUP CHECK ---
         if result is None and fname == 'query_knowledge_base':

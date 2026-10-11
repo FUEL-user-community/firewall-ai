@@ -340,8 +340,9 @@ function unlockApp() {
     const dashboard = document.getElementById('dashboard');
     if (dashboard) dashboard.style.display = 'flex';
 
-    // Load fleet devices
+    // Load fleet devices & real-time telemetry
     loadDevices();
+    fetchTelemetry();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -499,13 +500,19 @@ function sendMessage(text) {
     let currentReceipts = [];
     let currentTraceId = '';
 
+    const deviceSelect = document.getElementById('deviceFilter');
+    const selectedDevice = deviceSelect ? deviceSelect.value : 'default';
+
     fetch('/api/chat', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'X-API-Key': key
         },
-        body: JSON.stringify({ message: text })
+        body: JSON.stringify({
+            message: text,
+            device: selectedDevice
+        })
     })
     .then(res => {
         if (!res.ok) {
@@ -715,12 +722,23 @@ function addMsg(role, text, metadata = {}) {
         `;
     }
 
+    let hitlActionHtml = '';
+    if (text && text.includes("SAFETY INTERCEPTOR")) {
+        hitlActionHtml = `
+            <div class="hitl-text-action">
+                <button type="button" class="hitl-plain-btn" onclick="openHitlTextPopup()">Authorize Operator Override</button>
+            </div>
+        `;
+        setTimeout(openHitlTextPopup, 120);
+    }
+
     entry.innerHTML = `
         <div class="msg-meta">
             <span>[${speakerPrefix}]</span>
             <span>${time}</span>
         </div>
         <div class="msg-content">${role === 'user' ? esc(text) : renderMarkdown(text)}</div>
+        ${hitlActionHtml}
         ${receiptsHtml}
     `;
 
@@ -918,6 +936,14 @@ function bindGeminiFramework() {
         newChatBtn.addEventListener('click', resetToZeroState);
     }
 
+    // Bind device filter change to telemetry updater
+    const deviceFilter = document.getElementById('deviceFilter');
+    if (deviceFilter) {
+        deviceFilter.addEventListener('change', () => {
+            fetchTelemetry(deviceFilter.value);
+        });
+    }
+
     updateSendBtnState();
 }
 
@@ -945,3 +971,62 @@ function updateSendBtnState() {
     const hasText = input.value.trim().length > 0;
     sendBtn.disabled = !hasText || busy;
 }
+
+// ═══════════════════════════════════════════════════════
+// Dashboard UI Integrations: Telemetry & Operator HITL
+// ═══════════════════════════════════════════════════════
+
+function fetchTelemetry(device = null) {
+    const select = document.getElementById('deviceFilter');
+    const dev = device || (select ? select.value : 'default');
+    const key = getAuthKey();
+    const chip = document.getElementById('perimeterStatusChip');
+    const text = document.getElementById('perimeterStatusText');
+    if (!text) return;
+
+    fetch(`/api/telemetry?device=${encodeURIComponent(dev)}`, {
+        headers: { 'X-API-Key': key }
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.success) {
+            const sess = (d.active_sessions || 0).toLocaleString();
+            const mbps = ((d.throughput_kbps || 0) / 1000).toFixed(1);
+            const cpu = (d.mgmt_cpu || 0).toFixed(2);
+            text.textContent = `${d.device}: ${sess} sess • ${mbps} Mbps • CPU ${cpu}`;
+            if (chip) chip.className = 'perimeter-status-chip nominal';
+        } else {
+            text.textContent = `${dev}: Standby / No Op Data`;
+            if (chip) chip.className = 'perimeter-status-chip warning';
+        }
+    })
+    .catch(() => {
+        text.textContent = `${dev}: Telemetry Offline`;
+        if (chip) chip.className = 'perimeter-status-chip critical';
+    });
+}
+
+function openHitlTextPopup() {
+    const popup = document.getElementById('hitlTextPopup');
+    if (popup) {
+        popup.style.display = 'flex';
+    }
+}
+
+function closeHitlTextPopup() {
+    const popup = document.getElementById('hitlTextPopup');
+    if (popup) {
+        popup.style.display = 'none';
+    }
+}
+
+function confirmHitlTextOverride() {
+    closeHitlTextPopup();
+    sendMessage("Execute 'show session all' with operator authorization override");
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeHitlTextPopup();
+    }
+});
