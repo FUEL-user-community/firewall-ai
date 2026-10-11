@@ -179,7 +179,7 @@ class ToolKeeper:
         """
         Fetches the complete tool catalog across all trays and categories.
         Includes all native Python tools + all YAML commands and macros without tray filtering.
-        Used by the Autonomous Inspection Engine (CardRunner) to guarantee full tool availability.
+        Guarantees full tool availability for the investigation engine.
         """
         tools = []
         tools.append(summon_toolkit)

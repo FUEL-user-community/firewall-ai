@@ -1,5 +1,5 @@
 """
-Tests for core/brain.py — model initialization, safety configuration,
+Tests for core/brain.py â€” model initialization, safety configuration,
 thread-safe singleton proxy, error sanitization, and investigation loop guards.
 """
 
@@ -474,3 +474,79 @@ def test_circuit_breaker_recovery_in_investigate():
 
     assert "graph TD" in result
     assert "Circuit breaker recovered" in result
+
+def test_target_device_boundary_resolution():
+    """Verify word boundaries prevent substring match collisions (e.g. fw-hq vs fw-hq-extra)."""
+    brain = CoreBrain(model=None, tools=[])
+    assert brain._resolve_target_device("show status for fw-hq-extra") is None
+    assert brain._resolve_target_device("show status for fw-hq") == "fw-hq"
+
+
+def test_investigate_detailed_and_receipts():
+    """Verify investigate_detailed returns structured dict with verdict and receipts in offline mode."""
+    brain = CoreBrain(model=None, tools=[])
+    brain.api_key = None
+    brain.model = None
+    details = brain.investigate_detailed("Check traffic flow")
+    assert isinstance(details, dict)
+    assert "verdict" in details
+    assert "receipts" in details
+    assert "trace_id" in details
+    assert details["receipts"] == []
+    assert "Offline Mode" in details["verdict"]
+
+
+def test_investigate_detailed_online_collects_receipts():
+    """Verify investigate_detailed collects and returns execution receipts during live/mocked tool calling."""
+    mock_model = MagicMock()
+    mock_chat = MagicMock()
+    mock_model.start_chat.return_value = mock_chat
+
+    # Turn 0: Model returns a function call
+    mock_part_tool = MagicMock()
+    mock_fc = MagicMock()
+    mock_fc.name = "test_routing_fib"
+    mock_fc.args = {"ip": "10.0.1.5"}
+    mock_part_tool.function_call = mock_fc
+    mock_part_tool.text = None
+
+    mock_resp_0 = MagicMock()
+    mock_resp_0.parts = [mock_part_tool]
+    mock_resp_0.text = ""
+
+    # Turn 1: Model synthesizes final text
+    final_verdict = "Route exists via ethernet1/1 next-hop 192.168.1.1."
+    mock_part_final = MagicMock()
+    mock_part_final.function_call = None
+    mock_part_final.text = final_verdict
+
+    mock_resp_1 = MagicMock()
+    mock_resp_1.parts = [mock_part_final]
+    mock_resp_1.text = final_verdict
+
+    # Chat send_message returns tool call then final report
+    mock_chat.send_message.side_effect = [mock_resp_0, mock_resp_1]
+
+    # Mock tool function
+    def test_routing_fib(ip: str = "", **kwargs):
+        return f"FIB match: {ip} via eth1/1"
+
+    brain = CoreBrain(model=mock_model, tools=[test_routing_fib])
+    brain.api_key = "mock-key"
+
+    details = brain.investigate_detailed("Check route to 10.0.1.5")
+    assert isinstance(details, dict)
+    assert "verdict" in details
+    assert "Route exists" in details["verdict"]
+    assert "trace_id" in details
+    assert isinstance(details["trace_id"], str) and len(details["trace_id"]) > 0
+
+    # Verify receipts
+    assert "receipts" in details
+    assert len(details["receipts"]) == 1
+    receipt = details["receipts"][0]
+    assert receipt["tool"] == "test_routing_fib"
+    assert receipt["args"] == {"ip": "10.0.1.5"}
+    assert receipt["status"] == "success"
+    assert receipt["duration_ms"] >= 0
+    assert "FIB match" in receipt["raw_output"]

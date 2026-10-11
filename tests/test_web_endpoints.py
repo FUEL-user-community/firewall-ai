@@ -33,12 +33,11 @@ def test_static_index_html():
     assert res_index.status_code == 200
     assert "Core Defense" in res_index.text
     assert 'src="app.js' in res_index.text
-    # SOC modern elements
-    assert 'id="cardSearch"' in res_index.text
+    # Clean elements
     assert 'id="deviceFilter"' in res_index.text
-    assert 'id="deckEmpty"' in res_index.text
     assert 'id="toastContainer"' in res_index.text
-    assert 'id="chatCardContext"' in res_index.text
+    assert 'id="messages"' in res_index.text
+    assert 'id="input"' in res_index.text
 
 
 def test_static_range_html():
@@ -49,7 +48,7 @@ def test_static_range_html():
     assert "Range" in res.text
     assert 'src="range.js' in res.text
     assert 'id="deviceSelect"' in res.text
-    assert 'id="scenarioPresets"' in res.text
+    assert 'id="cliForm"' in res.text
     assert 'id="canvasError"' in res.text
 
 
@@ -59,7 +58,7 @@ def test_static_js_and_css_assets():
     assert res_app.status_code == 200
     assert "function esc" in res_app.text
     assert "function showToast" in res_app.text
-    assert "function renderFilteredDeck" in res_app.text
+    assert "function toggleReceiptsDrawer" in res_app.text
 
     res_range = client.get("/range.js")
     assert res_range.status_code == 200
@@ -74,37 +73,20 @@ def test_static_js_and_css_assets():
     assert "toast-container" in res_css.text
 
 
-def test_api_cards_endpoints(ensure_auth_key):
-    """Authenticated calls to /api/cards and /api/cards/schedule return expected structures."""
+def test_active_telemetry_endpoints(ensure_auth_key):
+    """Authenticated calls to active telemetry and device endpoints return expected structures."""
     headers = {"X-API-Key": ensure_auth_key}
 
-    # Cards list
-    res_cards = client.get("/api/cards", headers=headers)
-    assert res_cards.status_code == 200
-    data = res_cards.json()
-    assert "cards" in data
-    assert "counts" in data
+    # Fleet registry
+    res_devices = client.get("/api/devices", headers=headers)
+    assert res_devices.status_code == 200
+    data = res_devices.json()
+    assert "firewalls" in data
+    assert len(data["firewalls"]) > 0
 
-    # Schedule list
-    res_sched = client.get("/api/cards/schedule", headers=headers)
-    assert res_sched.status_code == 200
-    assert "schedule" in res_sched.json()
-
-    # Card Registry
-    res_reg = client.get("/api/cards/registry", headers=headers)
-    assert res_reg.status_code == 200
-    reg_data = res_reg.json()
-    assert "cards" in reg_data
-    assert "total" in reg_data
-    assert isinstance(reg_data["cards"], list)
-
-
-def test_api_drift_timeline(ensure_auth_key):
-    """GET /api/drift/timeline returns a timeline list."""
-    headers = {"X-API-Key": ensure_auth_key}
-    res = client.get("/api/drift/timeline", headers=headers)
-    assert res.status_code == 200
-    assert "timeline" in res.json()
+    # Receipts 404 for unknown trace
+    res_receipts = client.get("/api/investigations/unknown-trace-id-999/receipts", headers=headers)
+    assert res_receipts.status_code == 404
 
 
 def test_range_simulate_validation(ensure_auth_key):
@@ -125,27 +107,3 @@ def test_range_simulate_validation(ensure_auth_key):
     req = RangeSimulateRequest(message="Test scenario", device="fw-hq")
     assert req.device == "fw-hq"
     assert req.message == "Test scenario"
-
-
-def test_nonexistent_card_actions(ensure_auth_key):
-    """Actions on nonexistent card IDs return 404."""
-    headers = {"X-API-Key": ensure_auth_key}
-    card_id = "nonexistent-uuid-0000"
-
-    res_get = client.get(f"/api/cards/{card_id}", headers=headers)
-    assert res_get.status_code == 404
-
-    res_audit = client.get(f"/api/cards/{card_id}/audit", headers=headers)
-    assert res_audit.status_code == 404
-
-    res_logprobs = client.get(f"/api/cards/{card_id}/logprobs", headers=headers)
-    assert res_logprobs.status_code == 404
-
-    res_approve = client.post(f"/api/cards/{card_id}/approve", headers=headers)
-    assert res_approve.status_code == 404
-
-    res_deny = client.post(f"/api/cards/{card_id}/deny", headers=headers)
-    assert res_deny.status_code == 404
-
-    res_mute = client.post(f"/api/cards/{card_id}/mute", headers=headers, json={"hours": 12})
-    assert res_mute.status_code == 404

@@ -5,7 +5,6 @@ Logs token usage and estimated cost to console after each investigation turn.
 """
 
 import logging
-from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +64,3 @@ class UsageTracker:
                 logger.warning(f"Usage callback failed: {e}")
 
 
-@contextmanager
-def _noop_trace_tool(tool_name: str, trace_id: str = "", user_id: str = "", **extra_attrs):
-    """No-op context manager. Kept for compatibility with tool_executor.py."""
-    yield type('Span', (), {
-        'set_attribute': lambda self, k, v: None,
-        'set_status': lambda self, s: None,
-        'add_event': lambda self, n, **kw: None,
-        'record_exception': lambda self, e: None,
-    })()

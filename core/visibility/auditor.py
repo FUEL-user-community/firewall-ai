@@ -19,7 +19,7 @@ import logging
 import warnings
 import threading
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class AuditResult:
 class Auditor:
     """
     Gemini Flash-based adversarial auditor.
-    Singleton — initialized once, reused across card runs.
+    Singleton — initialized once, reused across investigation runs.
     """
 
     _instance: Optional['Auditor'] = None
@@ -167,7 +167,7 @@ class Auditor:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_call_model)
                 try:
-                    # Fragile #3 Fix: 15-second timeout to prevent stalling the CardRunner pipeline
+                    # Fragile #3 Fix: 15-second timeout to prevent stalling the execution pipeline
                     response = future.result(timeout=15.0)
                 except concurrent.futures.TimeoutError:
                     logger.warning(f"[AUDITOR] Audit timed out after 15 seconds. Skipping.")

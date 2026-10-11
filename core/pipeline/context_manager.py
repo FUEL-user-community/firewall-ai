@@ -7,7 +7,7 @@ mid-investigation checkpoints, context compression, and Drive file injection.
 
 import re
 import logging
-from typing import Optional, List
+from typing import List
 
 import warnings
 with warnings.catch_warnings():

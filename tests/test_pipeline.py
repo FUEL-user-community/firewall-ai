@@ -189,3 +189,26 @@ def test_routing_fib_args_validation():
     with pytest.raises(ValueError):
         TestRoutingFibArgs(ip="10.0.1.1; reboot")
 
+
+def test_tool_schemas_preserve_target_device():
+    """Verify target_device is preserved across all registered schemas."""
+    from core.pipeline.tool_schemas import TOOL_SCHEMAS
+    for tool_name, schema in TOOL_SCHEMAS.items():
+        fields = schema.model_fields
+        assert "target_device" in fields, f"Schema for '{tool_name}' is missing target_device"
+
+
+def test_load_range_prompt():
+    """Verify load_range_prompt loads valid YAML directives for the range simulator."""
+    prompt = load_range_prompt(persona="neo")
+    assert isinstance(prompt, str)
+    assert len(prompt) > 0
+    assert "RANGE SIMULATION MISSION" in prompt
+
+
+def test_execute_log_query_schema():
+    """Verify ExecuteLogQueryArgs accepts valid log types and rejects invalid ones."""
+    args = ExecuteLogQueryArgs(log_type="traffic")
+    assert args.log_type == "traffic"
+    with pytest.raises(ValueError, match="not in valid log types"):
+        ExecuteLogQueryArgs(log_type="invalid_type")

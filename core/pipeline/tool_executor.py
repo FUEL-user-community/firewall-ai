@@ -10,11 +10,12 @@ thought signature capture/attachment, and ops counting.
 """
 
 import inspect
+import time
 import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, Dict
 
 import google.generativeai as genai
 
@@ -30,11 +31,6 @@ except ImportError:
     TOOL_SCHEMAS = {}
 
 try:
-    from core.integrations.telemetry import _noop_trace_tool
-except ImportError:
-    _noop_trace_tool = None
-
-try:
     from core.safety.hitl import ApprovalRequest
 except ImportError:
     ApprovalRequest = None
@@ -48,12 +44,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ToolResult:
-    """Structured result from a single tool execution."""
+    """Structured result from a single tool execution with raw audit receipt."""
     tool_name: str
     response_part: Optional[Any] = None   # genai.protos.Part with function_response
     ops_count: int = 0
     drive_slice_info: Optional[tuple] = None
     blocked_by: str = ""                   # "ghost", "policy", "hitl", "duplicate", ""
+    tool_args: dict = field(default_factory=dict)
+    raw_output: str = ""
+    duration_ms: float = 0.0
 
 
 # =============================================================================
@@ -124,7 +123,7 @@ class ToolExecutor:
         # --- 2. POLICY GATE ---
         elif self.policy:
             try:
-                from core.safety.policy_engine import PolicyViolationError, DeviceAccessDeniedError
+                from core.safety.policy_engine import PolicyViolationError
                 self.policy.check(fname)
             except PolicyViolationError as pve:
                 logger.warning(f"[{trace_id}] [POLICY] {pve}")
@@ -158,8 +157,11 @@ class ToolExecutor:
         # --- 5. EXECUTION ---
         ops_count = 0
         drive_slice_info = None
+        duration_ms = 0.0
         if result is None:
+            t0 = time.perf_counter()
             result, ops_count, drive_slice_info = self._execute_with_cache(fname, fargs, trace_id)
+            duration_ms = round((time.perf_counter() - t0) * 1000, 1)
             blocked_by = ""
 
         # --- 6. PII SCRUB + RESPONSE BUILDING ---
@@ -184,6 +186,9 @@ class ToolExecutor:
             ops_count=ops_count,
             drive_slice_info=drive_slice_info,
             blocked_by=blocked_by if result else "",
+            tool_args=fargs,
+            raw_output=str(result) if result is not None else "",
+            duration_ms=duration_ms,
         )
 
     # -----------------------------------------------------------------

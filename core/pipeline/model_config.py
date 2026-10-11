@@ -93,13 +93,4 @@ def get_generation_config(target_mode: str = "default") -> genai.types.Generatio
     return genai.types.GenerationConfig(**config_kwargs)
 
 
-def get_card_generation_config() -> genai.types.GenerationConfig:
-    """
-    Returns the card-specific generation config.
-    Used by CardRunner for structured synthesis.
-    """
-    return genai.types.GenerationConfig(
-        max_output_tokens=4096,
-        response_mime_type="application/json",
-    )
 

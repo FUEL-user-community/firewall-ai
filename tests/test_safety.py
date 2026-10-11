@@ -4,9 +4,8 @@ Tests command filtering, API key auth, policy engine elevation, budget limits,
 circuit breaker loop detection, PII scrubbing, drift gating, and HITL signatures.
 """
 
-import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -217,3 +216,14 @@ def test_hitl_signature_generation():
     assert result.approved is True
     assert len(result.signature) == 16
     assert result.approver_id == "alice"
+
+def test_policy_engine_set_xml_output_allowed_in_read_only():
+    """Verify set_xml_output is permitted in READ_ONLY mode despite 'set_' prefix."""
+    engine = PolicyEngine(mode="READ_ONLY")
+    assert engine.check("set_xml_output") is True
+
+
+def test_get_hitl_provider_modes():
+    """Verify get_hitl_provider returns correct provider for mode."""
+    assert isinstance(get_hitl_provider("autopilot"), AutoApproveProvider)
+    assert isinstance(get_hitl_provider(), SimulatedInteractiveProvider)

@@ -17,6 +17,7 @@ class TestSecurityPolicyArgs(BaseModel):
     destination: str
     port: str
     protocol: str = "6"
+    target_device: Optional[str] = None
 
     @field_validator('source', 'destination')
     @classmethod
@@ -41,6 +42,9 @@ class TestNatPolicyArgs(BaseModel):
     destination: str
     port: str
     protocol: str = "6"
+    from_zone: Optional[str] = None
+    to_interface: Optional[str] = None
+    target_device: Optional[str] = None
 
     @field_validator('source', 'destination')
     @classmethod
@@ -61,6 +65,7 @@ class TestNatPolicyArgs(BaseModel):
 
 class GetLiveConfigArgs(BaseModel):
     xpath: str
+    target_device: Optional[str] = None
 
     @field_validator('xpath')
     @classmethod
@@ -73,6 +78,7 @@ class GetLiveConfigArgs(BaseModel):
 class ExecuteLogQueryArgs(BaseModel):
     log_type: str
     filter_query: Optional[str] = None
+    target_device: Optional[str] = None
 
     @field_validator('log_type')
     @classmethod

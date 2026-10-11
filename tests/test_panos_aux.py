@@ -222,3 +222,24 @@ def test_metrics_logger_defensive():
     logger.log("test_cmd", {})
     logger.log("test_cmd", {"reduction_pct": "invalid"})
     logger.log("test_cmd", {"reduction_pct": 42.5})
+
+
+@mock.patch("core.panos.logs._get_pool")
+def test_execute_report_query(mock_get_pool):
+    """Verify execute_report_query routes to client.execute_report."""
+    mock_client = mock.MagicMock()
+    mock_client.execute_report.return_value = (200, "<report>data</report>")
+    mock_get_pool.return_value.get_client.return_value = mock_client
+    res = execute_report_query("top-applications")
+    assert "report: data" in res
+    mock_client.execute_report.assert_called_once_with("top-applications")
+
+
+@mock.patch("core.panos.logs._get_pool")
+def test_execute_report_discovery(mock_get_pool):
+    """Verify execute_report_discovery queries predefined reports."""
+    mock_client = mock.MagicMock()
+    mock_client.execute_report.return_value = (200, "<report><entry/></report>")
+    mock_get_pool.return_value.get_client.return_value = mock_client
+    res = execute_report_discovery()
+    assert "FOUND: top-applications" in res

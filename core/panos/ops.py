@@ -12,7 +12,7 @@ import time
 import logging
 import ipaddress
 import threading
-from typing import Dict, Any, Optional
+from typing import Optional
 from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
 from xml.sax.saxutils import escape
 
@@ -107,7 +107,7 @@ def get_device_inventory() -> str:
     return "\n".join(output)
 
 
-def test_security_policy(source: str = "10.0.0.5", destination: str = "8.8.8.8", port: str = "443",
+def test_security_policy(source: str = None, destination: str = None, port: str = "443",
                          protocol: str = "6", target_device: str = None) -> str:
     """
     Simulate a packet against the firewall's Security Policy rulebase.
@@ -117,19 +117,19 @@ def test_security_policy(source: str = "10.0.0.5", destination: str = "8.8.8.8",
     "If I have a rule with X, will traffic be allowed?", "Will port 8080 be blocked?",
     "Would traffic on port 443 be denied?", "What happens if I allow web-browsing?"
 
-    If the user does NOT provide source/destination IPs, use these defaults:
-        source: 10.0.0.5
-        destination: 8.8.8.8
-
     Args:
         source (str): Source IP address (e.g., '10.0.0.5').
-        destination (str): Destination IP address (e.g., '8.8.8.8').
+        destination (str): Destination IP address (e.g., '192.168.1.1').
         port (str): Destination port number (e.g., '443', '53', '80').
         protocol (str): IP protocol number. Default '6' (TCP). Use '17' for UDP, '1' for ICMP.
         target_device (str): Device name from fleet inventory (e.g., 'fw-hq'). Uses default if not specified.
     """
-    source_clean = source.strip() if source else "10.0.0.5"
-    destination_clean = destination.strip() if destination else "8.8.8.8"
+    if not source or not str(source).strip():
+        return "ERROR: [test_security_policy] source IP address is required."
+    if not destination or not str(destination).strip():
+        return "ERROR: [test_security_policy] destination IP address is required."
+    source_clean = source.strip()
+    destination_clean = destination.strip()
     port_clean = str(port).strip() if port else "443"
     protocol_clean = str(protocol).strip() if protocol else "6"
 
@@ -171,11 +171,16 @@ def _discover_virtual_router(client) -> Optional[str]:
     if cached:
         return cached
 
-    # Attempt 1: Fetch virtual-router config via xapi
+    # Attempt 1: Fetch virtual-router config via sealed execute_get
     try:
-        if hasattr(client, "fw") and hasattr(client.fw, "xapi"):
+        from core.panos.client import PanOSClient
+        if isinstance(client, PanOSClient):
+            _, res_xml = client.execute_get(xpath="/config/devices/entry/network/virtual-router")
+        elif hasattr(client, "fw") and hasattr(client.fw, "xapi"):
             client.fw.xapi.get(xpath="/config/devices/entry/network/virtual-router")
             res_xml = client.fw.xapi.xml_result()
+        else:
+            res_xml = None
             if res_xml is not None:
                 root = res_xml if hasattr(res_xml, "findall") else fromstring(str(res_xml))
                 for entry in root.findall(".//entry"):
@@ -202,7 +207,7 @@ def _discover_virtual_router(client) -> Optional[str]:
     return None
 
 
-def test_routing_fib(ip: str = "8.8.8.8", virtual_router: str = "default", target_device: str = None) -> str:
+def test_routing_fib(ip: str = None, virtual_router: str = "default", target_device: str = None) -> str:
     """
     Simulate a routing lookup on the firewall to see which interface and next-hop
     will be used to reach a specific IP address.
@@ -211,12 +216,12 @@ def test_routing_fib(ip: str = "8.8.8.8", virtual_router: str = "default", targe
     "Which interface is used for IP Z?", "Verify return route".
     
     Args:
-        ip (str): The IP address to test routing for. Default '8.8.8.8'.
+        ip (str): The IP address to test routing for.
         virtual_router (str): The virtual router name (configured in devices.yaml or auto-resolved).
         target_device (str): Device name from fleet inventory.
     """
-    if ip is None:
-        ip = "8.8.8.8"
+    if not ip or not str(ip).strip():
+        return "ERROR: [test_routing_fib] IP address cannot be empty."
     ip_clean = ip.strip()
     if not ip_clean:
         return "ERROR: [test_routing_fib] IP address cannot be empty."
@@ -609,9 +614,13 @@ def capture_pcap(source_ip: str = "10.0.0.1", dest_ip: str = "8.8.8.8", duration
         # 5. Stop capture and export
         client.execute_op("<set><debug><dataplane><packet-diag><set><capture><off/></capture></set></packet-diag></dataplane></debug></set>")
         
-        # 6. Export PCAP securely via pan-os-python SDK (avoids API key in URL logs)
-        client.fw.xapi.export(category="pcap", **{"from": "rx.pcap"})
-        data = getattr(client.fw.xapi, "export_result", b"")
+        # 6. Export PCAP securely via sealed client execute_export
+        from core.panos.client import PanOSClient
+        if isinstance(client, PanOSClient):
+            _, data = client.execute_export(category="pcap", **{"from": "rx.pcap"})
+        else:
+            client.fw.xapi.export(category="pcap", **{"from": "rx.pcap"})
+            data = getattr(client.fw.xapi, "export_result", b"")
         
         # 7. Basic ASCII parsing for the LLM
         data = data[:2048] if data else b""

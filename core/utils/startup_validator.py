@@ -90,27 +90,6 @@ def validate_startup():
     logger.info("[STARTUP] All configuration checks passed.")
 
 
-def validate_secrets_health():
-    """
-    Validates that the secrets backend is reachable and can serve secrets.
-    Call after validate_startup() to confirm live connectivity.
-    """
-    try:
-        from core.integrations.secrets import get_provider
-        provider = get_provider()
-
-        if not provider.health_check():
-            raise RuntimeError(
-                f"Secrets backend '{provider.backend_name}' is not healthy.\n"
-                "  Check connectivity, credentials, and permissions."
-            )
-
-        logger.info(f"[STARTUP] Secrets backend healthy: {provider.backend_name}")
-
-    except ImportError:
-        raise RuntimeError("Failed to import secrets provider. Check core/integrations/secrets.py.")
-
-
 def probe_device_reachability(host: str, port: int = 443, timeout: float = 1.0) -> dict:
     """Non-blocking TCP socket check measuring latency in milliseconds (supports IPv4 & IPv6)."""
     import socket
@@ -173,13 +152,10 @@ def get_diagnostic_matrix() -> dict:
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     gemini_ok = bool(gemini_key and gemini_key != "your-gemini-api-key-here")
 
-    # Inspection playbooks check
+    # Inspection tool count check
     playbook_count = 0
     tool_count = 0
     try:
-        from core.engine.card_runner import CardRunner
-        cards = CardRunner.load_cards()
-        playbook_count = len(cards)
         from core.pipeline.tool_keeper import ToolKeeper
         tk = ToolKeeper()
         tool_count = len(tk.get_all_tools())
@@ -227,15 +203,14 @@ def format_startup_banner(diag: dict) -> str:
     lines.append(f"|    {('* Gemini Pro / Flash' + ' ' * 12 + '[' + llm_auth + ']'):<86}|")
     lines.append("|    * Knowledge Base (Drive)        [READY - Fallback RAG Configured]                     |")
     lines.append("|                                                                                          |")
-    lines.append("|  INSPECTION ENGINE:                                                                      |")
-    p_cnt = diag.get("playbook_count", 0)
+    lines.append("|  DIAGNOSTIC & TELEMETRY ENGINE:                                                          |")
     t_cnt = diag.get("tool_count", 0)
-    lines.append(f"|    {f'* Playbooks Registered:         {p_cnt} Verified ({t_cnt} tools mapped)':<86}|")
-    lines.append("|    * Ambient Scheduler:            ACTIVE (Continuous: 5m | Periodic: 30m)               |")
+    lines.append(f"|    {f'* Operational Tool Catalog:    {t_cnt} Tools Verified':<86}|")
+    lines.append(f"|    {'* Investigation Pipeline:        On-Demand Dynamic Investigation':<86}|")
     lines.append("|                                                                                          |")
     lines.append("|  SECURITY & GOVERNANCE:                                                                  |")
     pol_mode = diag.get("policy_mode", "READ_ONLY")
-    mode_desc = "Dataplane Live" if diag.get("any_online") else "Dataplane Emulation (Sandbox Active)"
+    mode_desc = "Live Connected" if diag.get("any_online") else "Offline"
     lines.append(f"|    {f'* Operational Mode:            {mode_desc}':<86}|")
     lines.append(f"|    {f'* Policy Enforcement Gate:      {pol_mode} (Enforced)':<86}|")
     lines.append("|    * Circuit Breaker:              30 Max Turns / Loop Failsafe Active                   |")

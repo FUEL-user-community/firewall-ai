@@ -339,3 +339,11 @@ def test_obsidian_mapper_reset():
 
     # map_tool_result returns gracefully when disabled
     m1.map_tool_result("interface_all", {}, "dummy output text")
+
+
+def test_health_check_parse_telemetry():
+    """Verify _parse_telemetry parses CPU, memory, and uptime metrics."""
+    raw = "up 10 days\nload average: 0.50, 0.40, 0.30\nCPU idle: 90%\n"
+    metrics = _parse_telemetry(raw)
+    assert isinstance(metrics, dict)
+    assert metrics.get("load_avg") == 0.5

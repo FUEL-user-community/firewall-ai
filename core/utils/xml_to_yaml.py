@@ -11,7 +11,7 @@ import hashlib
 import hmac
 import yaml
 import os
-from typing import Dict, Any, Union, List
+from typing import Dict, Union, List
 
 
 try:
@@ -79,110 +79,6 @@ class ToxicXmlSanitizer:
             text = pattern.sub(replacer, text)
 
         return text
-
-    def _parse_cdata_content(self, cdata_text: str):
-        """Dispatcher for CDATA blocks - routes to appropriate parser based on content signature."""
-        if not cdata_text or len(cdata_text.strip()) == 0:
-            return cdata_text
-
-        # Detect content type by signature
-        if 'top -' in cdata_text or 'load average:' in cdata_text:
-            return self._parse_top_output(cdata_text)
-        elif 'Filesystem' in cdata_text and ('Mounted on' in cdata_text or 'IUse%' in cdata_text):
-            return self._parse_df_output(cdata_text)
-        else:
-            # Fallback: return as-is for unknown formats
-            return cdata_text
-
-    def _parse_top_output(self, cdata_text: str) -> dict:
-        """Parse 'top' command output from show system resources."""
-        try:
-            lines = cdata_text.strip().split('\n')
-            result = {}
-
-            for line in lines:
-                line = line.strip()
-
-                # Parse uptime and load averages
-                if 'up' in line and 'load average:' in line:
-                    if 'load average:' in line:
-                        load_part = line.split('load average:')[1].strip()
-                        load_values = [float(x.strip()) for x in load_part.split(',')[:3]]
-                        result['load_average'] = load_values
-                    if 'up' in line:
-                        up_parts = line.split('up')[1].split(',')[0].strip()
-                        result['uptime'] = up_parts
-
-                # Parse CPU line
-                elif '%Cpu' in line or 'Cpu(s)' in line:
-                    if 'id' in line:
-                        parts = line.split()
-                        for i, part in enumerate(parts):
-                            if 'id' in part and i > 0:
-                                try:
-                                    result['cpu_idle_pct'] = float(parts[i - 1])
-                                except:
-                                    pass
-
-                # Parse memory line
-                elif 'KiB Mem' in line or 'Mem:' in line:
-                    parts = line.split()
-                    for i, part in enumerate(parts):
-                        if 'total' in part and i > 0:
-                            try:
-                                result['memory_total_kb'] = int(parts[i - 1])
-                            except:
-                                pass
-                        if 'used' in part and i > 0 and 'memory_used_kb' not in result:
-                            try:
-                                result['memory_used_kb'] = int(parts[i - 1])
-                            except:
-                                pass
-
-                # Parse process counts
-                elif 'Tasks:' in line or 'total' in line:
-                    if 'zombie' in line:
-                        parts = line.split()
-                        for i, part in enumerate(parts):
-                            if 'zombie' in part and i > 0:
-                                try:
-                                    result['zombie_processes'] = int(parts[i - 1])
-                                except:
-                                    pass
-
-            # Calculate memory usage percentage
-            if 'memory_total_kb' in result and 'memory_used_kb' in result:
-                total = result['memory_total_kb']
-                used = result['memory_used_kb']
-                if total > 0:
-                    result['memory_used_pct'] = round((used / total) * 100, 1)
-
-            return result if result else cdata_text
-        except Exception:
-            return cdata_text
-
-    def _parse_df_output(self, cdata_text: str) -> dict:
-        """Parse 'df' command output from show system disk-space."""
-        try:
-            lines = cdata_text.strip().split('\n')
-            filesystems = []
-
-            for line in lines[1:]:  # Skip header
-                parts = line.split()
-                if len(parts) >= 6:
-                    try:
-                        fs_info = {
-                            'filesystem': parts[0],
-                            'usage_pct': parts[-2].replace('%', ''),
-                            'mounted_on': parts[-1]
-                        }
-                        filesystems.append(fs_info)
-                    except:
-                        pass
-
-            return {'filesystems': filesystems} if filesystems else cdata_text
-        except Exception:
-            return cdata_text
 
     def _xml_to_dict(self, element: ET.Element) -> Union[Dict, str, List]:
         """

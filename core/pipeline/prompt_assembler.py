@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Module-level constant: resolved once, visible in tracebacks.
 _PROMPTS_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "prompts.yaml"
-_CARD_PROMPTS_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "card_prompts.yaml"
+# _CARD_PROMPTS_PATH retired
 
 # SHA-256 integrity pin. Set via .env to guard against prompt tampering.
 _PROMPTS_EXPECTED_SHA = os.getenv("PROMPTS_YAML_SHA", "")
@@ -51,7 +51,6 @@ PROMPT_ASSEMBLY_ORDER = [
     "strict_grounding",
     "tool_execution",
     "fleet_awareness",             # Multi-FW: target_device grounding
-    "card_awareness",              # §2.75 — Autonomous Defense Deck context (from card_prompts.yaml)
     "cross_correlation",       # §3 — Shared key scanning across tool outputs
     "adversarial_reasoning",   # §4 — Attack path analysis from config data
     "drive_workflow",
@@ -95,29 +94,12 @@ def load_system_prompt(persona: str = "neo") -> str:
 
     persona_data = data[persona]
 
-    # Merge card_prompts.yaml sections if available
-    if _CARD_PROMPTS_PATH.exists():
-        try:
-            with open(_CARD_PROMPTS_PATH, "r", encoding="utf-8") as cf:
-                card_data = yaml.safe_load(cf)
-            if card_data and persona in card_data:
-                for key, value in card_data[persona].items():
-                    if key not in persona_data:  # Card prompts don't override core prompts
-                        persona_data[key] = value
-                        logger.info(f"[PROMPT] Merged card prompt section: '{key}'")
-        except Exception as e:
-            logger.warning(f"[PROMPT] Failed to load card_prompts.yaml: {e} — card awareness disabled.")
-    else:
-        logger.debug("[PROMPT] card_prompts.yaml not found — card awareness section skipped.")
-
+    
     assembled = []
 
     for key in PROMPT_ASSEMBLY_ORDER:
         if key not in persona_data:
-            # Card awareness is optional — skip gracefully if missing
-            if key == "card_awareness":
-                logger.debug("[PROMPT] card_awareness section not available — skipping.")
-                continue
+
             raise KeyError(
                 f"CRITICAL: Required section '{key}' missing from persona '{persona}'. "
                 f"Found: {list(persona_data.keys())}"

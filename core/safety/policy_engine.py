@@ -170,10 +170,13 @@ class PolicyEngine:
 
         clean_name = tool_name.strip()
 
-        is_write = (
-            clean_name in self.WRITE_TOOLS
-            or any(clean_name.startswith(p) for p in self.WRITE_PREFIXES)
-        )
+        if clean_name in self.READ_TOOLS:
+            is_write = False
+        else:
+            is_write = (
+                clean_name in self.WRITE_TOOLS
+                or any(clean_name.startswith(p) for p in self.WRITE_PREFIXES)
+            )
 
         if is_write:
             if self.mode == "READ_ONLY":

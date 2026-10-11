@@ -24,7 +24,7 @@ mermaid.initialize({
         clusterBkg: 'rgba(255,255,255,0.02)',
         clusterBorder: '#222',
         fontSize: '13px',
-        fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
+        fontFamily: 'Google Sans, Google Sans Text, Roboto, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
     }
 });
 
@@ -62,32 +62,37 @@ function getAuthKey() {
     return sessionStorage.getItem('nodal_key') || localStorage.getItem('nodal_key') || '';
 }
 
-// Helper to append logs to terminal safely
+// Helper to append logs to terminal safely (Gemini Chat Style)
 function appendLog(speaker, message, styleClass) {
     if (!terminal) return;
-    const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second:'2-digit' });
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
     const entry = document.createElement('div');
     
     let typeClass = 'log-type-sys';
     let speakerPrefix = 'SYSTEM';
     if (speaker === 'USER') {
         typeClass = 'log-type-user';
-        speakerPrefix = 'OPERATOR';
+        speakerPrefix = 'YOU';
     } else if (speaker === 'NEO') {
         typeClass = 'log-type-agent';
-        speakerPrefix = 'NEO-COPILOT';
+        speakerPrefix = 'RANGE COPILOT';
     } else if (styleClass && styleClass.includes('crit')) {
         typeClass = 'log-type-crit';
+        speakerPrefix = 'ALERT';
     }
 
     entry.className = `log-entry ${typeClass}`;
-    entry.innerHTML = `
-        <div class="log-meta">
-            <span>[${speakerPrefix}]</span>
-            <span>${time}</span>
-        </div>
-        <div class="log-content ${styleClass || ''}">${esc(message)}</div>
-    `;
+    if (speaker === 'USER') {
+        entry.innerHTML = `<div class="log-content">${esc(message)}</div>`;
+    } else {
+        entry.innerHTML = `
+            <div class="log-meta">
+                <span class="log-speaker-badge">${speakerPrefix}</span>
+                <span class="log-time">${time}</span>
+            </div>
+            <div class="log-content ${styleClass || ''}">${esc(message)}</div>
+        `;
+    }
     terminal.appendChild(entry);
     terminal.scrollTop = terminal.scrollHeight;
 }
@@ -97,20 +102,22 @@ function appendLog(speaker, message, styleClass) {
 // ═══════════════════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
+    bindLogin();
+    bindSetup();
     restoreRangeWidth();
     bindRangeResizeHandle();
     loadFleetDevices();
-    bindScenarioPresets();
+    bindTerminalActions();
     bindCanvasControls();
     bindErrorViewSpec();
-    checkAuthNotice();
+    checkHealth();
 });
 
 function checkAuthNotice() {
-    appendLog('NEO', 'NEO-COPILOT v2.4 // READY\nSelect a simulation vector or specify custom attack bypass scenario.', 'log-agent');
+    appendLog('NEO', 'Simulation engine online. Enter an adversary attack vector or policy bypass scenario to begin.', 'log-agent');
     const key = getAuthKey();
     if (!key) {
-        appendLog('SYS', 'Notice: No active passphrase in session. If simulation fails with 401/403, unlock in Defense Deck first.', 'log-sys');
+        appendLog('SYS', 'Notice: No active passphrase in session. If simulation fails with 401/403, unlock in Diagnostic Console first.', 'log-sys');
     }
 }
 
@@ -124,26 +131,35 @@ function loadFleetDevices() {
         if (!deviceSelect) return;
         const firewalls = data.firewalls || {};
         const names = Object.keys(firewalls);
+        const targetNames = names.length > 0 ? names : ['fw-hq'];
+
+        // Check if deviceSelect already matches exactly (Prevents flicker on refresh)
+        const currentValues = Array.from(deviceSelect.options).map(o => o.value);
+        const isMatch = currentValues.length === targetNames.length &&
+            currentValues.every((val, idx) => val === targetNames[idx]);
+
+        if (isMatch) {
+            // Already matches static HTML! Zero DOM mutation = ZERO flicker
+            return;
+        }
+
+        const currentVal = deviceSelect.value;
+        const frag = document.createDocumentFragment();
+        targetNames.forEach(name => {
+            const fw = firewalls[name] || {};
+            const ipStr = fw.ip ? ` (${fw.ip})` : ' (192.168.1.254)';
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = `${name}${ipStr}`;
+            frag.appendChild(opt);
+        });
 
         deviceSelect.innerHTML = '';
-        const defOpt = document.createElement('option');
-        defOpt.value = 'default';
-        defOpt.textContent = 'default (primary)';
-        deviceSelect.appendChild(defOpt);
+        deviceSelect.appendChild(frag);
 
-        names.forEach(name => {
-            if (name !== 'default') {
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                deviceSelect.appendChild(opt);
-            }
-        });
-
-        deviceSelect.addEventListener('change', () => {
-            const dev = deviceSelect.value;
-            appendLog('SYS', `Target device switched to '${dev}'`, 'log-sys');
-        });
+        if (currentVal && Array.from(deviceSelect.options).some(o => o.value === currentVal)) {
+            deviceSelect.value = currentVal;
+        }
     })
     .catch(err => {
         console.warn('[RANGE] Fleet device load error:', err);
@@ -154,25 +170,14 @@ function loadFleetDevices() {
 // Scenario Presets & Terminal Actions
 // ═══════════════════════════════════════════════════════
 
-function bindScenarioPresets() {
-    const presets = document.getElementById('scenarioPresets');
-    if (!presets) return;
-
-    presets.addEventListener('click', (e) => {
-        const pill = e.target.closest('.preset-pill');
-        if (!pill || busy) return;
-
-        const scenario = pill.dataset.scenario;
-        if (scenario) {
-            cliInput.value = scenario;
-            runSimulation(scenario);
-        }
-    });
-
+function bindTerminalActions() {
     if (btnClearTerminal) {
         btnClearTerminal.addEventListener('click', () => {
             if (terminal) terminal.innerHTML = '';
-            appendLog('SYS', 'Terminal buffer cleared.', 'log-sys');
+            appendLog('NEO', 'Simulation engine online. Enter an adversary attack vector or policy bypass scenario to begin.', 'log-agent');
+            if (emptyState) emptyState.style.display = 'flex';
+            if (diagramContainer) diagramContainer.style.display = 'none';
+            if (canvasError) canvasError.style.display = 'none';
         });
     }
 }
@@ -243,8 +248,9 @@ function runSimulation(text) {
                     try {
                         const d = JSON.parse(line.slice(6));
                         if (d.type === 'status') {
-                            if (d.content && d.content.startsWith('[NEO-THINK]')) {
-                                appendLog('NEO', d.content.replace('[NEO-THINK]', '').trim(), 'log-think');
+                            if (d.content && (d.content.startsWith('[NEO-THINK]') || d.content.startsWith('[DIAGNOSTICS]'))) {
+                                const cleanThink = d.content.replace(/^\[(NEO-THINK|DIAGNOSTICS)\]/, '').trim();
+                                appendLog('NEO', cleanThink, 'log-think');
                             } else {
                                 appendLog('SYS', d.content, 'log-sys');
                             }
@@ -442,7 +448,7 @@ async function renderAgentDiagram(markdown, agentLogMessage, threats, drops) {
         appendLog('SYS', 'Mermaid parser exception: ' + error.message, 'log-sys');
         console.error('[RANGE] Mermaid render failure:', error);
 
-        // Display visual error fallback card on canvas
+        // Display visual error fallback container on canvas
         if (canvasError && canvasErrorMsg) {
             canvasErrorMsg.textContent = error.message || 'Syntax error in generated topology definition.';
             canvasError.style.display = 'block';
@@ -620,4 +626,193 @@ function restoreRangeWidth() {
             setRangeWidth(w);
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════
+// Authentication & Setup Wizard Engine
+// ═══════════════════════════════════════════════════════
+
+function setAuthKey(key) {
+    if (key) {
+        sessionStorage.setItem('nodal_key', key);
+        localStorage.setItem('nodal_key', key);
+    }
+}
+
+function clearAuthKey() {
+    sessionStorage.removeItem('nodal_key');
+    localStorage.removeItem('nodal_key');
+}
+
+function checkHealth() {
+    fetch('/api/health')
+        .then(r => r.json())
+        .then(data => {
+            if (data.access_token) {
+                setAuthKey(data.access_token);
+            }
+            checkAuthNotice();
+
+            const loginOverlay = document.getElementById('loginOverlay');
+            const setupOverlay = document.getElementById('setupOverlay');
+
+            if (!data.configured) {
+                if (loginOverlay) loginOverlay.style.display = 'none';
+                if (setupOverlay) setupOverlay.style.display = 'flex';
+            } else if (getAuthKey()) {
+                unlockApp();
+            } else {
+                if (setupOverlay) setupOverlay.style.display = 'none';
+                if (loginOverlay) {
+                    loginOverlay.style.display = 'flex';
+                    const loginInput = document.getElementById('loginInput');
+                    if (loginInput) loginInput.focus();
+                }
+            }
+
+            const statusChip = document.getElementById('perimeterStatusChip');
+            const statusText = document.getElementById('perimeterStatusText');
+            if (statusText) {
+                if (data.firewall_reachable) {
+                    statusText.textContent = data.firewall_ip ? `PAN-OS (${data.firewall_ip})` : 'PAN-OS CONNECTED';
+                    if (statusChip) statusChip.className = 'perimeter-status-chip nominal';
+                } else if (data.configured) {
+                    statusText.textContent = 'PAN-OS UNREACHABLE';
+                    if (statusChip) statusChip.className = 'perimeter-status-chip critical';
+                } else {
+                    statusText.textContent = 'NOT CONFIGURED';
+                }
+            }
+        })
+        .catch(err => {
+            console.warn('[RANGE] Health check failed:', err);
+        });
+}
+
+function unlockApp() {
+    const loginOverlay = document.getElementById('loginOverlay');
+    if (loginOverlay) loginOverlay.style.display = 'none';
+    const setupOverlay = document.getElementById('setupOverlay');
+    if (setupOverlay) setupOverlay.style.display = 'none';
+    const workspace = document.getElementById('workspace');
+    if (workspace) workspace.style.display = 'flex';
+}
+
+function bindLogin() {
+    const form = document.getElementById('loginForm');
+    if (!form) return;
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const input = document.getElementById('loginInput');
+        const btn = document.getElementById('loginBtn');
+        const err = document.getElementById('loginError');
+        const key = input.value.trim();
+        if (!key) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Verifying...';
+        err.textContent = '';
+
+        try {
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'X-API-Key': key }
+            });
+            if (res.ok) {
+                setAuthKey(key);
+                unlockApp();
+                appendLog('SYS', 'Session unlocked successfully', 'log-sys');
+            } else {
+                clearAuthKey();
+                err.textContent = 'Invalid passphrase. Try again.';
+            }
+        } catch (_) {
+            err.textContent = 'Connection error verifying passphrase.';
+        }
+        btn.disabled = false;
+        btn.textContent = 'Connect';
+    });
+}
+
+function bindSetup() {
+    const s1 = document.getElementById('setupStep1');
+    const s2 = document.getElementById('setupStep2');
+    const s3 = document.getElementById('setupStep3');
+    if (!s1 || !s2 || !s3) return;
+
+    document.getElementById('btnSetupSimple').addEventListener('click', () => {
+        document.getElementById('setupBackend').value = 'dotenv';
+        document.getElementById('setupSimpleFields').style.display = 'flex';
+        document.getElementById('setupVaultFields').style.display = 'none';
+        s1.style.display = 'none';
+        s2.style.display = 'block';
+    });
+
+    document.getElementById('btnSetupVault').addEventListener('click', () => {
+        document.getElementById('setupBackend').value = 'vault';
+        document.getElementById('setupSimpleFields').style.display = 'none';
+        document.getElementById('setupVaultFields').style.display = 'flex';
+        s1.style.display = 'none';
+        s2.style.display = 'block';
+    });
+
+    document.getElementById('btnSetupBack').addEventListener('click', () => {
+        s2.style.display = 'none';
+        s1.style.display = 'block';
+    });
+
+    document.getElementById('setupForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById('setupSubmitBtn');
+        const err = document.getElementById('setupError');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+        err.textContent = '';
+
+        const payload = {
+            backend_type: document.getElementById('setupBackend').value,
+            firewall_ip: document.getElementById('setupFwIp').value,
+            panos_key: document.getElementById('setupPanosKey').value,
+            gemini_key: document.getElementById('setupGeminiKey').value,
+            vault_addr: document.getElementById('setupVaultAddr').value,
+            vault_role: document.getElementById('setupVaultRole').value,
+            vault_secret: document.getElementById('setupVaultSecret').value
+        };
+
+        try {
+            const res = await fetch('/api/setup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.success) {
+                document.getElementById('setupPassphrase').textContent = data.passphrase;
+                s2.style.display = 'none';
+                s3.style.display = 'block';
+            } else {
+                err.textContent = data.error || 'Setup failed';
+            }
+        } catch (_) {
+            err.textContent = 'Network error saving configuration.';
+        }
+        btn.disabled = false;
+        btn.textContent = 'Save & Initialize';
+    });
+
+    document.getElementById('btnCopyPassphrase').addEventListener('click', () => {
+        const text = document.getElementById('setupPassphrase').textContent;
+        navigator.clipboard.writeText(text);
+        const btn = document.getElementById('btnCopyPassphrase');
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy to Clipboard', 2000);
+    });
+
+    document.getElementById('btnProceedLogin').addEventListener('click', () => {
+        document.getElementById('setupOverlay').style.display = 'none';
+        document.getElementById('loginOverlay').style.display = 'flex';
+        document.getElementById('loginInput').focus();
+        checkHealth();
+    });
 }

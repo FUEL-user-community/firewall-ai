@@ -8,7 +8,6 @@ import random
 import logging
 import inspect
 import warnings
-import datetime
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,11 +61,6 @@ try:
 except ImportError:
     get_secret = lambda k: os.getenv(k.upper())
 
-# Autonomous Defense Deck store -- fail-soft
-try:
-    from core.engine.card_store import CardStore
-except ImportError:
-    CardStore = None
 
 # Policy-gated execution
 try:
@@ -162,6 +156,7 @@ class InvestigationState:
     investigation_trace: List[Dict[str, Any]] = field(default_factory=list)
     abort_event: Optional[threading.Event] = None
     chunk_callback: Optional[Callable[[str], None]] = None
+    receipts: List[Dict[str, Any]] = field(default_factory=list)
 
     def emit(self, msg: str) -> None:
         """Emits user status update if a callback is registered."""
@@ -300,13 +295,6 @@ class CoreBrain:
         """Sets the function to call with token usage stats."""
         self.usage_tracker.set_callback(callback)
 
-    def _execute_tool(self, name, args):
-        """Standardized Tool Execution helper. Routes through full ToolExecutor pipeline."""
-        matching_tool = next((t for t in self.tools if t.__name__ == name), None)
-        if not matching_tool:
-            return "Error: Tool Not Found"
-        return self.tool_executor.safe_call(matching_tool, args)
-
     def _track_usage(self, response, latency_ms=0, success=True, tray="#core", ops_count=0, trace_id="", tool_summary=""):
         """Delegates to UsageTracker with fail-soft protection."""
         try:
@@ -349,80 +337,6 @@ class CoreBrain:
             logger.warning(f"[FLEET] Failed to build fleet context: {e}")
             return "FLEET_INVENTORY: Unable to load (using default device)."
 
-    def _build_card_context(self, user_query: str) -> str:
-        """
-        Build card context for the LLM. Two injection types:
-
-        1. CARD_CONTEXT -- when user clicks "Investigate" on a card,
-           the full finding is injected as prior art.
-        2. ACTIVE_ALERTS -- top pending CRITICAL/CAUTION cards injected
-           as ambient awareness on every query.
-
-        Mirrors the _build_fleet_context() pattern.
-        """
-        if CardStore is None:
-            return ""
-
-        try:
-            store = CardStore.get_instance()
-        except Exception:
-            return ""  # Card engine not available -- silent skip
-
-        parts = []
-
-        # --- CARD_CONTEXT: Specific card investigation ---
-        if user_query.lower().startswith("investigate:"):
-            search_title = user_query.split(":", 1)[1].strip()
-            if search_title:
-                try:
-                    pending = store.get_pending(limit=50)
-                    matched = None
-                    for card in pending:
-                        if search_title.lower() in card.get("title", "").lower():
-                            matched = card
-                            break
-
-                    if matched:
-                        evidence_str = "\n".join(f"  - {e}" for e in matched.get("evidence", []))
-                        metrics_str = ", ".join(f"{k}={v}" for k, v in matched.get("metrics", {}).items())
-                        ts = matched.get("timestamp", 0)
-                        time_str = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "Unknown"
-
-                        parts.append(
-                            f"CARD_CONTEXT (Prior Art -- do NOT re-run these tools):\n"
-                            f"  Card ID: {matched.get('card_id', 'N/A')}\n"
-                            f"  Severity: {matched.get('severity', 'normal')}\n"
-                            f"  Title: {matched.get('title', '')}\n"
-                            f"  Finding: {matched.get('finding', '')}\n"
-                            f"  Evidence:\n{evidence_str}\n"
-                            f"  Metrics: {metrics_str}\n"
-                            f"  Ran At: {time_str}\n"
-                            f"\nStart your investigation from these findings. Go DEEPER."
-                        )
-                        logger.info(f"[CARDS] Injected CARD_CONTEXT: {matched.get('card_id')} into investigation")
-                except Exception as e:
-                    logger.debug(f"[CARDS] Card lookup failed: {e}")
-
-        # --- ACTIVE_ALERTS: Ambient awareness ---
-        try:
-            critical = store.get_by_severity("critical", limit=3)
-            caution = store.get_by_severity("caution", limit=3)
-            alerts = critical + caution
-
-            if alerts:
-                alert_lines = []
-                for a in alerts[:MAX_AMBIENT_ALERTS]:
-                    alert_lines.append(
-                        f"  [{a.get('severity','').upper()}] {a.get('card_id','')}: {a.get('title','')} -- {a.get('finding','')[:120]}"
-                    )
-                parts.append(
-                    f"ACTIVE_ALERTS ({len(alerts)} pending):\n" + "\n".join(alert_lines)
-                )
-        except Exception as e:
-            logger.debug(f"[CARDS] Active alerts query failed: {e}")
-
-        return "\n\n".join(parts)
-
     # -------------------------------------------------------------------------
     # Private Investigation Step Handlers
     # -------------------------------------------------------------------------
@@ -434,7 +348,8 @@ class CoreBrain:
         try:
             fw_dict = _load_devices_config().get("firewalls", {})
             for fw_alias in fw_dict:
-                if fw_alias.lower() in user_query.lower():
+                pattern = r'(?<![a-zA-Z0-9_-])' + re.escape(fw_alias.lower()) + r'(?![a-zA-Z0-9_-])'
+                if re.search(pattern, user_query.lower()):
                     return fw_alias
         except Exception as ex:
             logger.debug(f"[BRAIN] Device resolution failed: {ex}")
@@ -568,9 +483,8 @@ class CoreBrain:
         return state
 
     def _build_reality_prompt(self, user_query: str, state: InvestigationState) -> str:
-        """Builds grounded reality anchor string including fleet, cards, and cognitive depth."""
+        """Builds grounded reality anchor string including fleet inventory and diagnostic parameters."""
         fleet_context = self._build_fleet_context()
-        card_context = self._build_card_context(user_query)
         mode = classify_mode(user_query)
         thinking_level = get_thinking_level(mode)
 
@@ -579,8 +493,6 @@ class CoreBrain:
             "Verify tool names against this list before every call.\n\n"
             f"{fleet_context}"
         )
-        if card_context:
-            reality_check += f"\n\n{card_context}"
 
         if self.license_context:
             reality_check += f"\n\n{self.license_context}"
@@ -721,7 +633,7 @@ class CoreBrain:
                     result.turn_reasoning_parts.append(reasoning_text)
 
                     clean_reasoning = " | ".join(line.strip() for line in reasoning_text.split('\n') if line.strip())
-                    state.emit(f"[NEO-THINK] {clean_reasoning[:150]}...")
+                    state.emit(f"[DIAGNOSTICS] {clean_reasoning[:150]}...")
 
                     hyp_match = re.search(r'\[HYPOTHESIS_MATRIX\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
                     con_match = re.search(r'\[CONTRADICTION_CHECK\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
@@ -758,6 +670,18 @@ class CoreBrain:
                     state.drive_slices.append(exec_result.drive_slice_info)
                     if len(state.drive_slices) >= 3:
                         logger.warning(f"[{state.trace_id}] [EFFICIENCY] {len(state.drive_slices)} Drive slices read. Consider synthesis.")
+
+                # Record deterministic execution receipt for operator audit trail and Google Docs export
+                receipt_status = "blocked" if exec_result.blocked_by else "success"
+                state.receipts.append({
+                    "tool": exec_result.tool_name,
+                    "args": exec_result.tool_args,
+                    "duration_ms": exec_result.duration_ms,
+                    "status": receipt_status,
+                    "blocked_by": exec_result.blocked_by,
+                    "raw_output": exec_result.raw_output or "",
+                    "output_snippet": (exec_result.raw_output or "")[:500],
+                })
 
         return result
 
@@ -958,6 +882,15 @@ class CoreBrain:
     # Public Agentic Lifecycle Orchestrator
     # -------------------------------------------------------------------------
 
+    def investigate_detailed(
+        self,
+        user_query: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Convenience method returning structured verdict and receipts dict."""
+        kwargs["return_details"] = True
+        return self.investigate(user_query, **kwargs)
+
     def investigate(
         self,
         user_query: str,
@@ -967,8 +900,9 @@ class CoreBrain:
         target_mode: Optional[str] = None,
         abort_event: Optional[threading.Event] = None,
         chunk_callback: Optional[Callable[[str], None]] = None,
+        return_details: bool = False,
         **kwargs
-    ) -> str:
+    ) -> Any:
         """
         Execute an agentic investigation loop with dynamic tool partitioning.
 
@@ -986,7 +920,10 @@ class CoreBrain:
             Structured investigation findings or partial report upon early termination.
         """
         if not self.api_key and not self.model:
-            return "Error: Offline Mode (No API Key or Model configured)."
+            err = "Error: Offline Mode (No API Key or Model configured)."
+            if return_details:
+                return {"verdict": err, "receipts": [], "trace_id": "offline"}
+            return err
 
         # 1. State & Governor Initialization (Thread-safe request-scoped instances)
         state = self._init_investigation_state(
@@ -994,6 +931,16 @@ class CoreBrain:
             abort_event=abort_event, chunk_callback=chunk_callback,
             temperature=temperature
         )
+
+        def _wrap_return(verdict_val: str) -> Any:
+            if return_details:
+                return {
+                    "verdict": verdict_val,
+                    "receipts": list(state.receipts),
+                    "trace_id": state.trace_id,
+                }
+            return verdict_val
+
         reality_check = self._build_reality_prompt(user_query, state)
         chat = self.model.start_chat()
 
@@ -1003,26 +950,26 @@ class CoreBrain:
         )
         if workflow_report:
             state.emit_chunk(workflow_report)
-            return workflow_report
+            return _wrap_return(workflow_report)
 
         # 3. Initial Prompt Turn with Circuit Breaker Protection
         response, err = self._execute_initial_turn(chat, user_query, reality_check, state, **kwargs)
         if err:
-            return err
+            return _wrap_return(err)
 
         # 4. Multi-Turn Agentic Investigation Loop
         for turn in range(MAX_TURNS):
             if state.is_aborted():
                 state.emit("[HALTED] Investigation cancelled by operator.")
                 logger.info(f"[{state.trace_id}] Investigation halted via abort_event.")
-                return "[HALTED] Investigation cancelled by user request."
+                return _wrap_return("[HALTED] Investigation cancelled by user request.")
 
             self._track_turn_usage(response, state)
 
             # Token budget guard
             budget_report = self._check_budget_limits(chat, response, state)
             if budget_report:
-                return budget_report
+                return _wrap_return(budget_report)
 
             # Extract Hi-CoT reasoning and execute tool calls
             try:
@@ -1053,7 +1000,7 @@ class CoreBrain:
                     )
                 except Exception as rec_err:
                     logger.error(f"[{state.trace_id}] Circuit breaker recovery failed: {rec_err}")
-                return self._finalize_investigation(response, state, turn, **kwargs)
+                return _wrap_return(self._finalize_investigation(response, state, turn, **kwargs))
 
             # Check for dynamic tool tray pivot (e.g. summon_toolkit)
             pivot_directive = self._handle_tool_tray_pivot(turn_result, state)
@@ -1061,7 +1008,7 @@ class CoreBrain:
             # Enforce semantic drift safety boundary
             drift_error = self._evaluate_semantic_drift(turn_result, state, turn, **kwargs)
             if drift_error:
-                return drift_error
+                return _wrap_return(drift_error)
 
             # Feed tool execution results back to model
             if turn_result.tool_parts:
@@ -1079,7 +1026,7 @@ class CoreBrain:
                 continue
 
             # Final report generation
-            return self._finalize_investigation(response, state, turn, **kwargs)
+            return _wrap_return(self._finalize_investigation(response, state, turn, **kwargs))
 
         # Fallback: if loop finished all turns, check if the last response has synthesizable content
         if response is not None:
@@ -1095,9 +1042,9 @@ class CoreBrain:
 
             if has_text:
                 logger.info(f"[{state.trace_id}] Loop reached MAX_TURNS ({MAX_TURNS}) with final synthesis present. Finalizing.")
-                return self._finalize_investigation(response, state, MAX_TURNS - 1, **kwargs)
+                return _wrap_return(self._finalize_investigation(response, state, MAX_TURNS - 1, **kwargs))
 
-        return f"[TIMEOUT] Maximum turns ({MAX_TURNS}) reached."
+        return _wrap_return(f"[TIMEOUT] Maximum turns ({MAX_TURNS}) reached.")
 
     def investigate_stream(
         self,

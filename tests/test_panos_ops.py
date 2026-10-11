@@ -187,3 +187,10 @@ def test_get_device_inventory(mock_client_pool):
     assert "Branch Firewall" in inv
     assert "[CONNECTED] (DEFAULT)" in inv
     assert "Total: 2 device(s)" in inv
+
+def test_security_policy_requires_source_and_destination():
+    """Verify test_security_policy rejects empty source/destination rather than faking defaults."""
+    res1 = panos_ops.test_security_policy(source="", destination="8.8.8.8", port="443")
+    assert "source IP address is required" in res1
+    res2 = panos_ops.test_security_policy(source="10.0.0.1", destination="", port="443")
+    assert "destination IP address is required" in res2

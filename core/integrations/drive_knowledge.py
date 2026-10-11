@@ -34,7 +34,7 @@ def _init_drive_service():
         logger.error(f"[DRIVE-RAG] Failed to initialize Drive service: {e}")
         return None, str(e)
 
-def query_knowledge_base(action: str, target: str = None, start_page: int = None, end_page: int = None, **kwargs) -> str:
+def query_knowledge_base(action: str, target: str = None, start_page: int = None, end_page: int = None, panos_version: str = None, **kwargs) -> str:
     """
     Query the Google Drive Knowledge Base for official PAN-OS documentation.
     
@@ -44,6 +44,7 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
         target (str): The name of the document to search for or read from.
         start_page (int): Starting page number (inclusive) for 'read_slice'.
         end_page (int): Ending page number (inclusive) for 'read_slice'.
+        panos_version (str): Optional PAN-OS software version (e.g. '10.2', '11.1') to match version-specific CLI manuals and release notes.
     """
     if not action or not isinstance(action, str):
         return "Error: 'action' parameter is required ('list_contents' or 'read_slice')."
@@ -69,6 +70,13 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
         try:
             results = service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)').execute()
             items = results.get('files', [])
+            
+            # Filter by panos_version if specified and matching documents exist
+            if panos_version and items:
+                v_clean = str(panos_version).strip().lower()
+                version_matched = [it for it in items if v_clean in it.get('name', '').lower()]
+                if version_matched:
+                    items = version_matched
             
             if not items:
                 return f"No documents found matching '{target or 'all'}'. Try different keywords."
@@ -104,6 +112,13 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
             query = f"'{folder_id}' in parents and name contains '{target_safe}' and trashed = false"
             results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
             items = results.get('files', [])
+            
+            # Filter by panos_version if specified and matching documents exist
+            if panos_version and items:
+                v_clean = str(panos_version).strip().lower()
+                version_matched = [it for it in items if v_clean in it.get('name', '').lower()]
+                if version_matched:
+                    items = version_matched
             
             if not items:
                 return f"Error: Document '{target}' not found."

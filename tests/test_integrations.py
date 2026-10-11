@@ -185,3 +185,85 @@ def test_usage_tracker_dict_and_callback():
     tracker.track(dict_resp, trace_id="trace-2")
     assert len(callback_calls) == 2
     assert callback_calls[1] == ("gemini-3.1-pro-preview", 2000, 800)
+
+def test_drive_knowledge_version_filter():
+    """Verify query_knowledge_base filters documents by panos_version when provided."""
+    mock_service = mock.MagicMock()
+    mock_files = mock.MagicMock()
+    mock_files.list.return_value.execute.return_value = {
+        "files": [
+            {"id": "doc1", "name": "PAN-OS 10.1 CLI Reference Guide.pdf"},
+            {"id": "doc2", "name": "PAN-OS 11.0 CLI Reference Guide.pdf"},
+        ]
+    }
+    mock_service.files.return_value = mock_files
+
+    with mock.patch("core.integrations.drive_knowledge._init_drive_service", return_value=(mock_service, None)),          mock.patch.dict(os.environ, {"KNOWLEDGE_BASE_FOLDER_ID": "folder_123"}):
+        res = query_knowledge_base(action="list_contents", panos_version="11.0")
+        assert "PAN-OS 11.0" in res
+        assert "PAN-OS 10.1" not in res
+
+
+def test_generate_incident_markdown_formatting():
+    """Verify generate_incident_markdown formats structured tables and tool outputs."""
+    from core.integrations.google_export import generate_incident_markdown
+    md = generate_incident_markdown(
+        trace_id="test-trace-abc",
+        query="Why is traffic dropped?",
+        verdict="Traffic dropped by rule Deny-All",
+        receipts=[
+            {
+                "tool": "test_security_policy",
+                "duration_ms": 15.4,
+                "status": "success",
+                "args": {"source": "10.0.0.1", "destination": "10.0.0.2"},
+                "raw_output": "Matched rule: Deny-All"
+            }
+        ]
+    )
+    assert "test-trace-abc" in md
+    assert "Why is traffic dropped?" in md
+    assert "Traffic dropped by rule Deny-All" in md
+    assert "test_security_policy" in md
+    assert "15.4ms" in md
+    assert "Matched rule: Deny-All" in md
+
+
+def test_export_to_google_doc_drive_success_and_fallback():
+    """Verify export_to_google_doc handles Google Drive upload and local fallback."""
+    from core.integrations.google_export import export_to_google_doc
+
+    # 1. Fallback when no Drive service available
+    with mock.patch("core.integrations.google_export._init_drive_write_service", return_value=(None, "No credentials")):
+        res = export_to_google_doc(
+            trace_id="test-trace-abc",
+            query="Check flow",
+            verdict="Flow allowed",
+            receipts=[]
+        )
+        assert res["success"] is True
+        assert res["mode"] == "markdown_download"
+        assert res["doc_url"] is None
+        assert "Flow allowed" in res["markdown"]
+
+    # 2. Success with mocked Drive service
+    mock_service = mock.MagicMock()
+    mock_files = mock.MagicMock()
+    mock_create = mock.MagicMock()
+    mock_create.execute.return_value = {
+        "id": "gdoc-file-123",
+        "webViewLink": "https://docs.google.com/document/d/gdoc-file-123/edit"
+    }
+    mock_files.create.return_value = mock_create
+    mock_service.files.return_value = mock_files
+
+    with mock.patch("core.integrations.google_export._init_drive_write_service", return_value=(mock_service, None)):
+        res = export_to_google_doc(
+            trace_id="test-trace-abc",
+            query="Check flow",
+            verdict="Flow allowed",
+            receipts=[]
+        )
+        assert res["success"] is True
+        assert res["mode"] == "google_doc"
+        assert res["doc_url"] == "https://docs.google.com/document/d/gdoc-file-123/edit"

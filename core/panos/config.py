@@ -9,7 +9,7 @@ import re
 import logging
 import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element, SubElement, tostring
-from typing import Optional, Tuple
+from typing import Tuple
 
 from core.panos.client import PanOSClientPool
 from core.utils.xml_to_yaml import ToxicXmlSanitizer
@@ -153,8 +153,14 @@ def get_live_config(xpath: str, target_device: str = None) -> str:
         client = _get_pool().get_client(target_device)
         logger.info(f"Fetching config for xpath: {clean_xpath} on {target_device or 'default'}")
         
-        client.fw.xapi.get(xpath=clean_xpath)
-        result = client.fw.xapi.xml_result()
+        from core.panos.client import PanOSClient
+        if isinstance(client, PanOSClient):
+            status_code, result = client.execute_get(clean_xpath)
+            if status_code != 200:
+                return f"ERROR: [get_live_config] Failed to retrieve configuration at '{clean_xpath}'"
+        else:
+            client.fw.xapi.get(xpath=clean_xpath)
+            result = client.fw.xapi.xml_result()
         if not result:
             return "Error: No data returned from firewall."
 
@@ -287,8 +293,14 @@ def fetch_running_config_xml(target_device: str = None) -> str:
 
     try:
         client = _get_pool().get_client(target_device)
-        client.fw.xapi.export(category="configuration")
-        result = client.fw.xapi.xml_result()
+        from core.panos.client import PanOSClient
+        if isinstance(client, PanOSClient):
+            status_code, result = client.execute_export(category="configuration")
+            if status_code != 200:
+                return f"ERROR: [fetch_running_config_xml] Failed to export configuration"
+        else:
+            client.fw.xapi.export(category="configuration")
+            result = client.fw.xapi.xml_result()
         if result:
             # Redact password hashes, private keys, and pre-shared secrets (M1)
             return _redact_sensitive_xml(result)

@@ -8,9 +8,7 @@ and final text extraction.
 
 import re
 import logging
-from typing import Optional
 
-from core.pipeline.model_config import MAX_TURNS
 
 logger = logging.getLogger(__name__)
 

@@ -10,21 +10,25 @@ Credential flow:
 """
 
 import os
+import re
 import ssl
+import hmac
 import yaml
+import socket
+import hashlib
 import logging
 import urllib3
 import xml.etree.ElementTree as _ET
 from xml.sax.saxutils import escape
 import threading
 from pathlib import Path
-from typing import Tuple, Optional, Dict, List, Any
+from typing import Tuple, Optional, Dict, List, Any, Union
 
 # Official Palo Alto Networks library
 from panos.firewall import Firewall
 from panos.errors import PanDeviceError
 
-__all__ = ["PanOSClient", "PanOSClientPool"]
+__all__ = ["PanOSClient", "PanOSClientPool", "get_client_pool", "normalize_fingerprint", "get_peer_certificate_fingerprint"]
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,38 @@ if not VERIFY_SSL:
         "This is insecure — use only for lab environments with self-signed certs."
     )
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+def normalize_fingerprint(fp: Optional[str]) -> str:
+    """
+    Normalizes a SHA-256 certificate fingerprint into a canonical 64-char uppercase hex string.
+    Handles colon-separated, space-separated, hyphenated, raw hex, and 'SHA256:' prefixes.
+    """
+    if not fp or not isinstance(fp, str):
+        return ""
+    clean = re.sub(r'^(sha256|sha-256):?', '', fp.strip(), flags=re.IGNORECASE)
+    clean = re.sub(r'[^0-9a-fA-F]', '', clean)
+    return clean.upper()
+
+
+def get_peer_certificate_fingerprint(hostname: str, port: int = 443, timeout: float = 3.0) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Probes the remote TLS peer and extracts its X.509 certificate SHA-256 fingerprint and PEM text.
+    Returns (fingerprint_hex, pem_cert) or (None, None) on failure.
+    """
+    try:
+        ctx = ssl._create_unverified_context()
+        with socket.create_connection((hostname, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
+                der_cert = ssock.getpeercert(binary_form=True)
+                if not der_cert:
+                    return None, None
+                sha256_fp = hashlib.sha256(der_cert).hexdigest().upper()
+                pem_cert = ssl.DER_cert_to_PEM_cert(der_cert)
+                return sha256_fp, pem_cert
+    except Exception as e:
+        logger.debug(f"[SSL Fingerprint] Could not fetch peer cert from {hostname}:{port}: {e}")
+        return None, None
 
 
 def _format_error_xml(msg: Any) -> str:
@@ -82,7 +118,8 @@ class PanOSClient:
         api_key: str,
         label: str = "",
         verify_ssl: Optional[bool] = None,
-        virtual_router: Optional[str] = None
+        virtual_router: Optional[str] = None,
+        ssl_fingerprint: Optional[Union[str, List[str]]] = None
     ):
         self.device_name = device_name
         self.hostname = hostname
@@ -90,21 +127,65 @@ class PanOSClient:
         self.verify_ssl = VERIFY_SSL if verify_ssl is None else verify_ssl
         self.virtual_router = virtual_router
         self._cached_vr = virtual_router
+        self.ssl_fingerprint = ssl_fingerprint
 
         try:
             self.fw = Firewall(hostname=hostname, api_key=api_key)
             self._configure_ssl()
             vr_info = f", vr='{self.virtual_router}'" if self.virtual_router else ""
-            logger.info(f"[PanOSClient] Initialized: {device_name} ({label}) @ {hostname} (ssl_verify={self.verify_ssl}{vr_info})")
+            fp_info = f", fp_pin=True" if self.ssl_fingerprint else ""
+            logger.info(f"[PanOSClient] Initialized: {device_name} ({label}) @ {hostname} (ssl_verify={self.verify_ssl}{vr_info}{fp_info})")
         except Exception as e:
             logger.error(f"[PanOSClient] Failed to initialize {device_name}: {e}")
             raise
 
     def _configure_ssl(self):
-        """Configure SSL context on underlying pan.xapi instance (C2)."""
+        """
+        Configure SSL context on underlying pan.xapi instance (C2).
+        Supports:
+          1. Cryptographic SHA-256 fingerprint pinning (SSH-style zero-trust without CA files).
+          2. Verified TLS with custom CA certificate bundle (PANOS_SSL_CERT_PATH).
+          3. Standard verified TLS (system root CA store).
+          4. Unverified fallback if PANOS_VERIFY_SSL=false.
+        """
         if not hasattr(self.fw, 'xapi') or self.fw.xapi is None:
             return
 
+        # 1. Check for pinned SSL certificate fingerprints (from devices.yaml or .env)
+        raw_fps = self.ssl_fingerprint
+        if not raw_fps:
+            normalized_name = self.device_name.upper().replace('-', '_').replace('.', '_')
+            raw_fps = os.getenv(f"PANOS_SSL_FINGERPRINT_{normalized_name}") or os.getenv("PANOS_SSL_FINGERPRINT")
+
+        allowed_fps = []
+        if raw_fps:
+            if isinstance(raw_fps, str):
+                raw_fps = [f.strip() for f in raw_fps.split(',') if f.strip()]
+            allowed_fps = [normalize_fingerprint(f) for f in raw_fps if normalize_fingerprint(f)]
+
+        if allowed_fps:
+            actual_fp, pem_cert = get_peer_certificate_fingerprint(self.hostname)
+            if actual_fp:
+                matched = any(hmac.compare_digest(actual_fp, fp) for fp in allowed_fps)
+                if not matched:
+                    formatted_actual = ':'.join(actual_fp[i:i+2] for i in range(0, len(actual_fp), 2))
+                    expected_str = ', '.join(':'.join(fp[i:i+2] for i in range(0, len(fp), 2)) for fp in allowed_fps)
+                    err_msg = (
+                        f"[SECURITY ALERT] Certificate fingerprint mismatch for '{self.device_name}'!\n"
+                        f"  Expected: {expected_str}\n"
+                        f"  Received: {formatted_actual}\n"
+                        f"Possible Man-In-The-Middle attack or rotated management certificate. "
+                        f"Update 'ssl_fingerprint' in config/devices.yaml to verify."
+                    )
+                    logger.error(err_msg)
+                    raise ValueError(err_msg)
+
+                formatted_actual = ':'.join(actual_fp[i:i+2] for i in range(0, len(actual_fp), 2))
+                logger.info(f"[PanOSClient] Verified SSL fingerprint for '{self.device_name}': SHA256:{formatted_actual}")
+                self.fw.xapi.ssl_context = ssl._create_unverified_context()
+                return
+
+        # 2. Standard verification or explicit CA file
         if self.verify_ssl:
             try:
                 cert_path = os.getenv("PANOS_SSL_CERT_PATH")
@@ -114,6 +195,7 @@ class PanOSClient:
                     self.fw.xapi.ssl_context = ssl.create_default_context()
             except Exception as e:
                 logger.warning(f"[PanOSClient] Failed to initialize verified SSL context for {self.device_name}: {e}")
+                self.fw.xapi.ssl_context = ssl._create_unverified_context()
         else:
             try:
                 self.fw.xapi.ssl_context = ssl._create_unverified_context()
@@ -237,6 +319,65 @@ class PanOSClient:
 
         except Exception as e:
             logger.error(f"[{self.device_name}] User-ID Request failed: {e}", exc_info=True)
+            return 500, _format_error_xml(e)
+
+    def execute_get(self, xpath: str, timeout: int = 15) -> Tuple[int, str]:
+        """
+        Execute configuration get query via XML API.
+
+        Args:
+            xpath: PAN-OS configuration XPath
+            timeout: Request timeout in seconds
+
+        Returns:
+            Tuple of (status_code, response_xml)
+        """
+        if not xpath or not isinstance(xpath, str):
+            return 400, _format_error_xml("Invalid or empty XPath provided")
+
+        self._apply_timeout(timeout)
+        try:
+            clean_xpath = xpath.strip()
+            self.fw.xapi.get(xpath=clean_xpath)
+            result_xml = self.fw.xapi.xml_result()
+            normalized = _normalize_xml_response(result_xml)
+            return 200, normalized
+        except PanDeviceError as e:
+            logger.error(f"[{self.device_name}] PAN-OS get error: {e}")
+            return 400, _format_error_xml(e)
+        except Exception as e:
+            logger.error(f"[{self.device_name}] Get request failed ({xpath}): {e}", exc_info=True)
+            return 500, _format_error_xml(e)
+
+    def execute_export(self, category: str = "configuration", timeout: int = 30, **kwargs) -> Tuple[int, Any]:
+        """
+        Execute configuration or PCAP export via XML API.
+
+        Args:
+            category: Export category ('configuration', 'pcap', etc.)
+            timeout: Request timeout in seconds
+            **kwargs: Extra arguments passed to xapi.export (e.g. from='rx.pcap')
+
+        Returns:
+            Tuple of (status_code, export_data_or_xml)
+        """
+        if not category or not isinstance(category, str):
+            return 400, _format_error_xml("Invalid export category")
+
+        self._apply_timeout(timeout)
+        try:
+            self.fw.xapi.export(category=category.strip(), **kwargs)
+            if category.strip().lower() == "pcap":
+                data = getattr(self.fw.xapi, "export_result", b"") or self.fw.xapi.xml_result()
+                return 200, data
+            result_xml = self.fw.xapi.xml_result()
+            normalized = _normalize_xml_response(result_xml)
+            return 200, normalized
+        except PanDeviceError as e:
+            logger.error(f"[{self.device_name}] PAN-OS export error: {e}")
+            return 400, _format_error_xml(e)
+        except Exception as e:
+            logger.error(f"[{self.device_name}] Export request failed ({category}): {e}", exc_info=True)
             return 500, _format_error_xml(e)
 
 
@@ -382,7 +523,8 @@ class PanOSClientPool:
                 api_key=api_key,
                 label=label,
                 verify_ssl=VERIFY_SSL,
-                virtual_router=config.get('virtual_router')
+                virtual_router=config.get('virtual_router'),
+                ssl_fingerprint=config.get('ssl_fingerprint')
             )
             self._connections[device_name] = client
             return client
@@ -402,6 +544,7 @@ class PanOSClientPool:
                     'label': config.get('label', name),
                     'default': config.get('default', False),
                     'virtual_router': config.get('virtual_router'),
+                    'ssl_fingerprint': config.get('ssl_fingerprint'),
                     'connected': name in self._connections,
                 })
             return devices
@@ -425,3 +568,6 @@ class PanOSClientPool:
                     cls._instance._connections.clear()
                 cls._instance = None
         logger.info("[Pool] Connection pool reset")
+
+
+get_client_pool = PanOSClientPool.get_instance

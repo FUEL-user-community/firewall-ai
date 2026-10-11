@@ -1,5 +1,5 @@
 """
-Tests for server.py — API routes, authentication, lifespan, and Pydantic validation.
+Tests for server.py â€” API routes, authentication, lifespan, and Pydantic validation.
 """
 
 import os
@@ -11,7 +11,7 @@ client = TestClient(app)
 
 
 def test_health_check():
-    """Verify /api/health returns properly structured status JSON."""
+    """Verify /api/health returns properly structured status JSON and vends access_token on loopback dev."""
     response = client.get("/api/health")
     assert response.status_code == 200
     data = response.json()
@@ -22,6 +22,35 @@ def test_health_check():
     assert "firewall_ip" in data
     assert "mode" in data
     assert "fleet" in data
+    # TestClient connects as 'testclient' on loopback in development mode
+    if os.getenv("API_ACCESS_KEY"):
+        assert data.get("access_token") == os.getenv("API_ACCESS_KEY")
+
+
+def test_health_check_auto_auth_disabled(monkeypatch):
+    """Verify /api/health omits access_token when DEV_AUTO_AUTH is explicitly false."""
+    monkeypatch.setenv("DEV_AUTO_AUTH", "false")
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert "access_token" not in data
+
+
+def test_health_check_production_environment(monkeypatch):
+    """Verify /api/health omits access_token when ENVIRONMENT is production."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert "access_token" not in data
+
+
+def test_health_check_proxy_header_blocks_auto_auth():
+    """Verify /api/health omits access_token when incoming request has proxy forwarding headers."""
+    response = client.get("/api/health", headers={"X-Forwarded-For": "203.0.113.195"})
+    assert response.status_code == 200
+    data = response.json()
+    assert "access_token" not in data
 
 
 def test_liveness_and_readiness_probes():
@@ -38,7 +67,6 @@ def test_liveness_and_readiness_probes():
     assert rdata["status"] == "ready"
     assert "mode" in rdata
     assert "gemini_authenticated" in rdata
-    assert "playbooks_loaded" in rdata
     assert "tools_loaded" in rdata
     assert "fleet" in rdata
 
@@ -86,13 +114,13 @@ def test_pydantic_validation_chat_empty():
     assert response.status_code == 422
 
 
-def test_pydantic_validation_schedule_update():
-    """POST /api/cards/schedule with missing required fields should return 422."""
+def test_pydantic_validation_export_doc_missing_trace():
+    """POST /api/export/google-doc with missing required fields should return 422."""
     test_key = os.environ.get("API_ACCESS_KEY", "default-key")
     response = client.post(
-        "/api/cards/schedule",
+        "/api/export/google-doc",
         headers={"X-API-Key": test_key},
-        json={"invalid_field": 123}  # missing 'card_key'
+        json={"invalid_field": 123}  # missing 'trace_id'
     )
     assert response.status_code == 422
 
@@ -122,15 +150,49 @@ def test_setup_unauthorized_reconfiguration_blocked():
             os.environ.pop("API_ACCESS_KEY", None)
 
 
-def test_card_run_missing_key():
-    """POST /api/cards/run with non-existent card returns 404 cleanly without raising 500."""
+
+
+def test_investigation_receipts_endpoint():
+    """GET /api/investigations/{trace_id}/receipts returns 404 on missing, 200 on cached."""
     test_key = os.environ.get("API_ACCESS_KEY", "default-key")
-    response = client.post(
-        "/api/cards/run",
-        headers={"X-API-Key": test_key},
-        json={"card_key": "non_existent_card_xyz_123"}
-    )
-    assert response.status_code == 404
-    data = response.json()
-    assert data["success"] is False
-    assert "not found" in data["error"].lower()
+    headers = {"X-API-Key": test_key}
+
+    # 1. Non-existent trace
+    resp = client.get("/api/investigations/non-existent-trace/receipts", headers=headers)
+    assert resp.status_code == 404
+
+    # 2. Seed cache directly
+    from server import _cache_investigation
+    _cache_investigation("trace-test-123", "Test query", "Test verdict", [{"tool": "test_routing_fib", "duration_ms": 12.5}])
+
+    resp = client.get("/api/investigations/trace-test-123/receipts", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["trace_id"] == "trace-test-123"
+    assert data["query"] == "Test query"
+    assert data["verdict"] == "Test verdict"
+    assert len(data["receipts"]) == 1
+    assert data["receipts"][0]["tool"] == "test_routing_fib"
+
+
+def test_export_google_doc_endpoint():
+    """POST /api/export/google-doc returns 404 on missing, 200 on cached, and formats report."""
+    test_key = os.environ.get("API_ACCESS_KEY", "default-key")
+    headers = {"X-API-Key": test_key}
+
+    # 1. Non-existent trace
+    resp = client.post("/api/export/google-doc", headers=headers, json={"trace_id": "non-existent-trace"})
+    assert resp.status_code == 404
+
+    # 2. Seed cache directly
+    from server import _cache_investigation
+    _cache_investigation("trace-export-test", "Why is DMZ down?", "Security rule Deny-All dropped it", [{"tool": "test_security_policy", "duration_ms": 30.0}])
+
+    # 3. Successful export
+    resp = client.post("/api/export/google-doc", headers=headers, json={"trace_id": "trace-export-test"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    assert "markdown" in data
+    assert "Why is DMZ down?" in data["markdown"]
+    assert "Deny-All" in data["markdown"]
