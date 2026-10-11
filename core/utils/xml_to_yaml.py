@@ -43,19 +43,20 @@ class ToxicXmlSanitizer:
         'hash', 'bind-dn', 'access-key', 'secret-key', 'rsa-private-key'
     }
 
-    # Tags that contain data we want to mask (IPs, serials, etc)
-    # but keep structural integrity via hashing.
+    # Patterns to mask while preserving structural integrity via hashing
+    # Note: IP masking is removed to ensure full, uninhibited diagnostic visibility
     MASK_PATTERNS = {
-        'ip': re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b'),
         'serial': re.compile(r'\b[0-9A-F]{12,}\b')
     }
 
+    _DEFAULT_SEED = b"panos_static_sanitizer_seed"
+
     def __init__(self, seed: str = None):
         raw_seed = seed or os.getenv('SANITIZER_SEED')
-        if not raw_seed:
-            import secrets as _secrets
-            raw_seed = _secrets.token_hex(16)
-        self.seed = raw_seed.encode('utf-8')
+        if raw_seed:
+            self.seed = raw_seed.encode('utf-8')
+        else:
+            self.seed = self._DEFAULT_SEED
 
     def _hash_value(self, text: str, prefix: str = "VAL") -> str:
         """Deterministic, irreversible HMAC masking."""

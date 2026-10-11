@@ -17,7 +17,7 @@ from core.workflows.health_check import _apply_thresholds, _parse_telemetry, run
 # ═══════════════════════════════════════════════════════════════
 
 def test_xml_to_yaml_sanitizer_and_multi_root():
-    """Verify ToxicXmlSanitizer redacts secrets, hashes IPs, and handles multi-root XML."""
+    """Verify ToxicXmlSanitizer redacts secrets, preserves real IPs, and handles multi-root XML."""
     sanitizer = ToxicXmlSanitizer(seed="test_seed_123")
     xml_sample = """
     <response status="success">
@@ -32,8 +32,8 @@ def test_xml_to_yaml_sanitizer_and_multi_root():
     yaml_out = sanitizer.convert_string(xml_sample)
     assert "{{REDACTED_SECRET}}" in yaml_out
     assert "plaintext_secret" not in yaml_out
-    assert "192.168.1.100" not in yaml_out
-    assert "IP_" in yaml_out
+    assert "192.168.1.100" in yaml_out
+    assert "IP_" not in yaml_out
 
     # Multi-root XML safety
     multi_root = "<entry>1</entry><entry>2</entry>"

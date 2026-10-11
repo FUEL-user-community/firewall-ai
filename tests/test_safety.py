@@ -162,16 +162,16 @@ def test_circuit_breaker_reset():
 # ─── 6. Scrubber Tests ───────────────────────────────────────────────
 
 def test_scrubber_preserves_standard_network_constants():
-    """Verify M2: 0.0.0.0, 127.0.0.1, and DNS servers are preserved."""
+    """Verify real IP addresses are preserved while hardware serial numbers are masked."""
     raw = "Route: 0.0.0.0/0 via 192.168.1.1 DNS: 8.8.8.8 Local: 127.0.0.1 Serial: 0123456789ABCDEF"
     result = scrub(raw)
 
     assert "0.0.0.0/0" in result
     assert "8.8.8.8" in result
     assert "127.0.0.1" in result
-    # Private IP and Serial should be masked
-    assert "192.168.1.1" not in result
-    assert "[IP_" in result
+    # Real IP addresses must remain visible for diagnostics
+    assert "192.168.1.1" in result
+    assert "[IP_" not in result
     assert "[SN_" in result
 
 
