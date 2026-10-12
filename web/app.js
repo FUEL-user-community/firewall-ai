@@ -449,9 +449,9 @@ function updatePostureBanner(posture) {
 
 function compileBaseGraphToMermaid(graph) {
     if (!graph || !graph.nodes || graph.nodes.length === 0) {
-        return 'graph TD\n  FW["PAN-OS Firewall"]';
+        return 'graph LR\n  FW["PAN-OS Firewall"]';
     }
-    const lines = ['graph TD'];
+    const lines = ['graph LR'];
     const nodes = graph.nodes;
     const edges = graph.edges || [];
 
@@ -496,13 +496,6 @@ function compileBaseGraphToMermaid(graph) {
     edges.filter(e => e.label === 'overlaps_subnet').forEach(e => {
         const safeTarget = e.target.replace(/[^a-zA-Z0-9_]/g, '_');
         lines.push(`  interface_mgmt -.->|OVERLAP WARNING| ${safeTarget}`);
-    });
-
-    const expiredLics = nodes.filter(n => n.type === 'expired_license');
-    expiredLics.forEach(lic => {
-        const safeLId = lic.id.replace(/[^a-zA-Z0-9_]/g, '_');
-        lines.push(`  ${safeLId}["${lic.label}"]`);
-        lines.push(`  firewall -.->|EXPIRED| ${safeLId}`);
     });
 
     return lines.join('\n');

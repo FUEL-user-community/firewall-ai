@@ -282,6 +282,20 @@ class Cartographer:
             if members:
                 zones[zone_name] = members
 
+        # 6b. Extract Virtual Routers & Populate Active VR Cache
+        discovered_vrs: List[str] = []
+        for vr_entry in root.findall(".//virtual-router/entry"):
+            vr_name = vr_entry.get("name")
+            if vr_name and vr_name.strip() and vr_name.strip() not in discovered_vrs:
+                discovered_vrs.append(vr_name.strip())
+
+        active_vr = discovered_vrs[0] if discovered_vrs else "default"
+        if discovered_vrs:
+            client._cached_vr = active_vr
+            current_vr = getattr(client, "virtual_router", None)
+            if not current_vr or current_vr.lower() == "default":
+                client.virtual_router = active_vr
+
         # 7. Build the JSON Base Graph with Node & Edge Deduplication
         nodes: List[Dict[str, Any]] = []
         edges: List[Dict[str, Any]] = []
@@ -462,6 +476,8 @@ class Cartographer:
             "is_threat_stale": is_threat_stale,
             "expired_licenses": expired_lic_names,
             "active_licenses": active_lic_names,
+            "virtual_router": active_vr,
+            "virtual_routers": discovered_vrs,
             "mgmt_ip": mgmt_ip,
             "mgmt_dataplane_overlap": len(overlap_interfaces) > 0,
             "overlap_interfaces": list(dict.fromkeys(overlap_interfaces)),

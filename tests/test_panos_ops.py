@@ -107,6 +107,35 @@ def test_routing_fib_execution(mock_client_pool):
     assert "ERROR: [test_routing_fib] IP address cannot be empty" in panos_ops.test_routing_fib("")
 
 
+def test_routing_fib_auto_heals_invalid_virtual_router(mock_client_pool):
+    """Verify test_routing_fib auto-heals when virtual-router 'default' is rejected by PAN-OS."""
+    _, mock_client = mock_client_pool
+    mock_client.virtual_router = "default"
+    mock_client._cached_vr = "default"
+
+    vr_config_xml = "<response status='success'><result><virtual-router><entry name='lab-vr'/></virtual-router></result></response>"
+    mock_client.execute_get.return_value = (200, vr_config_xml)
+
+    call_count = 0
+    def mock_execute_op(cmd):
+        nonlocal call_count
+        call_count += 1
+        if "default" in cmd:
+            return (400, "<response status='error'><msg>default is invalid virtual-router. Current target-vsys is none test -> routing -> fib-lookup -> virtual-router is invalid</msg></response>")
+        elif "lab-vr" in cmd:
+            return (200, "<response status='success'><result><fib><interface>ethernet1/2</interface></fib></result></response>")
+        return (400, "error")
+
+    mock_client.execute_op.side_effect = mock_execute_op
+
+    res = panos_ops.test_routing_fib("192.168.1.254")
+    assert "ERROR" not in res
+    assert call_count == 2
+    assert mock_client._cached_vr == "lab-vr"
+    assert mock_client.virtual_router == "lab-vr"
+
+
+
 def test_nat_policy_validates_port():
     """Verify H1: test_nat_policy validates port number."""
     res = panos_ops.test_nat_policy("10.0.0.1", "8.8.8.8", "99999")

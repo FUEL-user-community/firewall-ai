@@ -166,16 +166,15 @@ def test_security_policy(source: str = None, destination: str = None, port: str 
         return f"ERROR: [test_security_policy] failed. Reason: {str(e)}. NO POLICY DATA WAS RETRIEVED."
 
 
-def _discover_virtual_router(client) -> Optional[str]:
+def _discover_virtual_router(client, failed_vr: Optional[str] = None) -> Optional[str]:
     """Auto-discovers the active virtual router name from the firewall running config."""
     cached = getattr(client, "_cached_vr", None)
-    if cached:
+    if cached and cached.lower() != "default" and (not failed_vr or cached != failed_vr):
         return cached
 
     # Attempt 1: Fetch virtual-router config via sealed execute_get
     try:
-        from core.panos.client import PanOSClient
-        if isinstance(client, PanOSClient):
+        if hasattr(client, "execute_get"):
             _, res_xml = client.execute_get(xpath="/config/devices/entry/network/virtual-router")
         elif hasattr(client, "fw") and hasattr(client.fw, "xapi"):
             client.fw.xapi.get(xpath="/config/devices/entry/network/virtual-router")
@@ -187,8 +186,10 @@ def _discover_virtual_router(client) -> Optional[str]:
             root = res_xml if hasattr(res_xml, "findall") else fromstring(str(res_xml))
             for entry in root.findall(".//entry"):
                 name = entry.get("name")
-                if name and name.strip():
+                if name and name.strip() and (not failed_vr or name.strip() != failed_vr):
                     client._cached_vr = name.strip()
+                    if getattr(client, "virtual_router", None) in (None, "default"):
+                        client.virtual_router = client._cached_vr
                     return client._cached_vr
     except Exception as e:
         logger.debug(f"[PolicyMath] VR auto-discovery via config failed: {e}")
@@ -200,8 +201,10 @@ def _discover_virtual_router(client) -> Optional[str]:
             root = fromstring(res_xml)
             for entry in root.findall(".//entry"):
                 name = entry.get("name") or (entry.findtext("name") if entry.find("name") is not None else None)
-                if name and name.strip():
+                if name and name.strip() and (not failed_vr or name.strip() != failed_vr):
                     client._cached_vr = name.strip()
+                    if getattr(client, "virtual_router", None) in (None, "default"):
+                        client.virtual_router = client._cached_vr
                     return client._cached_vr
     except Exception as e:
         logger.debug(f"[PolicyMath] VR auto-discovery via op failed: {e}")
@@ -252,8 +255,8 @@ def test_routing_fib(ip: str = None, virtual_router: str = "default", target_dev
         status, result = client.execute_op(xml_cmd)
 
         # Auto-heal: If VR was rejected by PAN-OS as invalid, discover the real VR and re-execute
-        if status != 200 and "invalid virtual-router" in result.lower():
-            discovered_vr = _discover_virtual_router(client)
+        if status != 200 and ("invalid virtual-router" in result.lower() or "virtual-router is invalid" in result.lower()):
+            discovered_vr = _discover_virtual_router(client, failed_vr=vr_clean)
             if discovered_vr and discovered_vr != vr_clean:
                 logger.info(f"[PolicyMath] Auto-resolved virtual-router '{discovered_vr}' (was '{vr_clean}')")
                 retry_root = Element("test")

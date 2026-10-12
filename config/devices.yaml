@@ -18,7 +18,7 @@ firewalls:
   fw-hq:
     ip: 192.168.1.254
     label: "HQ Perimeter Firewall"
-    virtual_router: "default" # Optional: Virtual router name (e.g. 'default', 'lab-vr'). Auto-discovered if omitted.
+    virtual_router: "lab-vr"  # Active virtual router on fw-hq (auto-discovered if omitted)
     default: true             # Used when target_device is not specified
     # Optional: Pin the SHA-256 certificate fingerprint for zero-trust TLS without CA files
     # ssl_fingerprint: "SHA256:49:CD:29:2D:40:AF:94:D6:86:B6:EE:17:CB:67:CE:4D:ED:40:E9:C0:BE:2B:25:37:C7:BC:6E:37:CF:9A:2E:D0" 

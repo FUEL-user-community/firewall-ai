@@ -405,3 +405,58 @@ def test_build_graph_fail_soft_telemetry_errors(mock_client_pool):
     assert posture["expired_licenses"] == []
     assert posture["active_admin_sessions"] == []
 
+
+def test_build_graph_extracts_virtual_router(mock_client_pool):
+    """Verify Cartographer auto-discovers named virtual routers and updates client VR cache."""
+    _, mock_client = mock_client_pool
+    mock_client.virtual_router = "default"
+    mock_client._cached_vr = "default"
+
+    config_xml = """
+    <response status="success">
+      <result>
+        <config>
+          <devices>
+            <entry>
+              <network>
+                <virtual-router>
+                  <entry name="lab-vr">
+                    <protocol><bgp><enable>no</enable></bgp></protocol>
+                  </entry>
+                </virtual-router>
+                <interface>
+                  <ethernet>
+                    <entry name="ethernet1/1">
+                      <layer3><ip><entry name="10.0.1.1/24"/></ip></layer3>
+                    </entry>
+                  </ethernet>
+                </interface>
+              </network>
+              <vsys>
+                <entry>
+                  <zone>
+                    <entry name="Trust">
+                      <network><layer3><member>ethernet1/1</member></layer3></network>
+                    </entry>
+                  </zone>
+                </entry>
+              </vsys>
+            </entry>
+          </devices>
+        </config>
+      </result>
+    </response>
+    """
+    mock_client.execute_op.return_value = (200, config_xml)
+
+    cartographer = Cartographer()
+    graph_json = cartographer.build_graph()
+    data = json.loads(graph_json)
+
+    posture = data["metadata"]["posture"]
+    assert posture["virtual_router"] == "lab-vr"
+    assert posture["virtual_routers"] == ["lab-vr"]
+    assert mock_client._cached_vr == "lab-vr"
+    assert mock_client.virtual_router == "lab-vr"
+
+

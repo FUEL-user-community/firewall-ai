@@ -427,6 +427,14 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
             known_ips.add(str(ipaddress.ip_interface(cidr).network.network_address))
         except ValueError:
             pass
+    for ip_str in list(known_ips):
+        try:
+            ip_obj = ipaddress.ip_address(ip_str)
+            if isinstance(ip_obj, ipaddress.IPv4Address) and ip_obj.is_private:
+                net24 = ipaddress.ip_network(f"{ip_str}/24", strict=False)
+                known_ips.add(str(net24.network_address))
+        except ValueError:
+            pass
     read_ranges = {
         i: rng for i, r in enumerate(receipts, 1)
         if statuses[i - 1] == "success" and (rng := _slice_range(r))

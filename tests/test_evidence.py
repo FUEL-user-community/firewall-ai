@@ -403,3 +403,23 @@ def test_export_banner_uses_computed_claims():
     assert "xpath=/config/devices/entry/deviceconfig/system" in md
     # Step 6 hidden failure now counted honestly in the receipt banner
     assert "Steps 6, 9" in md
+
+
+def test_remediation_subnet_derived_from_known_ip_is_verified():
+    """Verify that valid /24 network address derived from known host IP (e.g. 192.168.1.0 from 192.168.1.254) passes without unverified warning."""
+    query = "Check firewall 192.168.1.254"
+    receipts = [{"raw_output": "ip-address: 192.168.1.254", "tool": "test_routing_fib", "args": {}}]
+    text = "```panos\nset deviceconfig system permitted-ip [ 192.168.1.0/24 ]\n```"
+    out, stats = annotate_claims(text, receipts, query)
+    assert "UNVERIFIED" not in out
+    assert stats["unverified"] == 0
+
+
+def test_hallucinated_ip_in_code_block_is_unverified():
+    """Verify that genuinely hallucinated foreign IP in a code block is caught and flagged."""
+    query = "Check firewall 192.168.1.254"
+    receipts = [{"raw_output": "ip-address: 192.168.1.254", "tool": "test_routing_fib", "args": {}}]
+    text = "```panos\nset rulebase security rules bad to 10.99.99.1\n```"
+    out, stats = annotate_claims(text, receipts, query)
+    assert "[UNVERIFIED: code block above uses 10.99.99.1" in out
+    assert stats["unverified"] == 1
