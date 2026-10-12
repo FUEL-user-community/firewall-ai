@@ -250,6 +250,10 @@ neo:
     [CRITICAL | CAUTION | NORMAL] **<Clear Assessment Title>**
     **Scope:** `<Source Zone/IP -> Destination Zone/IP>` | **Telemetry Sources:** `<Tools queried>`
 
+    #### Architectural Logic vs. Counter-Logic Analysis
+    - **Logic (Attack Vector & Operator Premise):** `<What the adversary attempted or what the operator initially assumed, e.g. Attacker at 192.168.1.100 reaches XML API/Web GUI at 192.168.1.254:443 via dataplane transit through ethernet1/2>`
+    - **Counter-Logic (Empirical Telemetry & Physical Reality):** `<The falsification or architectural truth derived from configuration, routing FIB, and interface bindings. E.g., If 192.168.1.254 is the dedicated MGT port on the same /24 subnet as the attacker, ARP resolves directly at Layer 2 across the physical switch, completely bypassing dataplane ethernet1/2; OR if sent to ethernet1/2 (192.168.1.1), the dataplane drops/refuses port 443 because no Interface Management Profile allows HTTPS on the dataplane.>`
+
     #### Threat Assessment & Hypothesis Matrix
     | Hypothesis / Vector | Evidential Status | Basis & Corroborating Telemetry | Falsification Check |
     | :--- | :--- | :--- | :--- |
@@ -261,10 +265,18 @@ neo:
     - **<Timestamp>** — `<Observed telemetry, tool source, and causal significance>`
     - **<Timestamp>** — `<Downstream policy evaluation, session establishment, or boundary traversal>`
 
-    #### Traversal Path
+    #### Traversal Path Analysis (Mermaid Architecture Overlay)
+    Synthesize the evaluated traffic flow or adversary path into a clean, valid `mermaid` code block (graph LR) that overlays directly onto the physical Base Graph, explicitly contrasting Logic (intended/attempted path) with Counter-Logic (actual physical/policy path):
+    ```mermaid
+    graph LR
+      Attacker["Source / Attacker<br>[<Source_IP>]"]
+      ...
+      Attacker -.->|Logic: Attempted Transit| DataplaneInterface["Dataplane: <interface>"]
+      DataplaneInterface -.->|Counter-Logic: Dropped / No Mgmt Profile| Drop["Boundary Drop"]
+      Attacker ==>|Counter-Logic: L2 Switch Direct ARP| Target["MGT Port: <Target_IP>"]
     ```
-    (<Source_Host>) ==[<App-ID / Port> (Rule: <rule_name>)]==> (<Target_Host>)
-    ```
+    SYNTAX INTEGRITY: Never use parentheses `(` or `)` inside edge labels `|...|` (use colons or hyphens). This block automatically updates the right-hand Workstation Topology Canvas live upon response completion.
+
 
     #### Governed Remediation Actions
     ```panos

@@ -597,15 +597,63 @@ async function renderAgentDiagram(markdown, agentLogMessage, threats = 0, drops 
     }
 }
 
+function extractMermaidDirect(raw) {
+    if (!raw) return null;
+    const lines = raw.split('\n');
+    let capturing = false;
+    let mermaidLines = [];
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('graph ') || trimmed.startsWith('flowchart ')) {
+            capturing = true;
+        }
+        if (capturing) {
+            if (trimmed.startsWith('```') && mermaidLines.length > 0) break;
+            mermaidLines.push(line);
+        }
+    }
+
+    return mermaidLines.length > 0 ? mermaidLines.join('\n') : null;
+}
+
 function extractRangePayload(raw) {
     if (!raw) return null;
 
+    // 1. Search for code-fenced mermaid block first (e.g. Traversal Path Analysis)
+    const mermaidBlock = raw.match(/```(?:mermaid)?\s*([\s\S]*?)```/);
+    if (mermaidBlock && (mermaidBlock[1].includes('graph ') || mermaidBlock[1].includes('flowchart '))) {
+        return {
+            mermaid: mermaidBlock[1].trim(),
+            message: 'Extracted topology from code fence.',
+            threats: 1,
+            drops: 0
+        };
+    }
+
+    // 2. Direct line-by-line fallback if code fence missing but graph/flowchart present
+    if (raw.includes('graph ') || raw.includes('flowchart ')) {
+        const directMermaid = extractMermaidDirect(raw);
+        if (directMermaid) {
+            return {
+                mermaid: directMermaid,
+                message: 'Extracted topology from raw stream.',
+                threats: 1,
+                drops: 0
+            };
+        }
+    }
+
+    // 3. Structured JSON payload (used by range simulations / API macros)
     const firstBrace = raw.indexOf('{');
     const lastBrace = raw.lastIndexOf('}');
     if (firstBrace >= 0 && lastBrace > firstBrace) {
         const candidate = raw.slice(firstBrace, lastBrace + 1);
         try {
-            return JSON.parse(candidate);
+            const parsed = JSON.parse(candidate);
+            if (parsed && (parsed.mermaid || parsed.nodes)) {
+                return parsed;
+            }
         } catch (err) {
             try {
                 const repaired = candidate.replace(/[\u0000-\u001F]+/g, (match) => {
@@ -614,19 +662,12 @@ function extractRangePayload(raw) {
                     if (match === '\t') return '\\t';
                     return '';
                 });
-                return JSON.parse(repaired);
+                const parsed = JSON.parse(repaired);
+                if (parsed && (parsed.mermaid || parsed.nodes)) {
+                    return parsed;
+                }
             } catch (_) {}
         }
-    }
-
-    const mermaidBlock = raw.match(/```(?:mermaid)?\s*([\s\S]*?)```/);
-    if (mermaidBlock && (mermaidBlock[1].includes('graph ') || mermaidBlock[1].includes('flowchart '))) {
-        return {
-            mermaid: mermaidBlock[1].trim(),
-            message: 'Extracted topology from code block.',
-            threats: 1,
-            drops: 0
-        };
     }
 
     return null;
@@ -772,10 +813,8 @@ function finish(text, receipts = [], traceId = '') {
                 payload.threats ?? 0,
                 payload.drops ?? 0
             );
-            addMsg('agent', payload.message || text, { receipts, traceId });
-        } else {
-            addMsg('agent', text, { receipts, traceId });
         }
+        addMsg('agent', text, { receipts, traceId });
     }
     busy = false;
     updateSendBtnState();
@@ -1072,6 +1111,13 @@ function bindCanvasControls() {
                 panZoomInstance.fit();
                 panZoomInstance.center();
             }
+        });
+    }
+    const btnBaseTopology = document.getElementById('btnBaseTopology');
+    if (btnBaseTopology) {
+        btnBaseTopology.addEventListener('click', () => {
+            loadPreflightGraph();
+            showToast('Restored baseline physical topology.', 2000);
         });
     }
     if (btnCanvasFullscreen) {

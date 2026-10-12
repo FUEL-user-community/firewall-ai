@@ -44,7 +44,7 @@ _CITATION_RE = re.compile(r"\[Steps?\s+(\d+(?:\s*(?:,|-|–|and|&)\s*\d+)*)([^\]
 _PAGE_RE = re.compile(
     r"\b(?:pp?\.|pages?)\s*(\d{1,4}(?:\s*(?:-|–|,|and|&|to)\s*\d{1,4})*)", re.IGNORECASE
 )
-_IP_RE = re.compile(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3})(?:/\d{1,2})?(?![\d.])")
+_IP_RE = re.compile(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3})(?:/\d{1,2})?(?!(?:\.\d|[\d]))")
 _QUOTE_RE = re.compile(r"[\"“]([^\"“”]{20,})[\"”]")
 # Recommendations are judgment, not facts: a line that starts with an action verb
 # needs no receipt. Everything else that reads as a statement must cite one.
