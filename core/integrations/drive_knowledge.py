@@ -49,7 +49,7 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
         panos_version (str): Optional PAN-OS software version (e.g. '10.2', '11.1') to match version-specific CLI manuals and release notes.
     """
     if not action or not isinstance(action, str):
-        return "Error: 'action' parameter is required ('list_contents' or 'read_slice')."
+        return "Error: 'action' parameter is required ('list_contents', 'read_toc', or 'read_slice')."
 
     service, err_msg = _init_drive_service()
     if not service:
@@ -60,18 +60,24 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
         return "Error: Missing KNOWLEDGE_BASE_FOLDER_ID or GOOGLE_DRIVE_FOLDER_ID in environment."
 
     clean_action = action.strip().lower()
-    if clean_action == 'list_contents':
-        if not target:
-            # List all documents
-            query = f"'{folder_id}' in parents and trashed = false"
-        else:
-            # Search for specific target (escape single quotes to prevent Drive API injection)
-            target_safe = target.replace("'", "\\'")
-            query = f"'{folder_id}' in parents and name contains '{target_safe}' and trashed = false"
-            
+    if clean_action in ('list_contents', 'read_toc', 'read_toc_'):
         try:
-            results = service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)').execute()
-            items = results.get('files', [])
+            items = []
+            if target:
+                try:
+                    target_safe = target.replace("'", "\\'")
+                    query = f"'{folder_id}' in parents and name contains '{target_safe}' and trashed = false"
+                    results = service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)').execute()
+                    items = results.get('files', [])
+                except Exception:
+                    items = []
+                if not items:
+                    all_res = service.files().list(q=f"'{folder_id}' in parents and trashed = false", spaces='drive', fields='files(id, name, mimeType)').execute()
+                    items = _find_matching_items(target, all_res.get('files', []))
+            else:
+                query = f"'{folder_id}' in parents and trashed = false"
+                results = service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)').execute()
+                items = results.get('files', [])
             
             # Filter by panos_version if specified and matching documents exist
             if panos_version and items:
@@ -114,10 +120,18 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
             return "Error: 'read_slice' requires 'target'."
             
         try:
-            target_safe = target.replace("'", "\\'")
-            query = f"'{folder_id}' in parents and name contains '{target_safe}' and trashed = false"
-            results = service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)').execute()
-            items = results.get('files', [])
+            items = []
+            try:
+                target_safe = target.replace("'", "\\'")
+                query = f"'{folder_id}' in parents and name contains '{target_safe}' and trashed = false"
+                results = service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)').execute()
+                items = results.get('files', [])
+            except Exception:
+                items = []
+
+            if not items:
+                all_res = service.files().list(q=f"'{folder_id}' in parents and trashed = false", spaces='drive', fields='files(id, name, mimeType)').execute()
+                items = _find_matching_items(target, all_res.get('files', []))
             
             # Filter by panos_version if specified and matching documents exist
             if panos_version and items:
@@ -151,7 +165,32 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
             return f"Error reading slice from '{target}': {e}"
             
     else:
-        return f"Error: Unknown action '{action}'. Use 'list_contents' or 'read_slice'."
+        return f"Error: Unknown action '{action}'. Use 'list_contents', 'read_toc', or 'read_slice'."
+
+
+def _find_matching_items(target: str, items: list) -> list:
+    """Resilient multi-token and substring matching for Drive document names."""
+    if not target or not items:
+        return items
+    t_clean = str(target).lower().replace('.pdf', '').replace('.csv', '').strip()
+
+    # 1. Exact case-insensitive substring
+    sub = [it for it in items if t_clean in it.get('name', '').lower()]
+    if sub:
+        return sub
+
+    # 2. Token overlap: split target into meaningful keywords (e.g. 'networking', 'admin')
+    clean_delims = re.sub(r'[-_&/\\:]', ' ', t_clean)
+    tokens = [tok for tok in clean_delims.split() if len(tok) >= 3 and tok not in ('the', 'and', 'for', 'pan', 'os')]
+    if tokens:
+        tok_matched = [it for it in items if all(tok in it.get('name', '').lower() for tok in tokens)]
+        if tok_matched:
+            return tok_matched
+        any_matched = [it for it in items if any(tok in it.get('name', '').lower() for tok in tokens)]
+        if any_matched:
+            return any_matched
+
+    return []
 
 
 def _is_csv_item(name: str, mime_type: str = "") -> bool:

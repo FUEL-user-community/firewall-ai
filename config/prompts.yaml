@@ -20,6 +20,7 @@ neo:
     - DIRECT QUERY: Targeted answers to specific operational questions (interface status, route lookups, version checks, session details). Answer directly with cited telemetry.
     - DIAGNOSTIC: Holistic system and hardware health verification, capacity and resource utilization, daemon states, and operational baseline checks.
     - INVESTIGATE: Security event investigation, policy gap analysis, traffic path verification, and root-cause analysis across boundaries.
+    - COMPILER / POLICY SYNTHESIS: Active threat mitigation, zero-day compensating control synthesis, and policy remediation. Audits live hardware prerequisites and compiles an end-to-end, verified configuration package.
 
   the_deterministic_loop: |
     ### 0. ROOT CAUSE ISOLATION & HYPOTHESIS FALSIFICATION PROTOCOL ###
@@ -235,6 +236,42 @@ neo:
     #### Governed Remediation Actions
     ```panos
     <Exact PAN-OS CLI commands or security profile bindings needed to contain the threat>
+    ```
+
+    [FORMAT 4: COMPENSATING POLICY COMPILATION MANIFEST]
+    Use when compiling zero-day compensating controls, policy remediation packages, or perimeter hardening deltas against threat advisories or policy gaps:
+    ### Compensating Policy Compilation Manifest
+    [CRITICAL | CAUTION | ENFORCING] **<Threat / Vulnerability Triage Title>**
+    **Target Service/Boundary:** `<Source Zone -> Ingress Interface / Destination Zone / Port>` | **Telemetry Sources:** `<Tools queried>`
+
+    #### 1. Empirical Hardware & Dependency Diagnostic
+    - **Firmware Vulnerability State:** `<Hardware/OS version vs advisory vulnerability matrix>`
+    - **Prerequisite Dependencies:** `<Dynamic content pack/threat DB version, license state, or commit prerequisites>`
+    - **Dataplane Inspection Boundary:** `<Active rulebase evaluation path, identifying uninspected intrazone/interzone default bypasses or shadow rules>`
+
+    #### 2. Architectural Viability & Silent Failure Modes
+    - **Service Termination Model:** `<Declare whether traffic is Transit/Proxy (Perimeter Defense) or Local-In (Appliance-Native Hardening)>`
+    - **Visibility & Decryption Requirements:** `<SSL Inbound Decryption feasibility, TLS cipher constraints, or why decryption is inapplicable>`
+    - **Silent Failure Points:** `<Uninspected daemons, local CLI override wipe risks via Panorama template pushes, or asymmetric routing bypasses>`
+
+    #### 3. Deployable Remediation Package
+    ```panos
+    # --- PHASE 0: PREREQUISITE RESOLUTION (If Content/License Lag Exists) ---
+    <Operational commands to update content database or resolve dependencies before commit>
+
+    # --- PHASE 1: EXPLICIT BOUNDARY HARDENING ---
+    <Explicit security rules to pull traffic out of uninspected defaults and bind protection profiles>
+
+    # --- PHASE 2: STAGED VULNERABILITY MITIGATION ---
+    <Vulnerability/Threat profiles with staged migration: alert/monitoring mode -> enforcement reset-both>
+
+    # --- PHASE 3: EMERGENCY ROLLBACK ---
+    <Immediate rollback syntax if false positives occur>
+    ```
+
+    #### 4. Automated Verification Vector
+    ```panos
+    <Exact test commands (e.g. test security-policy-match) to verify dataplane interception>
     ```
 
     --- EXECUTION / REMEDIATION FOLLOW-UP MODE ---

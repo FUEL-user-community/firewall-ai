@@ -316,3 +316,64 @@ def test_drive_knowledge_csv_parsing_and_version_filtering():
             res = query_knowledge_base(action="read_slice", target="panw_cves.csv", panos_version="10.0")
             assert "READING CSV DATA: panw_cves.csv" in res
             assert "CVE-2021-3064" in res
+
+
+def test_find_matching_items_and_resilient_query():
+    """Verify _find_matching_items and query_knowledge_base resilient fallback for hyphens and tokens."""
+    from core.integrations.drive_knowledge import _find_matching_items
+
+    doc_catalog = [
+        {"id": "doc1", "name": "pan-os-networking-admin version 11.1 & later.pdf"},
+        {"id": "doc2", "name": "administrative-access-best-practices 10.1.pdf"},
+        {"id": "doc3", "name": "data-center-best-practices.pdf"},
+        {"id": "doc4", "name": "pan-os and panorama api usage guide version 11.1 & later.pdf"},
+        {"id": "doc5", "name": "PAN-OS CLI Quick Start Version 11.1 & Later.pdf"},
+        {"id": "doc6", "name": "panw_cves.csv"},
+    ]
+
+    # 1. Hyphenated and tokenized target matching
+    assert _find_matching_items("pan-os-networking-admin", doc_catalog)[0]["id"] == "doc1"
+    assert _find_matching_items("networking-admin", doc_catalog)[0]["id"] == "doc1"
+    assert _find_matching_items("admin access best practices", doc_catalog)[0]["id"] == "doc2"
+    assert _find_matching_items("data center", doc_catalog)[0]["id"] == "doc3"
+    assert _find_matching_items("api usage guide", doc_catalog)[0]["id"] == "doc4"
+    assert _find_matching_items("cves", doc_catalog)[0]["id"] == "doc6"
+
+    # 2. Resilient fallback in query_knowledge_base when primary Drive query returns empty
+    mock_service = mock.MagicMock()
+    mock_files = mock.MagicMock()
+
+    # First call (specific query with hyphens/special chars) returns empty list
+    # Second call (list all files in folder) returns doc_catalog
+    mock_files.list.side_effect = [
+        mock.MagicMock(execute=mock.MagicMock(return_value={"files": []})),
+        mock.MagicMock(execute=mock.MagicMock(return_value={"files": doc_catalog}))
+    ]
+    mock_service.files.return_value = mock_files
+
+    with mock.patch("core.integrations.drive_knowledge._init_drive_service", return_value=(mock_service, None)), \
+         mock.patch.dict(os.environ, {"KNOWLEDGE_BASE_FOLDER_ID": "folder_123"}):
+        res = query_knowledge_base(action="list_contents", target="pan-os-networking-admin")
+        assert "pan-os-networking-admin version 11.1 & later.pdf" in res
+        assert "INSTRUCTIONS:" in res
+
+
+def test_drive_knowledge_read_toc_alias():
+    """Verify read_toc and read_toc_ actions seamlessly alias to list_contents."""
+    mock_service = mock.MagicMock()
+    mock_files = mock.MagicMock()
+    mock_files.list.return_value.execute.return_value = {
+        "files": [{"id": "doc1", "name": "PAN-OS Architecture Guide.pdf"}]
+    }
+    mock_service.files.return_value = mock_files
+
+    with mock.patch("core.integrations.drive_knowledge._init_drive_service", return_value=(mock_service, None)), \
+         mock.patch.dict(os.environ, {"KNOWLEDGE_BASE_FOLDER_ID": "folder_123"}):
+        res_toc = query_knowledge_base(action="read_toc")
+        assert "PAN-OS Architecture Guide.pdf" in res_toc
+        assert "--- KNOWLEDGE BASE DOCUMENTS ---" in res_toc
+
+        res_toc_ = query_knowledge_base(action="read_toc_")
+        assert "PAN-OS Architecture Guide.pdf" in res_toc_
+
+
