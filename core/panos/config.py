@@ -40,6 +40,7 @@ SAFE_XPATH_PREFIXES = (
     "/config/devices/entry/network/tunnel",
     "/config/devices/entry/network/ike",
     "/config/devices/entry/network/profiles",
+    "/config/devices/entry/vsys/entry/global-protect",
     "/config/shared/rulebase",
     "/config/shared/address",
     "/config/shared/address-group",

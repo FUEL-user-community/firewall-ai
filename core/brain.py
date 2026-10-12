@@ -633,12 +633,14 @@ class CoreBrain:
 
                     hyp_match = re.search(r'\[HYPOTHESIS_MATRIX\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
                     con_match = re.search(r'\[CONTRADICTION_CHECK\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
+                    blast_match = re.search(r'\[BLAST_RADIUS_CRITIQUE\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
                     ev_match = re.search(r'\[EVIDENCE_REQUIRED\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
 
                     trace_turn = {
                         "turn": turn,
                         "hypothesis_len": len(hyp_match.group(1)) if hyp_match else 0,
                         "contradiction_len": len(con_match.group(1)) if con_match else 0,
+                        "blast_critique_len": len(blast_match.group(1)) if blast_match else 0,
                         "evidence_req_len": len(ev_match.group(1)) if ev_match else 0,
                         "raw_reasoning": reasoning_text
                     }
