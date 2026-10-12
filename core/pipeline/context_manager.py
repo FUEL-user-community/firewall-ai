@@ -74,7 +74,9 @@ class ContextManager:
         return (
             "\n\n[SYSTEM: CONTEXT CHECKPOINT. Summarize your observations so far in 3-5 bullet points. "
             "State the original user query, key findings, and what remains unresolved. "
-            "This summary replaces the raw tool logs in your working memory.]"
+            "This summary replaces the raw tool logs in your working memory. "
+            "This is NOT the final answer: in the same response, continue the investigation by calling "
+            "the next tool. Only deliver the final report once nothing material remains unresolved.]"
         )
 
     def extract_drive_files(self, tool_parts, trace_id):
