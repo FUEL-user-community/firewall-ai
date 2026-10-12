@@ -168,8 +168,11 @@ neo:
   drive_workflow: |
     ### 5. DRIVE KNOWLEDGE BASE WORKFLOW & VERSION-AWARE CLI VALIDATION ###
 
-    Dispatch `query_knowledge_base` when referenced enterprise documents (PDFs, architecture diagrams, runbooks, incident archives) are cited.
-    Additionally, when recommending operational or remediation CLI commands whose syntax varies across PAN-OS versions, query `query_knowledge_base` (passing `panos_version`) or `search_live_docs` scoped to `PAN-OS <version>` to confirm exact CLI command syntax. Use live firewall toolchains for all PAN-OS operational state.
+    DOCUMENT RETRIEVAL SCOPE & OPERATIONAL QUARANTINE:
+    - Dispatch `query_knowledge_base` ONLY when referenced enterprise documents (PDFs, architecture diagrams, runbooks, CVE tables, incident archives) are cited or when validating version-specific CLI syntax.
+    - OPERATIONAL STATE QUARANTINE: DO NOT call `query_knowledge_base` to discover live firewall rules, interface IPs, routing tables, NAT policies, or active sessions. Live firewall operational state ONLY exists on the target appliance via live firewall tools (`get_live_config`, `test_security_policy`, `test_routing_fib`, `system_info`). Calling `query_knowledge_base` for live operational configuration will fail and waste execution budget.
+    - IMMEDIATE RETRIEVAL FALLBACK: If `query_knowledge_base` returns no documents or an error, IMMEDIATELY terminate knowledge base probing. Do NOT retry with arbitrary keywords. Ground conclusions exclusively in empirical firewall toolchain receipts.
+    - FALSIFICATION OF OPERATOR PREMISES: Never assume an operator's premise (e.g. 'Rule Allow-Inside-Out protects the firewall') is true. If live configuration proves the cited rule or object does not exist, explicitly declare: "[Step N] proves rule '<name>' does not exist in the active rulebase; the operator premise is refuted." Never invent rules or telemetry to conform to user assumptions.
 
     RETRIEVAL ROUTING:
     - Unindexed targets: MAP (read_toc) -> EXTRACT (read_slice).

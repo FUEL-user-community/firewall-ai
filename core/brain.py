@@ -820,6 +820,16 @@ class CoreBrain:
             logger.info(f"[{state.trace_id}] [CEILING] Injecting forced Range synthesis directive at Turn {turn+1}")
             message_payload.append(ceiling_directive)
             ceiling_applied = True
+        elif state.target_mode != "range" and len(state.receipts) >= 4:
+            ceiling_directive = (
+                f"\n\n[SYSTEM: TRIAD EVIDENCE CEILING REACHED ({len(state.receipts)} tools executed)]\n"
+                "You have gathered sufficient empirical telemetry across forwarding, policy, and appliance state.\n"
+                "Do NOT execute any further tool calls.\n"
+                "Proceed immediately to final synthesis and output your complete executive report NOW."
+            )
+            logger.info(f"[{state.trace_id}] [CEILING] Injecting Triad evidence ceiling at Turn {turn+1} ({len(state.receipts)} receipts)")
+            message_payload.append(ceiling_directive)
+            ceiling_applied = True
         elif turn >= MAX_TURNS - 2:
             ceiling_directive = (
                 f"\n\n[SYSTEM: INVESTIGATION CEILING REACHED (Turn {turn+1} of {MAX_TURNS})]\n"
@@ -1006,7 +1016,15 @@ class CoreBrain:
 
             # Evaluate synthesis guards
             guard_response = self.synthesizer.check_guards(
-                turn, turn_result.tool_parts, response, chat, state.base_config, state.history, state.trace_id
+                turn,
+                turn_result.tool_parts,
+                response,
+                chat,
+                state.base_config,
+                state.history,
+                state.trace_id,
+                receipts=state.receipts,
+                target_mode=state.target_mode,
             )
             if guard_response:
                 response = guard_response

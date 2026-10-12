@@ -77,6 +77,131 @@ class ResponseSynthesizer:
 
         return None
 
+    def check_terminal_synthesis_guard(
+        self,
+        turn,
+        tool_parts,
+        response,
+        chat,
+        base_config,
+        history,
+        trace_id,
+        receipts=None,
+        target_mode="default",
+    ):
+        """
+        Terminal Synthesis Guard:
+        Fires when tool execution has concluded (turn > 0 and no new tool_parts),
+        at least one receipt was captured, but the model emitted silence, stub text
+        (< 150 chars), or lacks required structural headings.
+
+        Forces a terminal turn with tool_config mode='NONE' to guarantee a complete
+        executive report with Logic vs. Counter-Logic analysis, Mermaid overlay,
+        and CLI remediation.
+        """
+        # Only evaluate when tool calling in this turn has ended
+        if tool_parts:
+            return None
+
+        # Must have executed at least 1 tool in prior turns
+        receipt_list = receipts or []
+        if not receipt_list:
+            return None
+
+        # Guard against recursive firing: check if terminal directive was already dispatched
+        if any("[SYSTEM: TOOL EXECUTION COMPLETED" in str(h) for h in history):
+            return None
+
+        # Extract text safely
+        try:
+            raw_text = response.text
+            response_text = raw_text if isinstance(raw_text, str) else ""
+        except (ValueError, AttributeError):
+            response_text = ""
+
+        clean_text = response_text.strip()
+
+        # If in Range simulation mode:
+        if target_mode == "range":
+            if "mermaid" in clean_text or "graph " in clean_text or "flowchart " in clean_text:
+                return None
+            logger.warning(f"[{trace_id}] [GUARD] Range simulation concluded tools without topology. Forcing terminal synthesis...")
+            retry_prompt = (
+                "[SYSTEM: TOOL EXECUTION COMPLETED. Tool calling is now DISABLED.\n"
+                "You must emit your terminal pure JSON simulation payload NOW containing 'mermaid', 'message', 'threats', and 'drops'.]"
+            )
+            return chat.send_message(
+                retry_prompt,
+                generation_config=base_config,
+                tool_config={"function_calling_config": {"mode": "NONE"}}
+            )
+
+        # Standard / Investigate mode: Check if report has substance and structure
+        is_deep_investigation = False
+        user_q_str = str(history[0]) if history else ""
+        if any(w in user_q_str.lower() for w in ["investigate", "incident", "compromise", "exploit", "cve", "threat", "logic vs", "counter-logic", "falsif"]):
+            is_deep_investigation = True
+
+        # Permit concise answers for direct operational queries (e.g. FIB lookups, IP checks)
+        if not is_deep_investigation and len(clean_text) >= 30:
+            return None
+
+        has_substance = len(clean_text) >= 150
+        has_structure = any(
+            heading in clean_text for heading in [
+                "### Incident Investigation Summary",
+                "### Compensating Policy Compilation Manifest",
+                "### Executive Health Summary",
+                "## Executive Diagnosis",
+                "#### Architectural Logic vs. Counter-Logic Analysis"
+            ]
+        )
+
+        if has_substance and has_structure:
+            return None
+
+        logger.warning(
+            f"[{trace_id}] [GUARD] Tool execution concluded ({len(receipt_list)} steps), but narrative is missing "
+            f"or stubbed ({len(clean_text)} chars). Forcing Terminal Synthesis..."
+        )
+
+        terminal_prompt = (
+            f"[SYSTEM: TOOL EXECUTION COMPLETED ({len(receipt_list)} steps recorded).\n"
+            "Tool calling is now DISABLED. You have gathered the empirical firewall telemetry.\n"
+            "You must now synthesize all evidence into your final structured report following FORMAT 3:\n\n"
+            "### Incident Investigation Summary\n"
+            "[CRITICAL | CAUTION | NORMAL] <Clear Assessment Title>\n"
+            "**Scope:** <Source Zone/IP -> Destination Zone/IP> | **Telemetry Sources:** <Tools queried>\n\n"
+            "#### Architectural Logic vs. Counter-Logic Analysis\n"
+            "- **Logic (Attack Vector & Operator Premise):** <Contrast what the operator or adversary assumed>\n"
+            "- **Counter-Logic (Empirical Telemetry & Physical Reality):** <State what the firewall architecture, routing FIB, and interface bindings empirically prove>\n\n"
+            "#### Threat Assessment & Hypothesis Matrix\n"
+            "| Hypothesis / Vector | Evidential Status | Basis & Corroborating Telemetry | Falsification Check |\n"
+            "| :--- | :--- | :--- | :--- |\n\n"
+            "#### Chronological Event Progression\n"
+            "- <Timestamp/Step> - <Observed telemetry and causal significance>\n\n"
+            "#### Traversal Path Analysis (Mermaid Architecture Overlay)\n"
+            "```mermaid\n"
+            "graph LR\n"
+            "  Attacker[\"Source / Attacker<br>[<Source_IP>]\"]\n"
+            "  ...\n"
+            "  Attacker -.->|Logic: Attempted Transit| DataplaneInterface[\"Dataplane: <interface>\"]\n"
+            "  DataplaneInterface -.->|Counter-Logic: Dropped / No Mgmt Profile| Drop[\"Boundary Drop\"]\n"
+            "  Attacker ==>|Counter-Logic: L2 Switch Direct ARP| Target[\"MGT Port: <Target_IP>\"]\n"
+            "```\n\n"
+            "#### Governed Remediation Actions\n"
+            "```panos\n"
+            "<Exact PAN-OS CLI commands or configuration changes needed>\n"
+            "```\n\n"
+            "Deliver the complete executive report in markdown NOW.]"
+        )
+
+        return chat.send_message(
+            terminal_prompt,
+            generation_config=base_config,
+            tool_config={"function_calling_config": {"mode": "NONE"}}
+        )
+
     def synthesize_final(self, response, trace_id):
         """
         Extract final text from the response, handling empty/silent responses.
@@ -106,13 +231,32 @@ class ResponseSynthesizer:
                 )
 
             final_text = response.text
+            if not final_text or not final_text.strip():
+                logger.warning(f"[{trace_id}] [-] response.text is empty or whitespace.")
+                return (
+                    f"**Status:** Interrupted (Empty Response)\n\n"
+                    f"**Observation:** The model completed its execution but generated no narrative text.\n\n"
+                    f"**Recommendation:** Please review the execution receipts above or re-run the diagnostic."
+                )
+
             logger.info(f"[{trace_id}] [ARCHITECT] Investigation Complete.")
             return final_text
         except Exception as e:
             logger.warning(f"[{trace_id}] [-] Synthesis Failed: {e}")
             return "The investigation was completed, but the final report was empty/blocked."
 
-    def check_guards(self, turn, tool_parts, response, chat, base_config, history, trace_id):
+    def check_guards(
+        self,
+        turn,
+        tool_parts,
+        response,
+        chat,
+        base_config,
+        history,
+        trace_id,
+        receipts=None,
+        target_mode="default",
+    ):
         """
         Convenience method: runs all guards in sequence.
         Returns a new response if any guard fired, None otherwise.
@@ -124,6 +268,21 @@ class ResponseSynthesizer:
 
         # Drive follow-up guard
         result = self.check_drive_guard(turn, tool_parts, response, chat, base_config, history, trace_id)
+        if result:
+            return result
+
+        # Terminal synthesis guard
+        result = self.check_terminal_synthesis_guard(
+            turn,
+            tool_parts,
+            response,
+            chat,
+            base_config,
+            history,
+            trace_id,
+            receipts=receipts,
+            target_mode=target_mode,
+        )
         if result:
             return result
 
