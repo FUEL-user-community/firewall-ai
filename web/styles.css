@@ -843,6 +843,21 @@ html, body {
     color: #6ee7b7;
 }
 
+.receipt-status-pill.status-failed {
+    background: rgba(248, 113, 113, 0.15);
+    color: #fca5a5;
+}
+
+.receipt-status-pill.status-blocked {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fcd34d;
+}
+
+.receipt-status-pill.status-skipped {
+    background: rgba(148, 163, 184, 0.15);
+    color: #cbd5e1;
+}
+
 .receipt-args-row {
     margin-top: 6px;
     font-size: 11px;

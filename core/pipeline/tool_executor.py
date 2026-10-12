@@ -56,6 +56,13 @@ class ToolResult:
 
 
 # =============================================================================
+# Outcome Classification (shared definition lives in core.pipeline.outcomes)
+# =============================================================================
+
+from core.pipeline.outcomes import classify_outcome  # noqa: E402,F401  (re-export)
+
+
+# =============================================================================
 # ToolExecutor
 # =============================================================================
 
@@ -297,7 +304,16 @@ class ToolExecutor:
 
         try:
             logger.info(f"[{trace_id}]    [EXEC] {fname}")
+            dropped = self.unsupported_args(matching_tool, fargs)
             result = self.safe_call(matching_tool, fargs)
+
+            # Counter-logic: a silently dropped argument means the device answered a
+            # different question than the model asked. Say so in the result.
+            if dropped and isinstance(result, str):
+                result += (
+                    f"\n\n[EXECUTOR NOTE] Unsupported arguments were ignored: {sorted(dropped)}. "
+                    "The output above does NOT reflect them."
+                )
 
             ops_count = 0
             if isinstance(result, str):
@@ -320,26 +336,23 @@ class ToolExecutor:
     # Kwarg Sanitization (Static)
     # -----------------------------------------------------------------
     @staticmethod
+    def unsupported_args(tool_func, fargs: dict) -> set:
+        """Return the argument names the tool's signature cannot accept."""
+        sig = inspect.signature(tool_func)
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            return set()
+        return set(fargs.keys()) - set(sig.parameters.keys())
+
+    @staticmethod
     def safe_call(tool_func, fargs: dict):
         """
         P0 Fix: Sanitizes kwargs before calling a tool function.
         Drops any hallucinated kwargs not in the tool's signature.
         If the function accepts **kwargs, all keys pass through.
         """
-        sig = inspect.signature(tool_func)
+        dropped = ToolExecutor.unsupported_args(tool_func, fargs)
+        sanitized = {k: v for k, v in fargs.items() if k not in dropped}
 
-        has_var_keyword = any(
-            p.kind == inspect.Parameter.VAR_KEYWORD
-            for p in sig.parameters.values()
-        )
-
-        if has_var_keyword:
-            sanitized = dict(fargs)
-        else:
-            valid_keys = sig.parameters.keys()
-            sanitized = {k: v for k, v in fargs.items() if k in valid_keys}
-
-        dropped = set(fargs.keys()) - set(sanitized.keys())
         if dropped:
             logger.warning(f"[SANITIZE] Dropped hallucinated kwargs for '{tool_func.__name__}': {dropped}")
 

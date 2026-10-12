@@ -370,7 +370,9 @@ def test_pbf_policy(
 
 
 def test_nat_policy(source: str, destination: str, port: str,
-                    protocol: str = "6", target_device: str = None) -> str:
+                    protocol: str = "6", from_zone: Optional[str] = None,
+                    to_interface: Optional[str] = None,
+                    target_device: str = None) -> str:
     """
     Simulate a packet against the firewall's NAT Policy rulebase.
     Returns which NAT rule would apply and the translated addresses.
@@ -382,6 +384,8 @@ def test_nat_policy(source: str, destination: str, port: str,
         destination (str): Destination IP address (e.g., '8.8.8.8').
         port (str): Destination port number (e.g., '443').
         protocol (str): IP protocol number. Default '6' (TCP). Use '17' for UDP.
+        from_zone (str): Ingress security zone (e.g., 'outside'). Optional.
+        to_interface (str): Egress interface (e.g., 'ethernet1/1'). Optional.
         target_device (str): Device name from fleet inventory (e.g., 'fw-hq'). Uses default if not specified.
     """
     source_clean = source.strip() if source else "10.0.0.5"
@@ -395,10 +399,14 @@ def test_nat_policy(source: str, destination: str, port: str,
 
     root = Element("test")
     npm = SubElement(root, "nat-policy-match")
+    if from_zone and str(from_zone).strip():
+        SubElement(npm, "from").text = str(from_zone).strip()
     SubElement(npm, "source").text = source_clean
     SubElement(npm, "destination").text = destination_clean
     SubElement(npm, "destination-port").text = port_clean
     SubElement(npm, "protocol").text = protocol_clean
+    if to_interface and str(to_interface).strip():
+        SubElement(npm, "to-interface").text = str(to_interface).strip()
     xml_cmd = tostring(root, encoding="unicode")
 
     logger.info(f"[NATMath] Testing: {source_clean} → {destination_clean}:{port_clean}/proto={protocol_clean} on {target_device or 'default'}")

@@ -7,6 +7,48 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+from core.pipeline.outcomes import effective_status
+
+
+def summarize_receipt_integrity(receipts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Compute the report integrity banner from receipt evidence.
+
+    Counter-logic: every receipt succeeding proves the device answered; it does
+    NOT prove the narrative claims are backed by those answers. Until claim-level
+    verification exists, the banner never asserts the findings are verified.
+    """
+    statuses = [effective_status(r) for r in receipts]
+    gaps = [
+        (i, r.get("tool", "unknown"), st)
+        for i, (r, st) in enumerate(zip(receipts, statuses), 1)
+        if st != "success"
+    ]
+    ok = statuses.count("success")
+    total = len(statuses)
+
+    if total == 0:
+        receipt_line = "NONE - no live device executions recorded. All findings are unverified."
+    elif not gaps:
+        receipt_line = f"{ok}/{total} executions returned device data."
+    else:
+        counts = ", ".join(
+            f"{statuses.count(s)} {s}" for s in ("failed", "blocked", "skipped") if statuses.count(s)
+        )
+        steps = ", ".join(str(i) for i, _, _ in gaps)
+        step_label = "Step" if len(gaps) == 1 else "Steps"
+        receipt_line = (
+            f"PARTIAL - {ok}/{total} executions returned device data ({counts}; {step_label} {steps}). "
+            "Findings that depend on those steps are unverified."
+        )
+
+    return {
+        "statuses": statuses,
+        "gaps": gaps,
+        "receipt_line": receipt_line,
+        "claim_line": "Not enforced - narrative findings are model-generated; confirm each against the receipts in Section 3.",
+    }
+
 def generate_incident_markdown(
     trace_id: str,
     query: str,
@@ -90,11 +132,14 @@ def generate_incident_markdown(
         )
         clean_verdict = scratchpad_html + clean_verdict.strip()
     
+    integrity = summarize_receipt_integrity(receipts)
+
     lines = [
         f"# Core Defense - {report_title}",
         f"**Trace ID:** `{trace_id}`  ",
         f"**Generated:** {timestamp}  ",
-        f"**Audit Integrity:** Verified (Zero Hallucination - Pan-OS CLI/API Receipts)  ",
+        f"**Receipt Integrity:** {integrity['receipt_line']}  ",
+        f"**Claim Verification:** {integrity['claim_line']}  ",
         f"**Diagnostic Latency:** {total_ms:.1f}ms across {len(receipts)} execution steps  ",
         "",
         "---",
@@ -120,7 +165,7 @@ def generate_incident_markdown(
         for i, r in enumerate(receipts, 1):
             tool = r.get("tool", "unknown")
             dur = f"{r.get('duration_ms', 0.0):.1f}ms"
-            st = str(r.get("status", "unknown")).upper()
+            st = integrity["statuses"][i - 1].upper()
             args_str = str(r.get("args", {}))
             if len(args_str) > 40:
                 args_str = args_str[:37] + "..."
@@ -131,7 +176,7 @@ def generate_incident_markdown(
         for i, r in enumerate(receipts, 1):
             tool = r.get("tool", "unknown")
             dur = f"{r.get('duration_ms', 0.0):.1f}ms"
-            st = str(r.get("status", "unknown")).upper()
+            st = integrity["statuses"][i - 1].upper()
             raw = r.get("raw_output") or r.get("output_snippet") or "No output captured"
             lines.append("<details>")
             lines.append(f"<summary><b>Step {i}: <code>{tool}</code> Execution Output</b> ({dur}, {st})</summary>\n")
@@ -144,10 +189,14 @@ def generate_incident_markdown(
         "---",
         "",
         "## 4. Verification & Recommendations",
-        "- [ ] Review matching security and NAT policies identified above.",
-        "- [ ] If traffic drop is unintended, verify FIB route next-hop and interface state.",
-        "- [ ] Commit and verify operational counters via PAN-OS web console or CLI."
     ])
+    for step, tool, st in integrity["gaps"]:
+        lines.append(
+            f"- [ ] Step {step} `{tool}` {st.upper()}: conclusions that depend on it are unverified. "
+            "Re-run the check or verify manually before acting."
+        )
+    lines.append("- [ ] Cross-check each finding in Section 2 against a SUCCESS receipt in Section 3.")
+    lines.append("- [ ] Stage any recommended configuration in a candidate config and validate with `test` commands before commit.")
 
     return "\n".join(lines)
 

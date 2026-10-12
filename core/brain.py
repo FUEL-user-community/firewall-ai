@@ -52,6 +52,7 @@ def _load_devices_config() -> dict:
 
 # Standard Absolute Imports
 from core.pipeline.tool_keeper import ToolKeeper
+from core.pipeline.outcomes import classify_outcome
 from core.safety.circuit_breaker import CircuitBreaker, CircuitBreakerError
 
 # Secrets management -- fail-soft
@@ -670,7 +671,7 @@ class CoreBrain:
                         logger.warning(f"[{state.trace_id}] [EFFICIENCY] {len(state.drive_slices)} Drive slices read. Consider synthesis.")
 
                 # Record deterministic execution receipt for operator audit trail and Google Docs export
-                receipt_status = "blocked" if exec_result.blocked_by else "success"
+                receipt_status = classify_outcome(exec_result.raw_output, exec_result.blocked_by)
                 state.receipts.append({
                     "tool": exec_result.tool_name,
                     "args": exec_result.tool_args,
