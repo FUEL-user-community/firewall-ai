@@ -1486,6 +1486,7 @@ html, body {
             display: flex;
             align-items: center;
             justify-content: center;
+            overflow: hidden;
         }
 
         .mermaid {
@@ -1497,8 +1498,11 @@ html, body {
         }
 
         .mermaid svg {
-            max-width: 100%;
-            max-height: 100%;
+            width: 100% !important;
+            height: 100% !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
+            display: block !important;
             filter: drop-shadow(0 8px 32px rgba(0, 0, 0, 0.4));
         }
 

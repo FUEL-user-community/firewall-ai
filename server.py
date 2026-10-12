@@ -396,12 +396,14 @@ async def get_investigation_receipts(trace_id: str):
 @app.post("/api/export/markdown")
 async def export_incident_to_markdown(payload: ExportDocRequest):
     """Generates direct structured Markdown report for 1-click client-side download."""
-    trace_id = payload.trace_id.strip()
+    trace_id = (payload.trace_id or "").strip()
     with _CACHE_LOCK:
+        if (not trace_id or trace_id == "latest") and _RECENT_INVESTIGATIONS:
+            trace_id = next(reversed(_RECENT_INVESTIGATIONS))
         cached = _RECENT_INVESTIGATIONS.get(trace_id)
 
     if not cached:
-        return JSONResponse(status_code=404, content={"error": f"No investigation found for trace {trace_id}"})
+        return JSONResponse(status_code=404, content={"error": f"No investigation found for trace '{trace_id}'"})
 
     from core.integrations.google_export import export_to_markdown_report
     result = export_to_markdown_report(
@@ -476,7 +478,8 @@ async def range_simulate(payload: RangeSimulateRequest, request: Request):
                     target_mode="range",
                     target_device=target_device,
                     base_graph_json=base_graph_json,
-                    abort_event=abort_event
+                    abort_event=abort_event,
+                    return_details=True
                 )
             )
             

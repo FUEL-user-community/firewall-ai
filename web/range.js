@@ -193,7 +193,8 @@ function bindTerminalActions() {
 }
 
 async function exportSimulationReport() {
-    if (!lastTraceId || !btnExportSimulation) return;
+    if (!btnExportSimulation) return;
+    const targetTrace = lastTraceId || 'latest';
 
     const originalContent = btnExportSimulation.innerHTML;
     btnExportSimulation.disabled = true;
@@ -207,7 +208,7 @@ async function exportSimulationReport() {
                 'Content-Type': 'application/json',
                 'X-API-Key': key
             },
-            body: JSON.stringify({ trace_id: lastTraceId })
+            body: JSON.stringify({ trace_id: targetTrace })
         });
 
         if (!res.ok) {
@@ -346,7 +347,7 @@ function finishSimulation() {
         cliSendBtn.disabled = false;
         cliSendBtn.textContent = 'RUN';
     }
-    if (btnExportSimulation && lastTraceId) {
+    if (btnExportSimulation) {
         btnExportSimulation.style.display = 'inline-flex';
     }
     if (cliInput) cliInput.focus();
@@ -357,6 +358,10 @@ function finishSimulation() {
 // ═══════════════════════════════════════════════════════
 
 function handleRangeResponse(rawContent) {
+    if (btnExportSimulation) {
+        btnExportSimulation.style.display = 'inline-flex';
+    }
+
     if (!rawContent) {
         appendLog('SYS', 'Agent returned empty response payload.', 'log-sys');
         return;
@@ -497,15 +502,34 @@ async function renderAgentDiagram(markdown, agentLogMessage, threats, drops) {
         mermaidTarget.innerHTML = svg;
         
         const svgElement = mermaidTarget.querySelector('svg');
-        if (svgElement && typeof svgPanZoom === 'function') {
-            panZoomInstance = svgPanZoom(svgElement, {
-                zoomEnabled: true,
-                controlIconsEnabled: false, // We use custom header buttons
-                fit: true,
-                center: true,
-                minZoom: 0.2,
-                maxZoom: 12
-            });
+        if (svgElement) {
+            // Strip hardcoded Mermaid width/max-width inline attributes so topology fills whole canvas
+            svgElement.removeAttribute('style');
+            svgElement.style.width = '100%';
+            svgElement.style.height = '100%';
+            svgElement.style.maxWidth = '100%';
+            svgElement.style.maxHeight = '100%';
+            svgElement.style.display = 'block';
+
+            if (typeof svgPanZoom === 'function') {
+                panZoomInstance = svgPanZoom(svgElement, {
+                    zoomEnabled: true,
+                    controlIconsEnabled: false, // We use custom header buttons
+                    fit: true,
+                    center: true,
+                    minZoom: 0.1,
+                    maxZoom: 15
+                });
+
+                // Auto-fit & center across the complete canvas surface
+                setTimeout(() => {
+                    if (panZoomInstance) {
+                        panZoomInstance.resize();
+                        panZoomInstance.fit();
+                        panZoomInstance.center();
+                    }
+                }, 100);
+            }
         }
         
         setTimeout(() => {
