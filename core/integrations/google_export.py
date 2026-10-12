@@ -1,6 +1,6 @@
-# core/integrations/google_export.py
 import os
 import io
+import re
 import datetime
 import logging
 from typing import List, Dict, Any, Optional
@@ -35,9 +35,60 @@ def generate_incident_markdown(
     except Exception:
         pass
 
-    report_title = "Breach & Attack Simulation Report" if is_simulation else "Incident Investigation Report"
-    query_title = "Adversary Attack Scenario" if is_simulation else "Operator Query"
-    verdict_title = "Emulation Findings & Containment Posture" if is_simulation else "Executive Diagnosis & Root Cause"
+    # Dynamic Report Title Detection
+    lower_verdict = clean_verdict.lower()
+    is_compiler = "compensating policy compilation" in lower_verdict or "policy compilation manifest" in lower_verdict
+    if is_simulation:
+        report_title = "Breach & Attack Simulation Report"
+        query_title = "Adversary Attack Scenario"
+        verdict_title = "Emulation Findings & Containment Posture"
+    elif is_compiler:
+        report_title = "Pre-Flight Threat-to-Policy Compilation Manifest"
+        query_title = "Operator Policy Directives"
+        verdict_title = "Autonomous Policy Compilation & Triage"
+    else:
+        report_title = "Incident Investigation Report"
+        query_title = "Operator Query"
+        verdict_title = "Executive Diagnosis & Root Cause"
+
+    # Cognitive Scratchpad Interception & Formatting
+    reasoning_match = re.search(r'<REASONING>([\s\S]*?)</REASONING>', clean_verdict, re.IGNORECASE)
+    raw_reasoning = ""
+    if reasoning_match:
+        raw_reasoning = reasoning_match.group(1).strip()
+        # Remove raw XML reasoning tag from verdict
+        clean_verdict = clean_verdict[:reasoning_match.start()] + clean_verdict[reasoning_match.end():]
+
+    # Check for main structural heading to neatly tuck any preamble thoughts into Scratchpad
+    split_pattern = r'(### (?:Compensating Policy Compilation Manifest|Incident Investigation Summary|Executive Health Summary)[\s\S]*)'
+    split_match = re.search(split_pattern, clean_verdict, re.IGNORECASE)
+    if split_match:
+        preamble = clean_verdict[:split_match.start()].strip()
+        manifest_body = split_match.group(1).strip()
+        scratchpad_parts = []
+        if preamble:
+            scratchpad_parts.append(f"**Pre-Flight Analytical Notes:**\n{preamble}")
+        if raw_reasoning:
+            scratchpad_parts.append(f"**Hypothesis Matrix & Contradiction Trace:**\n```text\n{raw_reasoning}\n```")
+
+        if scratchpad_parts:
+            scratchpad_html = (
+                "<details>\n"
+                "<summary><b>Cognitive Scratchpad: Autonomous Hypothesis & Contradiction Trace</b> (Click to expand)</summary>\n\n"
+                + "\n\n".join(scratchpad_parts)
+                + "\n\n</details>\n\n"
+            )
+            clean_verdict = scratchpad_html + manifest_body
+        else:
+            clean_verdict = manifest_body
+    elif raw_reasoning:
+        scratchpad_html = (
+            "<details>\n"
+            "<summary><b>Cognitive Scratchpad: Autonomous Hypothesis & Contradiction Trace</b> (Click to expand)</summary>\n\n"
+            f"```text\n{raw_reasoning}\n```\n\n"
+            "</details>\n\n"
+        )
+        clean_verdict = scratchpad_html + clean_verdict.strip()
     
     lines = [
         f"# Core Defense - {report_title}",
@@ -76,15 +127,18 @@ def generate_incident_markdown(
             lines.append(f"| {i} | `{tool}` | {dur} | {st} | `{args_str}` |")
         
         lines.append("")
-        lines.append("### Raw Tool Outputs")
+        lines.append("### Detailed Tool Outputs")
         for i, r in enumerate(receipts, 1):
             tool = r.get("tool", "unknown")
+            dur = f"{r.get('duration_ms', 0.0):.1f}ms"
+            st = str(r.get("status", "unknown")).upper()
             raw = r.get("raw_output") or r.get("output_snippet") or "No output captured"
-            lines.append(f"#### Step {i}: `{tool}`")
+            lines.append("<details>")
+            lines.append(f"<summary><b>Step {i}: <code>{tool}</code> Execution Output</b> ({dur}, {st})</summary>\n")
             lines.append("```")
             lines.append(str(raw).strip())
-            lines.append("```")
-            lines.append("")
+            lines.append("```\n")
+            lines.append("</details>\n")
 
     lines.extend([
         "---",
@@ -96,6 +150,7 @@ def generate_incident_markdown(
     ])
 
     return "\n".join(lines)
+
 
 
 def _init_drive_write_service():

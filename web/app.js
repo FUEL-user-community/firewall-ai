@@ -712,12 +712,19 @@ function renderMarkdown(t) {
     h = h.replace(/\[BUDGET LIMIT\]/g, '<span class="badge badge-caution">BUDGET LIMIT</span>');
     h = h.replace(/\[PIVOT\]/g, '<span class="badge badge-info">PIVOT</span>');
 
+    // Cognitive Scratchpad & Hypothesis Reasoning Block
+    h = h.replace(/(?:&lt;|<)REASONING(?:&gt;|>)([\s\S]*?)(?:&lt;|<)\/REASONING(?:&gt;|>)/gi, (_, reasoning) => {
+        return '<div class="cognitive-scratchpad"><details><summary><strong>Cognitive Scratchpad: Autonomous Hypothesis Trace</strong></summary><pre class="scratchpad-pre"><code>' + reasoning.trim() + '</code></pre></details></div>';
+    });
+
     // Fenced Code Blocks
     h = h.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
         const lines = code.trim().split('\n');
-        const content = '<pre><code>' + code.trim() + '</code></pre>';
+        const isPanosConfig = /^\s*(set|delete|show|request|test)\s+/m.test(code) || lang === 'panos';
+        const label = isPanosConfig ? `PAN-OS CLI Remediation Delta (${lines.length} lines)` : `Raw data (${lines.length} lines)`;
+        const content = '<pre><code class="language-' + (lang || 'text') + '">' + code.trim() + '</code></pre>';
         if (lines.length > 10) {
-            return '<details><summary>Raw data (' + lines.length + ' lines)</summary>' + content + '</details>';
+            return '<details class="code-drawer"><summary><strong>' + label + '</strong></summary>' + content + '</details>';
         }
         return content;
     });
