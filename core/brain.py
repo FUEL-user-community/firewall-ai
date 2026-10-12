@@ -534,11 +534,24 @@ class CoreBrain:
         try:
             if state.target_mode == "range":
                 from core.pipeline.prompt_assembler import load_range_prompt
-                base_graph = kwargs.get("base_graph_json", "{}")
+                base_graph = kwargs.get("base_graph_json")
+                if not base_graph:
+                    try:
+                        from core.panos.cartographer import Cartographer
+                        target_dev = kwargs.get("target_device")
+                        base_graph = Cartographer(target_device=target_dev).build_graph()
+                    except Exception as e:
+                        logger.warning(f"[Brain] Fallback Cartographer build failed: {e}")
+                        base_graph = "{}"
                 range_instructions = load_range_prompt().format(user_query=user_query, base_graph_json=base_graph)
                 user_msg = f"{reality_check}\n\n{range_instructions}"
             else:
-                user_msg = f"{reality_check}\n\nINVESTIGATE: {user_query}"
+                base_graph = kwargs.get("base_graph_json")
+                if base_graph and base_graph != "{}":
+                    nodal_context = f"\n\n--- DETERMINISTIC DEVICE TOPOLOGY & POSTURE (CARTOGRAPHER) ---\n{base_graph}\n----------------------------------------------------------------\n"
+                    user_msg = f"{reality_check}{nodal_context}\n\nINVESTIGATE: {user_query}"
+                else:
+                    user_msg = f"{reality_check}\n\nINVESTIGATE: {user_query}"
 
             initial_payload = [user_msg]
             response = self._execute_with_quota_retry(

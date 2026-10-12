@@ -1,13 +1,45 @@
 /* ═══════════════════════════════════════════════════════
-   Core Defense \u2014 Autonomous Defense Deck Application Logic
+   Core Defense — Nodal Diagnostic Console & Pre-Flight Workstation
    ═══════════════════════════════════════════════════════
-   fleet device selection, schedule modal with on-demand run,
-   collapsible chat panel, active investigation context,
-   glassmorphic toast notifications, and severity counters.
+   Dual-surface workstation controller:
+   - Physical Network Base Graph (Cartographer)
+   - Live Telemetry & Pre-Flight Posture Synchronization
+   - Interactive Mermaid AST Rendering & SVG Pan/Zoom
+   - Real-Time Investigation Stream & Deterministic Receipts
+   - Resilient Payload Extraction & Export
    ═══════════════════════════════════════════════════════ */
+
+// Initialize Mermaid with dark theme matching the console
+if (typeof mermaid !== 'undefined') {
+    mermaid.initialize({
+        startOnLoad: false,
+        theme: 'base',
+        securityLevel: 'loose',
+        themeVariables: {
+            primaryColor: 'transparent',
+            primaryTextColor: '#E0E0E0',
+            primaryBorderColor: '#333',
+            lineColor: '#666',
+            secondaryColor: '#1A1A1A',
+            tertiaryColor: '#050505',
+            nodeBorder: '#333',
+            mainBkg: '#0A0A0A',
+            clusterBkg: 'rgba(255,255,255,0.02)',
+            clusterBorder: '#222',
+            fontSize: '13px',
+            fontFamily: 'Google Sans, Google Sans Text, Roboto, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
+        }
+    });
+}
 
 const STORAGE_KEY = 'nodal_history';
 const MAX_HISTORY = 50;
+
+// Pan & Zoom instance tracking
+let panZoomInstance = null;
+let currentRawMarkdown = '';
+let lastTraceId = null;
+let lastReceipts = [];
 
 // Cross-tab and persistent authentication helpers
 function getAuthKey() {
@@ -26,7 +58,7 @@ function clearAuthKey() {
     localStorage.removeItem('nodal_key');
 }
 
-// Centralized SOC State Store
+// Centralized State Store
 const state = {
     devices: [],
     device: 'all',
@@ -34,7 +66,7 @@ const state = {
 };
 
 let busy = false;
-let currentFilter = 'all'; // Backwards compatibility for SSE handlers
+let currentFilter = 'all';
 
 // ═══════════════════════════════════════════════════════
 // Initialization
@@ -48,6 +80,8 @@ document.addEventListener('DOMContentLoaded', () => {
     bindKeyboardShortcuts();
     checkHealth();
     bindGeminiFramework();
+    bindCanvasControls();
+    bindResizeHandle();
 
     // Check if already logged in (sessionStorage or cross-tab localStorage)
     const key = getAuthKey();
@@ -149,40 +183,23 @@ function loadDevices() {
 function updateDeviceSelect() {
     const select = document.getElementById('deviceFilter');
     if (!select) return;
+
     const currentVal = select.value;
-
-    const allDevs = Array.from(new Set(state.devices)).sort();
-    if (allDevs.length === 0) return;
-
-    // Check if the current options already match what we need (Prevents flicker on refresh)
-    const currentValues = Array.from(select.options).map(o => o.value);
-    const expectedValues = allDevs.length > 1 ? ['all', ...allDevs] : allDevs;
-
-    const isMatch = currentValues.length === expectedValues.length &&
-        currentValues.every((val, idx) => val === expectedValues[idx]);
-
-    if (isMatch) {
-        // Zero DOM manipulation on refresh = ZERO flicker
-        return;
-    }
-
-    // Only update if actually different
-    const frag = document.createDocumentFragment();
-    if (allDevs.length > 1) {
-        const allOpt = document.createElement('option');
-        allOpt.value = 'all';
-        allOpt.textContent = 'All Firewalls';
-        frag.appendChild(allOpt);
-    }
-    allDevs.forEach(dev => {
-        const opt = document.createElement('option');
-        opt.value = dev;
-        opt.textContent = `${dev} (192.168.1.254)`;
-        frag.appendChild(opt);
-    });
-
     select.innerHTML = '';
-    select.appendChild(frag);
+
+    if (state.devices.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = 'fw-hq';
+        opt.textContent = 'fw-hq (192.168.1.254)';
+        select.appendChild(opt);
+    } else {
+        state.devices.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d;
+            opt.textContent = d;
+            select.appendChild(opt);
+        });
+    }
 
     if (currentVal && Array.from(select.options).some(o => o.value === currentVal)) {
         select.value = currentVal;
@@ -190,146 +207,45 @@ function updateDeviceSelect() {
 }
 
 // ═══════════════════════════════════════════════════════
-// Chat Panel \u2014 Open / Close / Collapse / Fullscreen
+// Authentication & Setup Wizard Handlers
 // ═══════════════════════════════════════════════════════
 
-function bindKeyboardShortcuts() {
-    document.addEventListener('keydown', (e) => {
-        const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
-        const isInputFocused = activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select';
-
-        // Slash ( / ) focuses input
-        if (e.key === '/' && !isInputFocused) {
-            e.preventDefault();
-            const search = document.getElementById('input');
-            if (search) {
-                search.focus();
-                search.select();
-            }
-            return;
-        }
-
-        // Cmd+K or Ctrl+K to toggle chat
-        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-            e.preventDefault();
-            toggleChat();
-            return;
-        }
-
-        // Ctrl+Shift+D to toggle demo mode
-        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'D') {
-            e.preventDefault();
-            document.body.classList.toggle('demo-mode');
-            showToast('Demo mode toggled', 'info');
-            return;
-        }
-
-        // Escape
-        if (e.key === 'Escape') {
-            const search = document.getElementById('input');
-            if (search && document.activeElement === search) {
-                search.value = '';
-                state.searchQuery = '';
-                search.blur();
-                renderFilteredDeck();
-                return;
-            }
-            closeChat();
-            closeSchedule();
-        }
-    });
+function verifyKey(key) {
+    return fetch('/api/health', {
+        headers: { 'X-API-Key': key }
+    })
+    .then(r => r.ok)
+    .catch(() => false);
 }
-
-// ═══════════════════════════════════════════════════════
-// Toast Notification Utility
-// ═══════════════════════════════════════════════════════
-
-function showToast(message, type = 'info', duration = 3500) {
-    const container = document.getElementById('toastContainer');
-    if (!container) return;
-
-    const toast = document.createElement('div');
-    toast.className = `soc-toast toast-${type}`;
-
-    const iconMap = {
-        success: '✓',
-        error: '✕',
-        warning: '!',
-        info: 'ℹ'
-    };
-
-    toast.innerHTML = `
-        <span class="toast-icon">${iconMap[type] || 'ℹ'}</span>
-        <span class="toast-message">${esc(message)}</span>
-        <button type="button" class="toast-close" title="Close">✕</button>
-    `;
-
-    const closeBtn = toast.querySelector('.toast-close');
-    if (closeBtn) {
-        closeBtn.addEventListener('click', () => {
-            toast.classList.add('toast-exit');
-            setTimeout(() => toast.remove(), 250);
-        });
-    }
-
-    container.appendChild(toast);
-
-    setTimeout(() => {
-        if (toast.parentNode) {
-            toast.classList.add('toast-exit');
-            setTimeout(() => toast.remove(), 250);
-        }
-    }, duration);
-}
-
-// ═══════════════════════════════════════════════════════
-// Login & Auth
-// ═══════════════════════════════════════════════════════
 
 function bindLogin() {
     const form = document.getElementById('loginForm');
     if (!form) return;
-
-    form.addEventListener('submit', async (e) => {
+    form.addEventListener('submit', (e) => {
         e.preventDefault();
         const input = document.getElementById('loginInput');
-        const btn = document.getElementById('loginBtn');
         const err = document.getElementById('loginError');
-        const key = input.value.trim();
+        const pass = input.value.trim();
+        if (!pass) return;
 
-        if (!key) return;
-
-        btn.disabled = true;
-        btn.textContent = 'Verifying...';
-        err.textContent = '';
-
-        const valid = await verifyKey(key);
-        if (valid) {
-            setAuthKey(key);
-            unlockApp();
-            showToast('Connected to firewall defense hub', 'success');
-        } else {
-            clearAuthKey();
-            err.textContent = 'Invalid passphrase. Try again.';
-            input.value = '';
-            input.focus();
-        }
-
-        btn.disabled = false;
-        btn.textContent = 'Connect';
-    });
-}
-
-async function verifyKey(key) {
-    try {
-        const res = await fetch('/api/login', {
+        fetch('/api/login', {
             method: 'POST',
-            headers: { 'X-API-Key': key }
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ passphrase: pass })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success && data.token) {
+                setAuthKey(data.token);
+                unlockApp();
+            } else {
+                if (err) err.textContent = data.error || 'Invalid session passphrase';
+            }
+        })
+        .catch(errText => {
+            if (err) err.textContent = 'Login request failed: ' + errText.message;
         });
-        return res.ok;
-    } catch (e) {
-        return false;
-    }
+    });
 }
 
 function unlockApp() {
@@ -340,14 +256,11 @@ function unlockApp() {
     const dashboard = document.getElementById('dashboard');
     if (dashboard) dashboard.style.display = 'flex';
 
-    // Load fleet devices & real-time telemetry
+    // Load fleet devices, real-time telemetry & pre-flight Nodal Base Graph
     loadDevices();
     fetchTelemetry();
+    loadPreflightGraph();
 }
-
-// ═══════════════════════════════════════════════════════
-// Setup Wizard
-// ═══════════════════════════════════════════════════════
 
 function bindSetup() {
     const s1 = document.getElementById('setupStep1');
@@ -366,7 +279,7 @@ function bindSetup() {
     document.getElementById('btnSetupVault').addEventListener('click', () => {
         document.getElementById('setupBackend').value = 'vault';
         document.getElementById('setupSimpleFields').style.display = 'none';
-        document.getElementById('setupVaultFields').style.display = 'flex';
+        document.getElementById('setupVaultFields').style.display = 'block';
         s1.style.display = 'none';
         s2.style.display = 'block';
     });
@@ -376,125 +289,410 @@ function bindSetup() {
         s1.style.display = 'block';
     });
 
-    document.getElementById('setupForm').addEventListener('submit', async (e) => {
+    document.getElementById('setupForm').addEventListener('submit', (e) => {
         e.preventDefault();
-        const btn = document.getElementById('setupSubmitBtn');
         const err = document.getElementById('setupError');
-
-        btn.disabled = true;
-        btn.textContent = 'Saving...';
-        err.textContent = '';
-
         const payload = {
-            backend_type: document.getElementById('setupBackend').value,
-            firewall_ip: document.getElementById('setupFwIp').value,
-            panos_key: document.getElementById('setupPanosKey').value,
-            gemini_key: document.getElementById('setupGeminiKey').value,
-            vault_addr: document.getElementById('setupVaultAddr').value,
-            vault_role: document.getElementById('setupVaultRole').value,
-            vault_secret: document.getElementById('setupVaultSecret').value
+            backend: document.getElementById('setupBackend').value,
+            gemini_api_key: document.getElementById('setupGeminiKey').value.trim(),
+            panos_api_key: document.getElementById('setupPanosKey').value.trim(),
+            vault_url: document.getElementById('setupVaultAddr').value.trim(),
+            vault_role_id: document.getElementById('setupVaultRole').value.trim(),
+            vault_secret_id: document.getElementById('setupVaultSecret').value.trim(),
+            panos_hostname: document.getElementById('setupFwIp').value.trim(),
         };
 
-        try {
-            const res = await fetch('/api/setup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const data = await res.json();
-
+        fetch('/api/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(r => r.json())
+        .then(data => {
             if (data.success) {
-                document.getElementById('setupPassphrase').textContent = data.passphrase;
                 s2.style.display = 'none';
                 s3.style.display = 'block';
+                document.getElementById('setupPassphrase').textContent = data.passphrase || 'Initialized';
+                if (data.token) setAuthKey(data.token);
             } else {
-                err.textContent = data.error || 'Setup failed';
+                if (err) err.textContent = data.error || 'Setup failed';
             }
-        } catch (error) {
-            err.textContent = 'Connection error: ' + error.message;
-        }
-
-        btn.disabled = false;
-        btn.textContent = 'Save & Initialize';
+        })
+        .catch(errText => {
+            if (err) err.textContent = 'Setup request failed: ' + errText.message;
+        });
     });
 
     document.getElementById('btnCopyPassphrase').addEventListener('click', () => {
         const text = document.getElementById('setupPassphrase').textContent;
-        navigator.clipboard.writeText(text);
-        const btn = document.getElementById('btnCopyPassphrase');
-        btn.textContent = 'Copied!';
-        setTimeout(() => btn.textContent = 'Copy to Clipboard', 2000);
-        showToast('Passphrase copied to clipboard', 'info');
+        navigator.clipboard.writeText(text).then(() => {
+            showToast('Passphrase copied to clipboard', 'success');
+        });
     });
 
     document.getElementById('btnProceedLogin').addEventListener('click', () => {
-        document.getElementById('setupOverlay').style.display = 'none';
-        document.getElementById('loginOverlay').style.display = 'flex';
-        document.getElementById('loginInput').focus();
-        checkHealth();
+        const sOverlay = document.getElementById('setupOverlay');
+        if (sOverlay) sOverlay.style.display = 'none';
+        unlockApp();
+    });
+}
+
+function bindKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        const isInputFocused = document.activeElement && document.activeElement.tagName === 'TEXTAREA';
+        if (e.key === '/' && !isInputFocused) {
+            e.preventDefault();
+            const input = document.getElementById('input');
+            if (input) {
+                input.focus();
+                input.select();
+            }
+        }
+        if (e.key === 'Escape') {
+            closeHitlTextPopup();
+        }
     });
 }
 
 // ═══════════════════════════════════════════════════════
-// Chat \u2014 Sending, Streaming & Investigation Context
+// Toast Notification Utility
+// ═══════════════════════════════════════════════════════
+
+function showToast(message, type = 'info', duration = 3500) {
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.classList.add('fade-out');
+        setTimeout(() => toast.remove(), 400);
+    }, duration);
+}
+
+// ═══════════════════════════════════════════════════════
+// Pre-Flight Digital Twin & Topology Compiler
+// ═══════════════════════════════════════════════════════
+
+async function loadPreflightGraph() {
+    const deviceSelect = document.getElementById('deviceFilter');
+    const selectedDevice = deviceSelect ? deviceSelect.value : 'default';
+    const key = getAuthKey();
+
+    try {
+        const res = await fetch(`/api/cartographer/base-graph?device=${encodeURIComponent(selectedDevice)}`, {
+            headers: { 'X-API-Key': key }
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        updatePostureBanner(data.metadata ? data.metadata.posture : null);
+
+        if (data && data.nodes && data.nodes.length > 0) {
+            const mermaidCode = compileBaseGraphToMermaid(data);
+            await renderAgentDiagram(mermaidCode, null, 0, 0);
+        }
+    } catch (err) {
+        console.warn('[NODAL] Failed to load pre-flight base graph:', err);
+    }
+}
+
+function updatePostureBanner(posture) {
+    if (!posture) return;
+
+    const valPanos = document.getElementById('valPanos');
+    const chipPanos = document.getElementById('chipPanos');
+    if (valPanos) {
+        valPanos.textContent = posture.panos_version ? `${posture.panos_version}${posture.is_eol ? ' (EOL)' : ''}` : 'Unknown';
+        if (chipPanos && posture.is_eol) chipPanos.className = 'posture-chip chip-danger';
+        else if (chipPanos) chipPanos.className = 'posture-chip chip-success';
+    }
+
+    const valThreat = document.getElementById('valThreat');
+    const chipThreat = document.getElementById('chipThreat');
+    if (valThreat) {
+        if (posture.threat_stale_days !== null && posture.threat_stale_days !== undefined) {
+            valThreat.textContent = `${posture.threat_stale_days}d stale`;
+            if (chipThreat && posture.is_threat_stale) chipThreat.className = 'posture-chip chip-warning';
+            else if (chipThreat) chipThreat.className = 'posture-chip chip-success';
+        } else {
+            valThreat.textContent = 'Current';
+            if (chipThreat) chipThreat.className = 'posture-chip chip-success';
+        }
+    }
+
+    const valOverlap = document.getElementById('valOverlap');
+    const chipOverlap = document.getElementById('chipOverlap');
+    if (valOverlap) {
+        if (posture.mgmt_dataplane_overlap && posture.overlap_interfaces && posture.overlap_interfaces.length > 0) {
+            valOverlap.textContent = `${posture.overlap_interfaces.join(', ')} Overlap`;
+            if (chipOverlap) chipOverlap.className = 'posture-chip chip-danger';
+        } else {
+            valOverlap.textContent = 'Isolated';
+            if (chipOverlap) chipOverlap.className = 'posture-chip chip-success';
+        }
+    }
+
+    const valLicenses = document.getElementById('valLicenses');
+    const chipLicenses = document.getElementById('chipLicenses');
+    if (valLicenses) {
+        const expiredCount = posture.expired_licenses ? posture.expired_licenses.length : 0;
+        valLicenses.textContent = `${expiredCount} Expired`;
+        if (chipLicenses) {
+            chipLicenses.className = expiredCount > 0 ? 'posture-chip chip-warning' : 'posture-chip chip-success';
+        }
+    }
+}
+
+function compileBaseGraphToMermaid(graph) {
+    if (!graph || !graph.nodes || graph.nodes.length === 0) {
+        return 'graph TD\n  FW["PAN-OS Firewall"]';
+    }
+    const lines = ['graph TD'];
+    const nodes = graph.nodes;
+    const edges = graph.edges || [];
+
+    const zones = nodes.filter(n => n.type === 'zone');
+    const subnets = nodes.filter(n => n.type === 'subnet');
+
+    zones.forEach(z => {
+        const safeZId = z.id.replace(/[^a-zA-Z0-9_]/g, '_');
+        const cleanZName = z.label.replace(/^Zone:\s*/, '');
+        lines.push(`  subgraph ${safeZId} ["Zone: ${cleanZName}"]`);
+
+        const containedIds = edges
+            .filter(e => e.source === z.id && e.label === 'contains')
+            .map(e => e.target);
+
+        containedIds.forEach(sId => {
+            const sub = subnets.find(s => s.id === sId);
+            if (sub) {
+                const safeSId = sub.id.replace(/[^a-zA-Z0-9_]/g, '_');
+                const mgmtSuffix = sub.mgmt_profile ? `<br>[mgmt: ${sub.mgmt_profile}]` : '';
+                lines.push(`    ${safeSId}["${sub.label}${mgmtSuffix}"]`);
+            }
+        });
+        lines.push('  end');
+    });
+
+    const fwNode = nodes.find(n => n.type === 'firewall');
+    const fwLabel = fwNode ? fwNode.label : 'PAN-OS Firewall';
+    lines.push(`  firewall["${fwLabel}"]`);
+
+    zones.forEach(z => {
+        const safeZId = z.id.replace(/[^a-zA-Z0-9_]/g, '_');
+        lines.push(`  firewall -->|routes| ${safeZId}`);
+    });
+
+    const mgtNode = nodes.find(n => n.type === 'management_interface');
+    if (mgtNode) {
+        lines.push(`  interface_mgmt["${mgtNode.label}"]`);
+        lines.push('  firewall -->|managed_by| interface_mgmt');
+    }
+
+    edges.filter(e => e.label === 'overlaps_subnet').forEach(e => {
+        const safeTarget = e.target.replace(/[^a-zA-Z0-9_]/g, '_');
+        lines.push(`  interface_mgmt -.->|OVERLAP WARNING| ${safeTarget}`);
+    });
+
+    const expiredLics = nodes.filter(n => n.type === 'expired_license');
+    expiredLics.forEach(lic => {
+        const safeLId = lic.id.replace(/[^a-zA-Z0-9_]/g, '_');
+        lines.push(`  ${safeLId}["${lic.label}"]`);
+        lines.push(`  firewall -.->|EXPIRED| ${safeLId}`);
+    });
+
+    return lines.join('\n');
+}
+
+function sanitizeMermaid(code) {
+    if (!code) return 'graph TD\n  Start[No Topology Specified]';
+    let s = code.trim();
+
+    if (!s.startsWith('graph ') && !s.startsWith('flowchart ')) {
+        s = 'graph TD\n' + s;
+    }
+
+    s = s.replace(/(\w+)\[([^"\]]+)\]/g, (match, id, label) => {
+        if (label.includes('(') || label.includes(')') || label.includes(':') || label.includes('/') || label.includes('>')) {
+            return `${id}["${label.replace(/"/g, "'")}"]`;
+        }
+        return match;
+    });
+
+    return s;
+}
+
+async function renderAgentDiagram(markdown, agentLogMessage, threats = 0, drops = 0) {
+    const diagramContainer = document.getElementById('diagramContainer');
+    const mermaidTarget = document.getElementById('mermaidTarget');
+    const emptyState = document.getElementById('emptyState');
+    const canvasError = document.getElementById('canvasError');
+    const statThreats = document.getElementById('statThreats');
+    const statDrops = document.getElementById('statDrops');
+
+    if (!diagramContainer || !mermaidTarget) return;
+
+    if (statThreats && threats !== undefined) statThreats.textContent = `Threats: ${threats}`;
+    if (statDrops && drops !== undefined) statDrops.textContent = `Drops: ${drops}`;
+
+    currentRawMarkdown = markdown;
+    const sanitizedMarkdown = sanitizeMermaid(markdown);
+
+    if (panZoomInstance) {
+        try {
+            panZoomInstance.destroy();
+        } catch (_) {}
+        panZoomInstance = null;
+    }
+
+    if (emptyState) emptyState.style.display = 'none';
+    diagramContainer.style.display = 'flex';
+    if (canvasError) canvasError.style.display = 'none';
+
+    try {
+        const id = 'graph-' + Date.now();
+        mermaidTarget.innerHTML = `<div class="mermaid" id="${id}"></div>`;
+
+        if (typeof mermaid !== 'undefined') {
+            const { svg } = await mermaid.render(id, sanitizedMarkdown);
+            mermaidTarget.innerHTML = svg;
+
+            const svgElement = mermaidTarget.querySelector('svg');
+            if (svgElement) {
+                svgElement.removeAttribute('style');
+                svgElement.style.width = '100%';
+                svgElement.style.height = '100%';
+                svgElement.style.maxWidth = '100%';
+                svgElement.style.maxHeight = '100%';
+                svgElement.style.display = 'block';
+
+                if (typeof svgPanZoom === 'function') {
+                    panZoomInstance = svgPanZoom(svgElement, {
+                        zoomEnabled: true,
+                        controlIconsEnabled: false,
+                        fit: true,
+                        center: true,
+                        minZoom: 0.1,
+                        maxZoom: 15
+                    });
+
+                    setTimeout(() => {
+                        if (panZoomInstance) {
+                            try {
+                                panZoomInstance.resize();
+                                panZoomInstance.fit();
+                                panZoomInstance.center();
+                            } catch (_) {}
+                        }
+                    }, 100);
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('[MERMAID] Render error:', err);
+        if (canvasError) {
+            canvasError.style.display = 'flex';
+            const msgElem = document.getElementById('canvasErrorMsg');
+            if (msgElem) msgElem.textContent = 'Topology rendering error. Click View Spec to inspect.';
+            const rawBox = document.getElementById('rawSpecBox');
+            if (rawBox) rawBox.textContent = sanitizedMarkdown;
+        }
+    }
+}
+
+function extractRangePayload(raw) {
+    if (!raw) return null;
+
+    const firstBrace = raw.indexOf('{');
+    const lastBrace = raw.lastIndexOf('}');
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+        const candidate = raw.slice(firstBrace, lastBrace + 1);
+        try {
+            return JSON.parse(candidate);
+        } catch (err) {
+            try {
+                const repaired = candidate.replace(/[\u0000-\u001F]+/g, (match) => {
+                    if (match === '\n') return '\\n';
+                    if (match === '\r') return '\\r';
+                    if (match === '\t') return '\\t';
+                    return '';
+                });
+                return JSON.parse(repaired);
+            } catch (_) {}
+        }
+    }
+
+    const mermaidBlock = raw.match(/```(?:mermaid)?\s*([\s\S]*?)```/);
+    if (mermaidBlock && (mermaidBlock[1].includes('graph ') || mermaidBlock[1].includes('flowchart '))) {
+        return {
+            mermaid: mermaidBlock[1].trim(),
+            message: 'Extracted topology from code block.',
+            threats: 1,
+            drops: 0
+        };
+    }
+
+    return null;
+}
+
+// ═══════════════════════════════════════════════════════
+// Form Input & Streaming Investigation Execution
 // ═══════════════════════════════════════════════════════
 
 function bindForm() {
     const form = document.getElementById('chatForm');
     if (!form) return;
-
     form.addEventListener('submit', (e) => {
         e.preventDefault();
         const input = document.getElementById('input');
+        if (!input) return;
         const text = input.value.trim();
-        if (text && !busy) {
-            sendMessage(text);
-        }
+        if (!text || busy) return;
+        sendMessage(text);
     });
 }
 
 function bindTextarea() {
-    const textarea = document.getElementById('input');
-    if (!textarea) return;
+    const input = document.getElementById('input');
+    if (!input) return;
 
-    textarea.addEventListener('input', () => {
-        textarea.style.height = 'auto';
-        textarea.style.height = Math.min(textarea.scrollHeight, 140) + 'px';
-        updateSendBtnState();
-    });
-
-    textarea.addEventListener('keydown', (e) => {
+    input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            const text = textarea.value.trim();
+            const text = input.value.trim();
             if (text && !busy) {
                 sendMessage(text);
             }
         }
     });
+
+    input.addEventListener('input', () => {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+        updateSendBtnState();
+    });
 }
 
 function sendMessage(text) {
-    const hero = document.getElementById('chatHero');
-    const msgs = document.getElementById('messages');
-    if (hero) hero.style.display = 'none';
-    if (msgs) msgs.style.display = 'flex';
+    if (busy) return;
+    busy = true;
+    updateSendBtnState();
 
     const input = document.getElementById('input');
     if (input) {
         input.value = '';
         input.style.height = 'auto';
     }
-    updateSendBtnState();
+
+    const hero = document.getElementById('chatHero');
+    if (hero) hero.style.display = 'none';
 
     addMsg('user', text);
-    showStatus('Investigating firewall state...');
-    const chatPanel = document.getElementById('chatPanel');
-    if (chatPanel) chatPanel.classList.add('investigating');
-
-    busy = true;
-    const sendBtn = document.getElementById('sendBtn');
-    if (sendBtn) sendBtn.disabled = true;
+    showStatus('Compiling nodal telemetry and evaluating policy paths...');
 
     const key = getAuthKey();
     let currentReceipts = [];
@@ -541,12 +739,22 @@ function sendMessage(text) {
                             updateStatus(d.content);
                         } else if (d.type === 'receipts') {
                             currentReceipts = d.content || [];
-                            if (d.trace_id) currentTraceId = d.trace_id;
+                            lastReceipts = currentReceipts;
+                            if (d.trace_id) {
+                                currentTraceId = d.trace_id;
+                                lastTraceId = d.trace_id;
+                            }
                         } else if (d.type === 'response') {
-                            if (d.trace_id) currentTraceId = d.trace_id;
+                            if (d.trace_id) {
+                                currentTraceId = d.trace_id;
+                                lastTraceId = d.trace_id;
+                            }
                             return finish(d.content, currentReceipts, currentTraceId);
                         } else if (d.type === 'done') {
-                            if (d.trace_id) currentTraceId = d.trace_id;
+                            if (d.trace_id) {
+                                currentTraceId = d.trace_id;
+                                lastTraceId = d.trace_id;
+                            }
                         } else if (d.type === 'error') {
                             return finish('[ERROR] ' + d.content);
                         }
@@ -562,10 +770,19 @@ function sendMessage(text) {
 
 function finish(text, receipts = [], traceId = '') {
     removeStatus();
-    const chatPanel = document.getElementById('chatPanel');
-    if (chatPanel) chatPanel.classList.remove('investigating');
     if (text) {
-        addMsg('agent', text, { receipts, traceId });
+        const payload = extractRangePayload(text);
+        if (payload && payload.mermaid) {
+            renderAgentDiagram(
+                payload.mermaid,
+                payload.message || 'Generated semantic topology map.',
+                payload.threats ?? 0,
+                payload.drops ?? 0
+            );
+            addMsg('agent', payload.message || text, { receipts, traceId });
+        } else {
+            addMsg('agent', text, { receipts, traceId });
+        }
     }
     busy = false;
     updateSendBtnState();
@@ -603,13 +820,11 @@ function removeStatus() {
 }
 
 // ═══════════════════════════════════════════════════════
-// Message Rendering & Markdown
+// Message Rendering & Evidence Badging
 // ═══════════════════════════════════════════════════════
 
 function addMsg(role, text, metadata = {}) {
-    const time = timeNow();
     const entry = document.createElement('div');
-
     let typeClass = 'msg-agent';
     let speakerPrefix = 'DIAGNOSTICS';
     if (role === 'user') {
@@ -644,9 +859,8 @@ function addMsg(role, text, metadata = {}) {
                         <svg class="gdoc-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
                             <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6z"/>
                         </svg>
-                        <span>Export Report (.md)</span>
-                    </button>
-                    ` : ''}
+                        <span>Export (.md)</span>
+                    </button>` : ''}
                 </div>
                 <div class="receipts-drawer" style="display: none;">
                     <div class="receipts-summary-bar">Deterministic pan-os-python CLI / API Audit Trail</div>
@@ -673,23 +887,11 @@ function addMsg(role, text, metadata = {}) {
         `;
     }
 
-    let hitlActionHtml = '';
-    if (text && text.includes("SAFETY INTERCEPTOR")) {
-        hitlActionHtml = `
-            <div class="hitl-text-action">
-                <button type="button" class="hitl-plain-btn" onclick="openHitlTextPopup()">Authorize Operator Override</button>
-            </div>
-        `;
-        setTimeout(openHitlTextPopup, 120);
-    }
-
     entry.innerHTML = `
-        <div class="msg-meta">
-            <span>[${speakerPrefix}]</span>
-            <span>${time}</span>
+        <div class="msg-header">
+            <span class="msg-author">${speakerPrefix}</span>
         </div>
-        <div class="msg-content">${role === 'user' ? esc(text) : renderMarkdown(text)}</div>
-        ${hitlActionHtml}
+        <div class="msg-body">${formatMsgText(text)}</div>
         ${receiptsHtml}
     `;
 
@@ -698,110 +900,35 @@ function addMsg(role, text, metadata = {}) {
     scrollChatToBottom();
 }
 
-function renderMarkdown(t) {
+function formatMsgText(t) {
     if (!t) return '';
-    let h = esc(t);
+    let s = esc(t);
 
-    // Severity Badges
-    h = h.replace(/\[CRITICAL\]/g, '<span class="badge badge-critical">CRITICAL</span>');
-    h = h.replace(/\[CAUTION\]/g, '<span class="badge badge-caution">CAUTION</span>');
-    h = h.replace(/\[NORMAL\]/g, '<span class="badge badge-normal">NORMAL</span>');
-    h = h.replace(/\[ASSESSMENT\]/g, '<span class="badge badge-info">ASSESSMENT</span>');
-    h = h.replace(/\[INVESTIGATION\]/g, '<span class="badge badge-info">INVESTIGATION</span>');
-    h = h.replace(/\[HALTED\]/g, '<span class="badge badge-critical">HALTED</span>');
-    h = h.replace(/\[BUDGET LIMIT\]/g, '<span class="badge badge-caution">BUDGET LIMIT</span>');
-    h = h.replace(/\[PIVOT\]/g, '<span class="badge badge-info">PIVOT</span>');
-
-    // Cognitive Scratchpad & Hypothesis Reasoning Block
-    h = h.replace(/(?:&lt;|<)REASONING(?:&gt;|>)([\s\S]*?)(?:&lt;|<)\/REASONING(?:&gt;|>)/gi, (_, reasoning) => {
-        return '<div class="cognitive-scratchpad"><details><summary><strong>Cognitive Scratchpad: Autonomous Hypothesis Trace</strong></summary><pre class="scratchpad-pre"><code>' + reasoning.trim() + '</code></pre></details></div>';
+    // Code blocks
+    s = s.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        return `<pre class="code-block"><code class="lang-${lang}">${code}</code></pre>`;
     });
 
-    // Fenced Code Blocks
-    h = h.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-        const lines = code.trim().split('\n');
-        const isPanosConfig = /^\s*(set|delete|show|request|test)\s+/m.test(code) || lang === 'panos';
-        const label = isPanosConfig ? `PAN-OS CLI Remediation Delta (${lines.length} lines)` : `Raw data (${lines.length} lines)`;
-        const content = '<pre><code class="language-' + (lang || 'text') + '">' + code.trim() + '</code></pre>';
-        if (lines.length > 10) {
-            return '<details class="code-drawer"><summary><strong>' + label + '</strong></summary>' + content + '</details>';
-        }
-        return content;
-    });
+    // Inline code
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-    // Inline Code
-    h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Bold text
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
-    // Bold / Italic
-    h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    // Evidence status chips
+    s = s.replace(/\[VERIFIED\]/g, '<span class="posture-chip chip-success">[VERIFIED]</span>');
+    s = s.replace(/\[UNVERIFIED\]/g, '<span class="posture-chip chip-danger">[UNVERIFIED]</span>');
+    s = s.replace(/\[UNCITED\]/g, '<span class="posture-chip chip-warning">[UNCITED]</span>');
 
-    // Headings
-    h = h.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
-    h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-    h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-    h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    // Newlines to breaks
+    s = s.replace(/\n/g, '<br>');
 
-    // Horizontal Rules
-    h = h.replace(/^---$/gm, '<hr>');
-
-    // Lists
-    h = h.replace(/^- (.+)$/gm, '<li>$1</li>');
-    h = h.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
-
-    // Tables
-    h = renderTables(h);
-
-    // Line Breaks
-    h = h.replace(/\n\n/g, '<br><br>');
-    h = h.replace(/\n/g, '<br>');
-
-    return h;
+    return s;
 }
-
-function renderTables(t) {
-    const lines = t.split('\n');
-    let result = [];
-    let rows = [];
-    let inTable = false;
-
-    for (const line of lines) {
-        const s = line.trim();
-        if (s.startsWith('|') && s.endsWith('|')) {
-            if (/^\|[\s\-:|]+\|$/.test(s)) continue;
-            if (!inTable) { inTable = true; rows = []; }
-            rows.push(s.split('|').filter(c => c.trim()).map(c => c.trim()));
-        } else {
-            if (inTable) { result.push(buildTable(rows)); inTable = false; rows = []; }
-            result.push(line);
-        }
-    }
-    if (inTable) result.push(buildTable(rows));
-    return result.join('\n');
-}
-
-function buildTable(rows) {
-    if (!rows.length) return '';
-    let h = '<table><thead><tr>' + rows[0].map(c => '<th>' + c + '</th>').join('') + '</tr></thead>';
-    if (rows.length > 1) {
-        h += '<tbody>' + rows.slice(1).map(r =>
-            '<tr>' + r.map(c => '<td>' + c + '</td>').join('') + '</tr>'
-        ).join('') + '</tbody>';
-    }
-    return h + '</table>';
-}
-
-// ═══════════════════════════════════════════════════════
-// Utilities
-// ═══════════════════════════════════════════════════════
 
 function scrollChatToBottom() {
     const m = document.getElementById('messages');
     if (m) requestAnimationFrame(() => m.scrollTop = m.scrollHeight);
-}
-
-function timeNow() {
-    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 function esc(t) {
@@ -809,10 +936,6 @@ function esc(t) {
     d.textContent = t;
     return d.innerHTML;
 }
-
-// =============================================================================
-// Execution Receipts & Google Workspace Export Handlers
-// =============================================================================
 
 function toggleReceiptsDrawer(btn) {
     const container = btn.closest('.receipts-container');
@@ -853,28 +976,21 @@ async function exportInvestigationToDoc(traceId, btn) {
         }
 
         const data = await res.json();
-        if (data.mode === 'google_doc' && data.doc_url) {
-            window.open(data.doc_url, '_blank');
-            btn.innerHTML = `✓ Opened Google Doc`;
-            btn.classList.add('btn-success');
-        } else {
-            const blob = new Blob([data.markdown || ''], { type: 'text/markdown;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${data.title || 'CoreDefense_Incident'}.md`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-
-            btn.innerHTML = `✓ Downloaded (.md)`;
-            btn.classList.add('btn-success');
-        }
+        const blob = new Blob([data.markdown || ''], { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `PANOS_Investigation_${traceId}.md`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        btn.innerHTML = `Saved .md`;
+        btn.classList.add('btn-success');
     } catch (e) {
-        btn.innerHTML = `⚠ Export Failed`;
+        showToast('Export failed: ' + e.message, 'error');
+        btn.innerHTML = `Failed`;
         btn.classList.add('btn-error');
-        console.error('[EXPORT] Error:', e);
     } finally {
         setTimeout(() => {
             btn.disabled = false;
@@ -885,21 +1001,20 @@ async function exportInvestigationToDoc(traceId, btn) {
 }
 
 // ═══════════════════════════════════════════════════════
-// Gemini Interface Framework Helpers
+// Canvas Controls & Workstation Binding
 // ═══════════════════════════════════════════════════════
 
 function bindGeminiFramework() {
-    // Bind new chat button
     const newChatBtn = document.getElementById('newChatBtn');
     if (newChatBtn) {
         newChatBtn.addEventListener('click', resetToZeroState);
     }
 
-    // Bind device filter change to telemetry updater
     const deviceFilter = document.getElementById('deviceFilter');
     if (deviceFilter) {
         deviceFilter.addEventListener('change', () => {
             fetchTelemetry(deviceFilter.value);
+            loadPreflightGraph();
         });
     }
 
@@ -907,12 +1022,16 @@ function bindGeminiFramework() {
 }
 
 function resetToZeroState() {
-    const hero = document.getElementById('chatHero');
     const msgs = document.getElementById('messages');
-    if (hero) hero.style.display = 'flex';
     if (msgs) {
-        msgs.innerHTML = '';
-        msgs.style.display = 'none';
+        msgs.innerHTML = `
+            <div class="gemini-hero" id="chatHero">
+                <div class="gemini-hero-greeting">
+                    <span class="gemini-gradient-text">Nodal Diagnostic Workstation</span>
+                </div>
+                <p class="gemini-hero-subtitle">Pre-flight digital twin compiled. Evaluate attack vectors, test routing FIB paths, or audit security policies.</p>
+            </div>
+        `;
     }
     const input = document.getElementById('input');
     if (input) {
@@ -921,6 +1040,8 @@ function resetToZeroState() {
         input.focus();
     }
     updateSendBtnState();
+    loadPreflightGraph();
+    showToast('Workstation reset', 'info');
 }
 
 function updateSendBtnState() {
@@ -931,9 +1052,95 @@ function updateSendBtnState() {
     sendBtn.disabled = !hasText || busy;
 }
 
-// ═══════════════════════════════════════════════════════
-// Dashboard UI Integrations: Telemetry & Operator HITL
-// ═══════════════════════════════════════════════════════
+function bindCanvasControls() {
+    const btnZoomIn = document.getElementById('btnZoomIn');
+    const btnZoomOut = document.getElementById('btnZoomOut');
+    const btnZoomReset = document.getElementById('btnZoomReset');
+    const btnCanvasFullscreen = document.getElementById('btnCanvasFullscreen');
+    const btnClearTerminal = document.getElementById('btnClearTerminal');
+    const btnExportSimulation = document.getElementById('btnExportSimulation');
+    const btnViewSpec = document.getElementById('btnViewSpec');
+    const rawSpecBox = document.getElementById('rawSpecBox');
+
+    if (btnZoomIn) {
+        btnZoomIn.addEventListener('click', () => {
+            if (panZoomInstance) panZoomInstance.zoomIn();
+        });
+    }
+    if (btnZoomOut) {
+        btnZoomOut.addEventListener('click', () => {
+            if (panZoomInstance) panZoomInstance.zoomOut();
+        });
+    }
+    if (btnZoomReset) {
+        btnZoomReset.addEventListener('click', () => {
+            if (panZoomInstance) {
+                panZoomInstance.reset();
+                panZoomInstance.fit();
+                panZoomInstance.center();
+            }
+        });
+    }
+    if (btnCanvasFullscreen) {
+        btnCanvasFullscreen.addEventListener('click', () => {
+            const canvasPanel = document.getElementById('canvasPanel');
+            if (canvasPanel) {
+                canvasPanel.classList.toggle('canvas-fullscreen');
+            }
+        });
+    }
+    if (btnClearTerminal) {
+        btnClearTerminal.addEventListener('click', () => {
+            resetToZeroState();
+        });
+    }
+    if (btnExportSimulation) {
+        btnExportSimulation.addEventListener('click', () => {
+            exportInvestigationToDoc(lastTraceId, btnExportSimulation);
+        });
+    }
+    if (btnViewSpec && rawSpecBox) {
+        btnViewSpec.addEventListener('click', () => {
+            const isHidden = rawSpecBox.style.display === 'none';
+            rawSpecBox.style.display = isHidden ? 'block' : 'none';
+            btnViewSpec.textContent = isHidden ? 'Hide Spec' : 'View Spec';
+        });
+    }
+}
+
+function bindResizeHandle() {
+    const handle = document.getElementById('rangeResizeHandle');
+    const cliPanel = document.getElementById('cliPanel');
+    if (!handle || !cliPanel) return;
+
+    let isResizing = false;
+    handle.addEventListener('mousedown', () => {
+        isResizing = true;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        const newWidth = Math.max(340, Math.min(e.clientX, window.innerWidth * 0.75));
+        cliPanel.style.width = `${newWidth}px`;
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (isResizing) {
+            isResizing = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            if (panZoomInstance) {
+                try {
+                    panZoomInstance.resize();
+                    panZoomInstance.fit();
+                    panZoomInstance.center();
+                } catch (_) {}
+            }
+        }
+    });
+}
 
 function fetchTelemetry(device = null) {
     const select = document.getElementById('deviceFilter');
@@ -967,25 +1174,15 @@ function fetchTelemetry(device = null) {
 
 function openHitlTextPopup() {
     const popup = document.getElementById('hitlTextPopup');
-    if (popup) {
-        popup.style.display = 'flex';
-    }
+    if (popup) popup.style.display = 'flex';
 }
 
 function closeHitlTextPopup() {
     const popup = document.getElementById('hitlTextPopup');
-    if (popup) {
-        popup.style.display = 'none';
-    }
+    if (popup) popup.style.display = 'none';
 }
 
 function confirmHitlTextOverride() {
     closeHitlTextPopup();
     sendMessage("Execute 'show session all' with operator authorization override");
 }
-
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-        closeHitlTextPopup();
-    }
-});

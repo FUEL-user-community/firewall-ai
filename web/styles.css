@@ -1744,3 +1744,86 @@ html, body {
         .code-drawer summary:hover {
             color: #7dd3fc;
         }
+
+        /* ── Pre-Flight Posture Banner & Chips ── */
+        .preflight-posture-banner {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 10px 20px;
+            background: rgba(15, 17, 23, 0.85);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .posture-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 9px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            font-size: 11px;
+            font-family: var(--font-mono);
+            color: var(--text-secondary);
+        }
+
+        .posture-chip .chip-label {
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .posture-chip .chip-val {
+            color: var(--text-bright);
+            font-weight: 600;
+        }
+
+        .posture-chip.chip-warning {
+            border-color: rgba(234, 179, 8, 0.35);
+            background: rgba(234, 179, 8, 0.08);
+            color: #facc15;
+        }
+
+        .posture-chip.chip-danger {
+            border-color: rgba(239, 68, 68, 0.35);
+            background: rgba(239, 68, 68, 0.08);
+            color: #f87171;
+        }
+
+        .posture-chip.chip-success {
+            border-color: rgba(34, 197, 94, 0.35);
+            background: rgba(34, 197, 94, 0.08);
+            color: #4ade80;
+        }
+
+        .canvas-stats-row {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            display: flex;
+            gap: 8px;
+            z-index: 10;
+        }
+
+        .canvas-stat-pill {
+            padding: 4px 10px;
+            background: rgba(18, 19, 26, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            font-size: 11px;
+            font-family: var(--font-mono);
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+
+        .canvas-stat-pill.stat-threats {
+            border-color: rgba(244, 63, 94, 0.3);
+            color: #fb7185;
+        }
+
+        .canvas-stat-pill.stat-drops {
+            border-color: rgba(234, 179, 8, 0.3);
+            color: #fde047;
+        }
+

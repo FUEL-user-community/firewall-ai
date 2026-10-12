@@ -272,7 +272,10 @@ async def chat(payload: ChatRequest, request: Request):
             def status_callback(msg: str):
                 status_queue.put(msg)
             
-            yield f"data: {json.dumps({'type': 'status', 'content': 'Investigating...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'content': 'Cartographer compiling nodal graph...'})}\n\n"
+            from core.panos.cartographer import Cartographer
+            cartographer = Cartographer(target_device=effective_device)
+            base_graph_json = cartographer.build_graph()
             
             loop = asyncio.get_running_loop()
             result_future = loop.run_in_executor(
@@ -282,6 +285,7 @@ async def chat(payload: ChatRequest, request: Request):
                     user_id="web-user",
                     status_callback=status_callback,
                     target_device=effective_device,
+                    base_graph_json=base_graph_json,
                     abort_event=abort_event,
                     return_details=True
                 )
@@ -381,6 +385,24 @@ async def get_telemetry(device: Optional[str] = "default"):
             "throughput_kbps": 0,
             "error": str(e)
         })
+
+
+@app.get("/api/cartographer/base-graph")
+async def get_cartographer_base_graph(device: Optional[str] = "default"):
+    """
+    Returns the deterministic physical base graph and operational posture
+    compiled directly from the target firewall by Cartographer.
+    """
+    try:
+        from core.panos.cartographer import Cartographer
+        target_dev = (device or "default").strip()
+        effective_dev = None if target_dev in ("all", "default", "") else target_dev
+        cartographer = Cartographer(target_device=effective_dev)
+        graph_json = cartographer.build_graph()
+        return JSONResponse(content=json.loads(graph_json))
+    except Exception as e:
+        logger.error(f"[CARTOGRAPHER] Failed to build base graph: {e}")
+        return JSONResponse(content={"nodes": [], "edges": [], "error": str(e)}, status_code=500)
 
 
 @app.get("/api/investigations/{trace_id}/receipts")
