@@ -884,7 +884,7 @@ html, body {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
-   Investigation Status Line & Cognitive Drift Meter
+   Investigation Status Line
    ═══════════════════════════════════════════════════════════════════════════════ */
 
 .status-line {
@@ -914,19 +914,6 @@ html, body {
     to { transform: rotate(360deg); }
 }
 
-.drift-meter {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    border-radius: 16px;
-    background: rgba(0, 0, 0, 0.4);
-    border: 1px solid var(--border-subtle);
-    font-size: 11px;
-    font-family: var(--font-mono);
-    width: fit-content;
-    margin: 4px 0;
-}
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    Overlays & Modals (Setup Wizard & Session Auth)

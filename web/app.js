@@ -589,61 +589,12 @@ function showStatus(text) {
 }
 
 function updateStatus(text) {
-    const driftMatch = text.match(/\[DRIFT:(normal|caution|critical):([\d.]+):T(\d+)\]/);
-    if (driftMatch) {
-        const severity = driftMatch[1];
-        const similarity = parseFloat(driftMatch[2]);
-        const turn = parseInt(driftMatch[3]);
-        renderDriftMeter(severity, similarity, turn);
-        return;
-    }
-
     const label = document.querySelector('#statusLine .status-label');
     if (label) {
         label.textContent = text;
     } else {
         showStatus(text);
     }
-}
-
-function renderDriftMeter(severity, similarity, turn) {
-    let meter = document.getElementById('driftMeter');
-    if (!meter) {
-        meter = document.createElement('div');
-        meter.id = 'driftMeter';
-        meter.className = 'drift-meter';
-    }
-    
-    const statusLine = document.getElementById('statusLine');
-    const messages = document.getElementById('messages');
-    if (statusLine && statusLine.parentNode) {
-        statusLine.parentNode.insertBefore(meter, statusLine.nextSibling);
-    } else if (messages) {
-        messages.appendChild(meter);
-    }
-
-    const pct = Math.round(similarity * 100);
-    const colorMap = { normal: '#00e676', caution: '#ffab00', critical: '#ff1744' };
-    const labelMap = { normal: 'ALIGNED', caution: 'DIVERGING', critical: 'DRIFT DETECTED' };
-    const color = colorMap[severity] || '#00e676';
-    const label = labelMap[severity] || 'UNKNOWN';
-
-    meter.innerHTML = `
-        <div class="drift-header">
-            <span class="drift-icon">\u25C9</span>
-            <span class="drift-title">Investigation Focus</span>
-            <span class="drift-turn">Turn ${turn}</span>
-        </div>
-        <div class="drift-bar-track">
-            <div class="drift-bar-fill" style="width:${pct}%;background:${color}"></div>
-        </div>
-        <div class="drift-footer">
-            <span class="drift-score" style="color:${color}">${pct}% \u2014 ${label}</span>
-            <span class="drift-raw">${similarity.toFixed(3)} cosine</span>
-        </div>
-    `;
-    meter.style.borderColor = color + '33';
-    scrollChatToBottom();
 }
 
 function removeStatus() {

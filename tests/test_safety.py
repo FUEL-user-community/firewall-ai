@@ -1,7 +1,7 @@
 """
 Unit tests for core.safety framework.
 Tests command filtering, API key auth, policy engine elevation, budget limits,
-circuit breaker loop detection, PII scrubbing, drift gating, and HITL signatures.
+circuit breaker loop detection, PII scrubbing, and HITL signatures.
 """
 
 import pytest
