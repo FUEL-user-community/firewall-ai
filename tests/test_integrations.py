@@ -267,3 +267,52 @@ def test_export_to_google_doc_drive_success_and_fallback():
         assert res["success"] is True
         assert res["mode"] == "google_doc"
         assert res["doc_url"] == "https://docs.google.com/document/d/gdoc-file-123/edit"
+
+
+def test_drive_knowledge_csv_parsing_and_version_filtering():
+    """Verify CSV item detection, tabular version filtering, and read_slice routing."""
+    from core.integrations.drive_knowledge import _is_csv_item, _extract_csv_summary
+
+    # 1. Item detection
+    assert _is_csv_item("panw_cves.csv") is True
+    assert _is_csv_item("PAN-OS-10.1-Manual.pdf") is False
+    assert _is_csv_item("cve_export", "text/csv") is True
+
+    # 2. Tabular version filtering with _extract_csv_summary
+    csv_sample = (
+        "CVE ID,Severity,Affected Versions,Description\n"
+        "CVE-2024-3400,CRITICAL,10.2; 11.0; 11.1,Command injection in GlobalProtect\n"
+        "CVE-2021-3064,CRITICAL,9.0; 9.1; 10.0,Buffer overflow in GlobalProtect\n"
+        "CVE-2020-2040,HIGH,8.1; 9.0; 10.0,Buffer overflow in captive portal\n"
+        "CVE-2022-0028,HIGH,10.1; 10.2,Reflected amplification in URL filtering\n"
+    ).encode("utf-8")
+
+    mock_service = mock.MagicMock()
+    with mock.patch("core.integrations.drive_knowledge.MediaIoBaseDownload") as mock_dl:
+        def fake_download(fh, req):
+            fh.write(csv_sample)
+            inst = mock.MagicMock()
+            inst.next_chunk.return_value = (None, True)
+            return inst
+        mock_dl.side_effect = fake_download
+
+        # Filter for 10.0 branch
+        summary_10_0 = _extract_csv_summary(mock_service, "file_123", panos_version="10.0.12-h3")
+        assert "CVE-2021-3064" in summary_10_0
+        assert "CVE-2020-2040" in summary_10_0
+        assert "CVE-2024-3400" not in summary_10_0
+
+        # Query via query_knowledge_base read_slice without start_page/end_page
+        mock_files = mock.MagicMock()
+        mock_list = mock.MagicMock()
+        mock_list.execute.return_value = {
+            "files": [{"id": "cve_file_id", "name": "panw_cves.csv", "mimeType": "text/csv"}]
+        }
+        mock_files.list.return_value = mock_list
+        mock_service.files.return_value = mock_files
+
+        with mock.patch("core.integrations.drive_knowledge._init_drive_service", return_value=(mock_service, None)), \
+             mock.patch.dict(os.environ, {"KNOWLEDGE_BASE_FOLDER_ID": "folder_123"}):
+            res = query_knowledge_base(action="read_slice", target="panw_cves.csv", panos_version="10.0")
+            assert "READING CSV DATA: panw_cves.csv" in res
+            assert "CVE-2021-3064" in res

@@ -50,6 +50,7 @@ let currentRawMarkdown = '';
 let commandCount = 0;
 let busy = false;
 let lastTraceId = null;
+let lastReceipts = [];
 
 // HTML entity escaper to prevent DOM XSS
 function esc(t) {
@@ -182,6 +183,7 @@ function bindTerminalActions() {
             if (canvasError) canvasError.style.display = 'none';
             if (btnExportSimulation) btnExportSimulation.style.display = 'none';
             lastTraceId = null;
+            lastReceipts = [];
         });
     }
 
@@ -259,6 +261,7 @@ cliForm.addEventListener('submit', (e) => {
 function runSimulation(text) {
     if (busy) return;
     busy = true;
+    lastReceipts = [];
 
     if (cliSendBtn) {
         cliSendBtn.disabled = true;
@@ -317,6 +320,9 @@ function runSimulation(text) {
                             } else {
                                 appendLog('SYS', d.content, 'log-sys');
                             }
+                        } else if (d.type === 'receipts') {
+                            lastReceipts = d.content || [];
+                            if (d.trace_id) lastTraceId = d.trace_id;
                         } else if (d.type === 'response') {
                             if (d.trace_id) lastTraceId = d.trace_id;
                             handleRangeResponse(d.content);
@@ -388,7 +394,75 @@ function handleRangeResponse(rawContent) {
             }
         }
     }
+
+    if (lastReceipts && lastReceipts.length > 0) {
+        appendReceiptsDrawer(lastReceipts, lastTraceId);
+    }
 }
+
+function appendReceiptsDrawer(receipts, traceId) {
+    if (!terminal || !receipts || receipts.length === 0) return;
+    const totalMs = receipts.reduce((acc, r) => acc + (r.duration_ms || 0), 0);
+    const container = document.createElement('div');
+    container.className = 'receipts-container';
+    if (traceId) container.setAttribute('data-trace-id', traceId);
+
+    container.innerHTML = `
+        <div class="receipts-header">
+            <button class="receipts-toggle-btn" onclick="toggleRangeReceiptsDrawer(this)" aria-expanded="false" title="Inspect raw PAN-OS CLI execution receipts">
+                <svg class="receipts-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="4 17 10 11 4 5"></polyline>
+                    <line x1="12" y1="19" x2="20" y2="19"></line>
+                </svg>
+                <span class="receipts-count">${receipts.length} CLI Execution Receipts</span>
+                <span class="receipts-duration-badge">${totalMs.toFixed(1)}ms</span>
+                <span class="receipts-chevron">▼</span>
+            </button>
+        </div>
+        <div class="receipts-drawer" style="display: none;">
+            <div class="receipts-summary-bar">Deterministic pan-os-python CLI / API Audit Trail</div>
+            ${receipts.map((r, idx) => `
+                <div class="receipt-card">
+                    <div class="receipt-card-header">
+                        <span class="receipt-step">#${idx + 1}</span>
+                        <code class="receipt-tool-name">${esc(r.tool || 'unknown')}</code>
+                        <span class="receipt-ms">${(r.duration_ms || 0).toFixed(1)}ms</span>
+                        <span class="receipt-status-pill status-${esc(r.status || 'success')}">${esc(r.status || 'OK')}</span>
+                    </div>
+                    <div class="receipt-args-row">
+                        <span class="receipt-label">Args:</span>
+                        <code class="receipt-args-code">${esc(JSON.stringify(r.args || {}))}</code>
+                    </div>
+                    <details class="receipt-raw-details">
+                        <summary>Raw Output (${(r.raw_output || r.output_snippet || '').length} bytes)</summary>
+                        <pre class="receipt-raw-pre"><code>${esc(r.raw_output || r.output_snippet || 'No output captured')}</code></pre>
+                    </details>
+                </div>
+            `).join('')}
+        </div>
+    `;
+    terminal.appendChild(container);
+    terminal.scrollTop = terminal.scrollHeight;
+}
+
+function toggleRangeReceiptsDrawer(btn) {
+    const container = btn.closest('.receipts-container');
+    if (!container) return;
+    const drawer = container.querySelector('.receipts-drawer');
+    const chevron = btn.querySelector('.receipts-chevron');
+    if (!drawer) return;
+
+    const isHidden = drawer.style.display === 'none';
+    drawer.style.display = isHidden ? 'block' : 'none';
+    btn.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+    if (chevron) {
+        chevron.style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
+    }
+    if (terminal) terminal.scrollTop = terminal.scrollHeight;
+}
+
+window.toggleRangeReceiptsDrawer = toggleRangeReceiptsDrawer;
+window.toggleReceiptsDrawer = toggleRangeReceiptsDrawer;
 
 function extractRangePayload(raw) {
     if (!raw) return null;

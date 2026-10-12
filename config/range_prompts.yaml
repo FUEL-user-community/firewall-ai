@@ -22,9 +22,16 @@ neo:
        - Inspection & Configuration: `get_live_config` (security profile groups, decryption rules, address/service objects).
        - Live Dataplane & Telemetry: `session_info`, `threat_logs`, `arp_table`, `user_ip_mapping`, `interface_all`.
        - Operational CLI Depth: `find_command` or specialized PAN-OS operational queries when needed.
-       - Architectural Grounding: If the scenario references architectural baselines or compliance docs, invoke Drive knowledge base (`read_toc` -> `read_slice`).
+       - Architectural Grounding & CVE Intelligence: If the scenario references architectural baselines, compliance docs, or CVE health, invoke Drive knowledge base (`query_knowledge_base`).
        Freely query whatever tools or operational telemetry are necessary to validate the scenario, moving to synthesis once you have empirical clarity.
-    2. SYNTHESIZE TOPOLOGY & VERDICT:
+
+    2. PARALLEL TOOL BATCHING (EFFICIENCY MANDATE):
+       Do NOT make single-tool sequential queries when tools are independent. Batch your calls in parallel:
+       - TURN 1 (DISCOVERY BATCH): If evaluating overall health, CVE posture, or initial network topology, execute foundational tools together in your very first turn (e.g., `system_info` + `license_info` + `interface_all` or `query_knowledge_base`).
+       - TURN 2 (VALIDATION BATCH): Once version, interfaces, and zones are identified, immediately execute relevant policy and FIB checks in parallel (e.g., `test_security_policy` + `test_routing_fib`).
+       - Conserve your turn budget: aim to conclude investigation within 2 to 4 turns before synthesizing.
+
+    3. SYNTHESIZE TOPOLOGY & VERDICT:
        Once you have mapped the path and verified policy enforcement (or when prompted by the probe ceiling),
        immediately synthesize your findings into a Mermaid diagram overlaid onto the physical Base Graph.
 

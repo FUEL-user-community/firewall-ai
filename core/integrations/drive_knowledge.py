@@ -1,5 +1,7 @@
 import os
 import io
+import csv
+import re
 import logging
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -86,11 +88,18 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
                 response_lines.append(f"Document: {item['name']} (ID: {item['id']})")
                 
             if target and len(items) == 1:
-                # If specifically querying one doc, try to extract its TOC (first 5 pages)
-                response_lines.append("\n--- EXTRACTING TABLE OF CONTENTS (Pages 1-5) ---")
+                # If specifically querying one doc, try to extract its TOC or CSV summary
                 file_id = items[0]['id']
-                toc_text = _extract_pdf_pages(service, file_id, 1, 5)
-                response_lines.append(toc_text)
+                actual_name = items[0]['name']
+                mime_type = items[0].get('mimeType', '')
+                if _is_csv_item(actual_name, mime_type):
+                    response_lines.append("\n--- EXTRACTING CSV CVE DATA ---")
+                    csv_text = _extract_csv_summary(service, file_id, panos_version=panos_version, max_rows=10)
+                    response_lines.append(csv_text)
+                else:
+                    response_lines.append("\n--- EXTRACTING TABLE OF CONTENTS (Pages 1-5) ---")
+                    toc_text = _extract_pdf_pages(service, file_id, 1, 5)
+                    response_lines.append(toc_text)
                 
             response_lines.append("\nINSTRUCTIONS:")
             response_lines.append("To read specific sections, use action='read_slice' with the exact 'target' name and the 'start_page' / 'end_page'.")
@@ -101,16 +110,13 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
             return f"Error listing Knowledge Base contents: {e}"
 
     elif clean_action == 'read_slice':
-        if not target or not start_page or not end_page:
-            return "Error: 'read_slice' requires 'target', 'start_page', and 'end_page'."
-            
-        if not HAS_PYPDF:
-            return "Error: 'pypdf' library is missing. Cannot slice PDF documents. (pip install pypdf)"
+        if not target:
+            return "Error: 'read_slice' requires 'target'."
             
         try:
             target_safe = target.replace("'", "\\'")
             query = f"'{folder_id}' in parents and name contains '{target_safe}' and trashed = false"
-            results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+            results = service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)').execute()
             items = results.get('files', [])
             
             # Filter by panos_version if specified and matching documents exist
@@ -125,6 +131,18 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
                 
             file_id = items[0]['id']
             actual_name = items[0]['name']
+            mime_type = items[0].get('mimeType', '')
+
+            # Route tabular CSV documents through structured CSV parser (pages optional)
+            if _is_csv_item(actual_name, mime_type):
+                extracted = _extract_csv_summary(service, file_id, panos_version=panos_version, max_rows=20)
+                return f"--- READING CSV DATA: {actual_name} ---\n\n{extracted}"
+
+            if not start_page or not end_page:
+                return "Error: 'read_slice' requires 'target', 'start_page', and 'end_page'."
+
+            if not HAS_PYPDF:
+                return "Error: 'pypdf' library is missing. Cannot slice PDF documents. (pip install pypdf)"
             
             extracted = _extract_pdf_pages(service, file_id, int(start_page), int(end_page))
             return f"--- READING SLICE: {actual_name} (Pages {start_page}-{end_page}) ---\n\n{extracted}"
@@ -134,6 +152,86 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
             
     else:
         return f"Error: Unknown action '{action}'. Use 'list_contents' or 'read_slice'."
+
+
+def _is_csv_item(name: str, mime_type: str = "") -> bool:
+    """Returns True if the file name or MIME type indicates a CSV spreadsheet."""
+    n = (name or "").lower()
+    m = (mime_type or "").lower()
+    return n.endswith('.csv') or 'csv' in m or 'comma-separated' in m
+
+
+def _extract_csv_summary(service, file_id: str, panos_version: str = None, max_rows: int = 15) -> str:
+    """Downloads and parses a tabular CSV/CVE database with PAN-OS version filtering."""
+    try:
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+
+        raw_bytes = fh.getvalue()
+        try:
+            text = raw_bytes.decode('utf-8-sig', errors='replace')
+        except Exception:
+            text = raw_bytes.decode('latin-1', errors='replace')
+
+        reader = csv.reader(io.StringIO(text))
+        rows = [r for r in reader if any(cell.strip() for cell in r)]
+        if not rows:
+            return "CSV file is empty."
+
+        header = rows[0]
+        data_rows = rows[1:]
+
+        # Normalize version and branch (e.g. '10.0.12-h3' -> '10.0')
+        v_clean = ""
+        branch = ""
+        if panos_version:
+            v_clean = str(panos_version).strip().lower()
+            m = re.match(r'^(\d+\.\d+)', v_clean)
+            if m:
+                branch = m.group(1)
+
+        version_matches = []
+        critical_fallback = []
+
+        for row in data_rows:
+            row_str = " ".join(row).lower()
+            matched = False
+            if v_clean:
+                if v_clean in row_str or (branch and branch in row_str):
+                    matched = True
+
+            if matched:
+                version_matches.append(row)
+            elif any(sev in row_str for sev in ['critical', 'high', '9.', '10.0', 'cvss: 9', 'cvss: 10']):
+                critical_fallback.append(row)
+
+        if version_matches:
+            selected = version_matches[:max_rows]
+            status_line = f"Identified {len(version_matches)} CVE advisories matching PAN-OS version '{panos_version}' (displaying top {len(selected)}):"
+        elif v_clean:
+            selected = critical_fallback[:max_rows] if critical_fallback else data_rows[:max_rows]
+            status_line = f"No entries explicitly tagged for version '{panos_version}'. Displaying top {len(selected)} high/critical CVE advisories:"
+        else:
+            selected = data_rows[:max_rows]
+            status_line = f"Displaying top {len(selected)} CVE / advisory records:"
+
+        table_lines = [status_line, ""]
+        table_lines.append("| " + " | ".join(h.strip() for h in header) + " |")
+        table_lines.append("| " + " | ".join("---" for _ in header) + " |")
+
+        for r in selected:
+            padded = r + [""] * (len(header) - len(r))
+            clean_cells = [c.replace("\n", " ").replace("|", "\\|").strip() for c in padded[:len(header)]]
+            table_lines.append("| " + " | ".join(clean_cells) + " |")
+
+        return "\n".join(table_lines)
+    except Exception as e:
+        logger.exception(f"[DRIVE-CSV] Error parsing CSV file {file_id}: {e}")
+        return f"Error extracting CSV data: {e}"
 
 
 def _extract_pdf_pages(service, file_id: str, start_page: int, end_page: int) -> str:
