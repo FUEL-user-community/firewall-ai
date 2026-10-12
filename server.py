@@ -393,6 +393,26 @@ async def get_investigation_receipts(trace_id: str):
     return JSONResponse(content=data)
 
 
+@app.post("/api/export/markdown")
+async def export_incident_to_markdown(payload: ExportDocRequest):
+    """Generates direct structured Markdown report for 1-click client-side download."""
+    trace_id = payload.trace_id.strip()
+    with _CACHE_LOCK:
+        cached = _RECENT_INVESTIGATIONS.get(trace_id)
+
+    if not cached:
+        return JSONResponse(status_code=404, content={"error": f"No investigation found for trace {trace_id}"})
+
+    from core.integrations.google_export import export_to_markdown_report
+    result = export_to_markdown_report(
+        trace_id=trace_id,
+        query=cached["query"],
+        verdict=cached["verdict"],
+        receipts=cached["receipts"]
+    )
+    return JSONResponse(content=result)
+
+
 @app.post("/api/export/google-doc")
 async def export_incident_to_doc(payload: ExportDocRequest):
     """

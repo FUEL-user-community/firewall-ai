@@ -689,11 +689,11 @@ function addMsg(role, text, metadata = {}) {
                         <span class="receipts-chevron">▼</span>
                     </button>
                     ${traceId ? `
-                    <button class="export-gdoc-btn" onclick="exportInvestigationToDoc('${esc(traceId)}', this)" title="Export formatted incident diagnosis report">
+                    <button class="export-gdoc-btn" onclick="exportInvestigationToDoc('${esc(traceId)}', this)" title="Download formatted incident diagnosis report (.md)">
                         <svg class="gdoc-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
                             <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6z"/>
                         </svg>
-                        <span>Export to Google Doc</span>
+                        <span>Export Report (.md)</span>
                     </button>
                     ` : ''}
                 </div>
@@ -779,6 +779,7 @@ function renderMarkdown(t) {
     h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
 
     // Headings
+    h = h.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
     h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
     h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
@@ -879,7 +880,7 @@ async function exportInvestigationToDoc(traceId, btn) {
 
     try {
         const key = getAuthKey();
-        const res = await fetch('/api/export/google-doc', {
+        const res = await fetch('/api/export/markdown', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

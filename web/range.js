@@ -38,6 +38,7 @@ const mermaidTarget = document.getElementById('mermaidTarget');
 const emptyState = document.getElementById('emptyState');
 const deviceSelect = document.getElementById('deviceSelect');
 const btnClearTerminal = document.getElementById('btnClearTerminal');
+const btnExportSimulation = document.getElementById('btnExportSimulation');
 const canvasError = document.getElementById('canvasError');
 const canvasErrorMsg = document.getElementById('canvasErrorMsg');
 const btnViewSpec = document.getElementById('btnViewSpec');
@@ -48,6 +49,7 @@ let panZoomInstance = null;
 let currentRawMarkdown = '';
 let commandCount = 0;
 let busy = false;
+let lastTraceId = null;
 
 // HTML entity escaper to prevent DOM XSS
 function esc(t) {
@@ -178,7 +180,67 @@ function bindTerminalActions() {
             if (emptyState) emptyState.style.display = 'flex';
             if (diagramContainer) diagramContainer.style.display = 'none';
             if (canvasError) canvasError.style.display = 'none';
+            if (btnExportSimulation) btnExportSimulation.style.display = 'none';
+            lastTraceId = null;
         });
+    }
+
+    if (btnExportSimulation) {
+        btnExportSimulation.addEventListener('click', () => {
+            exportSimulationReport();
+        });
+    }
+}
+
+async function exportSimulationReport() {
+    if (!lastTraceId || !btnExportSimulation) return;
+
+    const originalContent = btnExportSimulation.innerHTML;
+    btnExportSimulation.disabled = true;
+    btnExportSimulation.innerHTML = `<span>Exporting...</span>`;
+
+    try {
+        const key = getAuthKey();
+        const res = await fetch('/api/export/markdown', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': key
+            },
+            body: JSON.stringify({ trace_id: lastTraceId })
+        });
+
+        if (!res.ok) {
+            throw new Error(`Export HTTP ${res.status}: ${res.statusText}`);
+        }
+
+        const data = await res.json();
+        if (data.markdown) {
+            const blob = new Blob([data.markdown], { type: 'text/markdown;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${data.title || 'CoreDefense_Simulation'}.md`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            btnExportSimulation.innerHTML = `<span>Exported!</span>`;
+            setTimeout(() => {
+                btnExportSimulation.disabled = false;
+                btnExportSimulation.innerHTML = originalContent;
+            }, 2500);
+        } else {
+            throw new Error(data.error || 'No markdown payload returned');
+        }
+    } catch (e) {
+        btnExportSimulation.disabled = false;
+        btnExportSimulation.innerHTML = `<span>Failed</span>`;
+        console.error('[EXPORT-SIM] Error:', e);
+        setTimeout(() => {
+            btnExportSimulation.innerHTML = originalContent;
+        }, 3000);
     }
 }
 
@@ -255,7 +317,10 @@ function runSimulation(text) {
                                 appendLog('SYS', d.content, 'log-sys');
                             }
                         } else if (d.type === 'response') {
+                            if (d.trace_id) lastTraceId = d.trace_id;
                             handleRangeResponse(d.content);
+                        } else if (d.type === 'done') {
+                            if (d.trace_id) lastTraceId = d.trace_id;
                         } else if (d.type === 'error') {
                             appendLog('SYS', 'ERROR: ' + d.content, 'log-sys');
                         }
@@ -280,6 +345,9 @@ function finishSimulation() {
     if (cliSendBtn) {
         cliSendBtn.disabled = false;
         cliSendBtn.textContent = 'RUN';
+    }
+    if (btnExportSimulation && lastTraceId) {
+        btnExportSimulation.style.display = 'inline-flex';
     }
     if (cliInput) cliInput.focus();
 }

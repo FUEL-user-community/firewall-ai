@@ -328,7 +328,7 @@ clear_user_cache:
 ha_status:
   description: "Show high-availability status and state (Alias)"
   cmd: "show high-availability all"
-  tags: ["#sys", "#ha"]
+  tags: ["#sys", "#ha", "#core"]
 
 ha_state:
   description: "Show Active/Passive status"

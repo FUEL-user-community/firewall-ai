@@ -18,9 +18,29 @@ def generate_incident_markdown(
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     
     total_ms = sum(r.get("duration_ms", 0.0) for r in receipts)
+
+    # Detect and format Range Simulation payload if present
+    clean_verdict = verdict.strip()
+    mermaid_section = ""
+    is_simulation = False
+    try:
+        import json as _json
+        parsed_payload = _json.loads(clean_verdict)
+        if isinstance(parsed_payload, dict) and ("mermaid" in parsed_payload or "message" in parsed_payload):
+            is_simulation = True
+            clean_verdict = parsed_payload.get("message", clean_verdict).strip()
+            raw_mermaid = parsed_payload.get("mermaid", "").strip()
+            if raw_mermaid:
+                mermaid_section = f"\n\n### Attack Vector Topology (Mermaid)\n```mermaid\n{raw_mermaid}\n```\n"
+    except Exception:
+        pass
+
+    report_title = "Breach & Attack Simulation Report" if is_simulation else "Incident Investigation Report"
+    query_title = "Adversary Attack Scenario" if is_simulation else "Operator Query"
+    verdict_title = "Emulation Findings & Containment Posture" if is_simulation else "Executive Diagnosis & Root Cause"
     
     lines = [
-        "# Core Defense - Incident Investigation Report",
+        f"# Core Defense - {report_title}",
         f"**Trace ID:** `{trace_id}`  ",
         f"**Generated:** {timestamp}  ",
         f"**Audit Integrity:** Verified (Zero Hallucination - Pan-OS CLI/API Receipts)  ",
@@ -28,11 +48,11 @@ def generate_incident_markdown(
         "",
         "---",
         "",
-        "## 1. Operator Query",
+        f"## 1. {query_title}",
         f"> {query}",
         "",
-        "## 2. Executive Diagnosis & Root Cause",
-        verdict.strip(),
+        f"## 2. {verdict_title}",
+        clean_verdict + mermaid_section,
         "",
         "---",
         "",
@@ -105,6 +125,26 @@ def _init_drive_write_service():
         return None, str(e)
 
 
+def export_to_markdown_report(
+    trace_id: str,
+    query: str,
+    verdict: str,
+    receipts: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    """Generates direct structured Markdown report for local download without Google Drive dependency."""
+    markdown_content = generate_incident_markdown(trace_id, query, verdict, receipts)
+    prefix = "Simulation" if "mermaid" in verdict.lower() else "Incident"
+    title = f"CoreDefense_{prefix}_{trace_id[:8]}"
+    return {
+        "success": True,
+        "mode": "markdown_download",
+        "doc_url": None,
+        "title": title,
+        "markdown": markdown_content,
+        "message": f"Exported structured {prefix} report."
+    }
+
+
 def export_to_google_doc(
     trace_id: str,
     query: str,
@@ -118,6 +158,17 @@ def export_to_google_doc(
     """
     markdown_content = generate_incident_markdown(trace_id, query, verdict, receipts)
     title = f"CoreDefense_Incident_{trace_id[:8]}"
+
+    # Check if local markdown export is explicitly forced
+    if os.getenv("EXPORT_LOCAL_MD_ONLY", "false").lower() == "true":
+        return {
+            "success": True,
+            "mode": "markdown_download",
+            "doc_url": None,
+            "title": title,
+            "markdown": markdown_content,
+            "message": "Exporting local Markdown report."
+        }
 
     service, err_msg = _init_drive_write_service()
     if not service:
@@ -152,11 +203,28 @@ def export_to_google_doc(
             resumable=True
         )
 
-        created_file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, webViewLink'
-        ).execute()
+        try:
+            created_file = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id, webViewLink'
+            ).execute()
+        except Exception as create_err:
+            if target_folder and "insufficientParentPermissions" in str(create_err):
+                logger.warning(f"[EXPORT-GDOC] Service account lacks edit permissions for folder '{target_folder}'. Falling back to service account root Drive...")
+                file_metadata.pop('parents', None)
+                media = MediaIoBaseUpload(
+                    io.BytesIO(markdown_content.encode('utf-8')),
+                    mimetype='text/plain',
+                    resumable=True
+                )
+                created_file = service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id, webViewLink'
+                ).execute()
+            else:
+                raise create_err
 
         file_id = created_file.get('id')
         doc_url = created_file.get('webViewLink') or f"https://docs.google.com/document/d/{file_id}/edit"

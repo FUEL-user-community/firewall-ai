@@ -312,17 +312,6 @@ class ToolExecutor:
                     fargs.get('end_page', 'unknown')
                 )
 
-            # ── Obsidian Cartographer Hook ──
-            # This is the ONLY interception point. Every tool result flows
-            # through here: ops commands, config reads, policy sims, macros.
-            # The mapper routes by fname (stable tool name), not raw CLI strings.
-            try:
-                from core.utils.obsidian_mapper import GoogleDriveObsidianMapper
-                mapper = GoogleDriveObsidianMapper.get_instance()
-                mapper.map_tool_result(fname, fargs, str(result))
-            except Exception as map_err:
-                logger.debug(f"[{trace_id}] [MAPPER] Obsidian hook skipped: {map_err}")
-
             return result, ops_count, drive_slice_info
         except Exception as te:
             return f"Tool Error: {te}", 0, None

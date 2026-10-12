@@ -53,7 +53,7 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
     if not service:
         return f"Error: Google Drive API not configured. Details: {err_msg}"
         
-    folder_id = os.getenv("KNOWLEDGE_BASE_FOLDER_ID") or os.getenv("OBSIDIAN_DRIVE_FOLDER_ID") or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    folder_id = os.getenv("KNOWLEDGE_BASE_FOLDER_ID") or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
     if not folder_id:
         return "Error: Missing KNOWLEDGE_BASE_FOLDER_ID or GOOGLE_DRIVE_FOLDER_ID in environment."
 

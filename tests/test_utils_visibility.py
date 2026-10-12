@@ -5,7 +5,6 @@ import pytest
 from core.utils.xml_to_yaml import ToxicXmlSanitizer
 import core.utils.xml_to_yaml as xml_mod
 from core.utils.startup_validator import validate_startup
-from core.utils.obsidian_mapper import GoogleDriveObsidianMapper
 from core.workflows.health_check import _apply_thresholds, _parse_telemetry, run_health_check, load_health_rules
 
 
@@ -140,22 +139,6 @@ def test_health_check_partition_smart_storage():
     assert "/opt/panlogs" not in detail  # Log partition at 91% is suppressed from alerting
 
 
-# ═══════════════════════════════════════════════════════════════
-# 4. Obsidian Mapper Tests
-# ═══════════════════════════════════════════════════════════════
-
-def test_obsidian_mapper_reset():
-    """Verify GoogleDriveObsidianMapper.reset() resets singleton (L2)."""
-    GoogleDriveObsidianMapper.reset()
-    m1 = GoogleDriveObsidianMapper.get_instance()
-    assert m1 is not None
-
-    GoogleDriveObsidianMapper.reset()
-    m2 = GoogleDriveObsidianMapper.get_instance()
-    assert m2 is not None
-
-    # map_tool_result returns gracefully when disabled
-    m1.map_tool_result("interface_all", {}, "dummy output text")
 
 
 def test_health_check_parse_telemetry():

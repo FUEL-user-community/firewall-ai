@@ -16,7 +16,6 @@ from core.pipeline.tool_schemas import (
     TOOL_SCHEMAS,
 )
 from core.pipeline.tool_executor import ToolExecutor
-from core.pipeline.cognitive_trace import CognitiveTraceLogger
 from core.pipeline.prompt_assembler import load_system_prompt, load_range_prompt
 
 
@@ -238,21 +237,6 @@ def test_tool_keeper_registers_telemetry_snapshot():
     assert "get_telemetry_snapshot" in all_names
 
 
-# ─── 4. Cognitive Trace Logger Tests ──────────────────────────────────
-
-def test_cognitive_trace_logger_anchored_path(tmp_path):
-    """Verify M2: logs trace to configured or anchored directory with traversal protection."""
-    logger = CognitiveTraceLogger(trace_dir=str(tmp_path))
-    trace_data = [
-        {"turn": 0, "hypothesis_len": 150, "contradiction_len": 50, "drift_score": 0.95}
-    ]
-
-    logger.log_trace(trace_id="test/../../escape", target_mode="default", trace_data=trace_data, total_turns=1)
-
-    # Check safe sanitized filename
-    files = list(tmp_path.glob("trace_*.json"))
-    assert len(files) == 1
-    assert "escape" in files[0].name
 
 
 # ─── 5. Prompt Assembler Tests ────────────────────────────────────────

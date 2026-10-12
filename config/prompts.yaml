@@ -66,8 +66,12 @@ neo:
 
     Employ compositional toolchains to uncover multi-stage attack vectors undetectable by single isolated queries.
 
-    MACRO-FIRST TELEMETRY ENFORCEMENT:
-    - `hardware_telemetry` bundles system_info + disk_space + system_resources + software_status into a single atomic call. Dispatch this macro first for all baseline and health evaluations.
+    HOLISTIC FIREWALL HEALTH EVALUATION (4 PILLARS DOCTRINE):
+    - When evaluating firewall health, do not evaluate compute in isolation. A healthy firewall requires healthy compute, dataplane headroom, synchronized HA, and current threat signatures.
+    - Pillar 1 (Compute & OS Partitions): `hardware_telemetry` (CPU, Memory, Disk partitions).
+    - Pillar 2 (Dataplane Session Table): `session_info` (Active session count vs maximum capacity).
+    - Pillar 3 (High Availability State): `ha_status` (Cluster sync, peer reachability, or Standalone).
+    - Pillar 4 (Security Subscriptions): `license_info` (Threat Prevention, WildFire, Antivirus validity).
 
     HIGH-FIDELITY TOOLCHAINS:
     - Forwarding & Policy Divergence Analysis: `test_routing_fib` + `test_security_policy` + `test_nat_policy` + `get_live_config` (Reconciles packet path intent, FIB forwarding next-hops, and NAT translations against active rulebase).
@@ -191,6 +195,8 @@ neo:
     | **Compute & CPU** | `<Load average / vCPU count (Idle %)>` | [NORMAL | CAUTION | CRITICAL] | `<Core daemons status>` |
     | **Memory & Swap** | `<Used / Total (Percentage)>` | [NORMAL | CAUTION | CRITICAL] | `<Active swap status>` |
     | **Storage Volumes** | `<Log, Root, and Config partition % used>` | [NORMAL | CAUTION | CRITICAL] | `<Storage capacity trajectory>` |
+    | **Dataplane Sessions** | `<Active / Max Capacity (% Used)>` | [NORMAL | CAUTION | CRITICAL] | `<Session table headroom and allocation>` |
+    | **High Availability** | `<Active / Passive / Standalone (Sync state)>` | [NORMAL | CAUTION | CRITICAL] | `<Cluster synchronization and peer reachability>` |
 
     #### Findings & Observations
     Enumerate genuine operational deviations, resource contentions, or degraded services.

@@ -24,6 +24,7 @@ class ToolKeeper:
         # The registry path should prioritize the project-wide config/ directory
         self.registry_path = self._resolve_path()
         self.commands = self._load_yaml()
+        self._tray_cache = {}
         
     def _resolve_path(self):
         """Resolves the path to commands.yaml, prioritizing the project config/ directory."""
@@ -112,6 +113,9 @@ class ToolKeeper:
         Returns:
             list[callable]: List of pure Python functions ready for Gemini.
         """
+        if active_tray in self._tray_cache:
+            return list(self._tray_cache[active_tray])
+
         tools = []
         
         # Rule 1: Always include the Pivot Tool (summon_toolkit)
@@ -172,7 +176,8 @@ class ToolKeeper:
                 if func:
                     tools.append(func)
                     
-        # Verification Log
+        # Verification Log and Cache Store
+        self._tray_cache[active_tray] = list(tools)
         logger.info(f"[TOOLS] Loaded Tray '{active_tray}': {len(tools)} tools.")
         return tools
 

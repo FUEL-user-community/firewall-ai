@@ -443,7 +443,7 @@ class CoreBrain:
             tools=self.tools
         )
 
-        all_tools = self.keeper.get_tools("#core")
+        all_tools = self.tools or self.keeper.get_tools("#core")
         manifest_str = ", ".join([t.__name__ for t in all_tools])
         effective_mode = target_mode or "default"
         base_config = get_generation_config(target_mode=effective_mode)
@@ -819,19 +819,7 @@ class CoreBrain:
         turn: int,
         **kwargs
     ) -> str:
-        """Logs cognitive trace audit and generates the final structured investigation report."""
-        try:
-            from core.pipeline.cognitive_trace import CognitiveTraceLogger
-            trace_logger = CognitiveTraceLogger()
-            trace_logger.log_trace(
-                state.trace_id,
-                kwargs.get('target_mode', state.target_mode),
-                state.investigation_trace,
-                turn + 1
-            )
-        except Exception as trace_err:
-            logger.debug(f"[{state.trace_id}] [TRACE] Cognitive trace logging skipped: {trace_err}")
-
+        """Generates the final structured investigation report."""
         state.emit("Building your report...")
         final_text = self.synthesizer.synthesize_final(response, state.trace_id)
 

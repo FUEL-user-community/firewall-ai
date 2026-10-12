@@ -182,13 +182,14 @@ def _discover_virtual_router(client) -> Optional[str]:
             res_xml = client.fw.xapi.xml_result()
         else:
             res_xml = None
-            if res_xml is not None:
-                root = res_xml if hasattr(res_xml, "findall") else fromstring(str(res_xml))
-                for entry in root.findall(".//entry"):
-                    name = entry.get("name")
-                    if name and name.strip():
-                        client._cached_vr = name.strip()
-                        return client._cached_vr
+
+        if res_xml is not None:
+            root = res_xml if hasattr(res_xml, "findall") else fromstring(str(res_xml))
+            for entry in root.findall(".//entry"):
+                name = entry.get("name")
+                if name and name.strip():
+                    client._cached_vr = name.strip()
+                    return client._cached_vr
     except Exception as e:
         logger.debug(f"[PolicyMath] VR auto-discovery via config failed: {e}")
 
