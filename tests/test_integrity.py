@@ -144,7 +144,8 @@ def test_report_never_self_certifies():
     md = generate_incident_markdown("t", "q", "verdict", receipts=[_receipt("system_info", "sw-version: 10.0.12-h3")])
     assert "Zero Hallucination" not in md
     assert "Verified" not in md.split("---")[0]
-    assert "Claim Verification:** Not enforced" in md
+    assert "Claim Verification:** Enforced by code" in md
+    assert "not that it supports the sentence" in md or "no checkable claims" in md
 
 
 def test_report_flags_partial_receipts_and_lists_gaps():

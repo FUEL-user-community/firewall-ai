@@ -12,9 +12,15 @@ FAILURE_PREFIXES = (
     "Tool Error:",
     "ERROR:",
     "Error:",
+    "Error ",
     "Argument validation error",
+    "PDF Extraction Failed",
 )
 IN_TOOL_BLOCK_PREFIX = "ERROR: Security Policy Block"
+
+# Drive reads wrap their payload in a header line. A failure inside the wrapper
+# (e.g. a 403 on a native Google Doc) is still a failure.
+WRAPPER_PREFIXES = ("--- READING SLICE:", "--- READING CSV DATA:")
 
 STATUSES = ("success", "failed", "blocked", "skipped")
 
@@ -36,6 +42,10 @@ def classify_outcome(raw_output: str, blocked_by: str = "") -> str:
         return "blocked"
     if text.startswith(FAILURE_PREFIXES):
         return "failed"
+    if text.startswith(WRAPPER_PREFIXES):
+        body = text.split("\n", 1)[1].lstrip() if "\n" in text else ""
+        if not body or body.startswith(FAILURE_PREFIXES):
+            return "failed"
     return "success"
 
 

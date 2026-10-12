@@ -60,6 +60,7 @@ class ToolResult:
 # =============================================================================
 
 from core.pipeline.outcomes import classify_outcome  # noqa: E402,F401  (re-export)
+from core.pipeline.evidence import step_header  # noqa: E402
 
 
 # =============================================================================
@@ -95,6 +96,7 @@ class ToolExecutor:
         drive_call_history: dict,
         turn: int,
         thought_signatures: list,
+        step_number: Optional[int] = None,
     ) -> ToolResult:
         """
         Process a single function_call part through the full pipeline:
@@ -195,6 +197,10 @@ class ToolExecutor:
 
         # --- 6. PII SCRUB + RESPONSE BUILDING ---
         scrubbed = scrub(str(result)) if result is not None else ""
+        if step_number is not None:
+            # Same numbering as the report's receipt table, so the model can cite [Step N].
+            status = classify_outcome(str(result) if result is not None else "", blocked_by if result else "")
+            scrubbed = f"{step_header(step_number, status)}\n{scrubbed}"
         response_part = genai.protos.Part(
             function_response=genai.protos.FunctionResponse(
                 name=fname,

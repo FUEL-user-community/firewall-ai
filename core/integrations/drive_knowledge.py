@@ -150,6 +150,8 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
             # Route tabular CSV documents through structured CSV parser (pages optional)
             if _is_csv_item(actual_name, mime_type):
                 extracted = _extract_csv_summary(service, file_id, panos_version=panos_version, max_rows=20)
+                if str(extracted).startswith(("Error", "PDF Extraction Failed")):
+                    return f"Error: Could not read '{actual_name}': {extracted}"
                 return f"--- READING CSV DATA: {actual_name} ---\n\n{extracted}"
 
             if not start_page or not end_page:
@@ -159,6 +161,8 @@ def query_knowledge_base(action: str, target: str = None, start_page: int = None
                 return "Error: 'pypdf' library is missing. Cannot slice PDF documents. (pip install pypdf)"
             
             extracted = _extract_pdf_pages(service, file_id, int(start_page), int(end_page))
+            if str(extracted).startswith(("Error", "PDF Extraction Failed")):
+                return f"Error: Could not read '{actual_name}' (mimeType {mime_type or 'unknown'}): {extracted}"
             return f"--- READING SLICE: {actual_name} (Pages {start_page}-{end_page}) ---\n\n{extracted}"
             
         except Exception as e:

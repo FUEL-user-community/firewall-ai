@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 from core.pipeline.outcomes import effective_status
+from core.pipeline.evidence import annotate_claims, claim_summary, render_facts, split_facts_block
 
 
 def summarize_receipt_integrity(receipts: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -101,6 +102,14 @@ def generate_incident_markdown(
         # Remove raw XML reasoning tag from verdict
         clean_verdict = clean_verdict[:reasoning_match.start()] + clean_verdict[reasoning_match.end():]
 
+    # Evidence pass: code-computed facts + claim markers (idempotent on brain output)
+    facts_md = ""
+    ev_stats = None
+    if not is_simulation:
+        _, clean_verdict = split_facts_block(clean_verdict)
+        clean_verdict, ev_stats = annotate_claims(clean_verdict, receipts, query)
+        facts_md = render_facts(receipts)
+
     # Check for main structural heading to neatly tuck any preamble thoughts into Scratchpad
     split_pattern = r'(### (?:Compensating Policy Compilation Manifest|Incident Investigation Summary|Executive Health Summary)[\s\S]*)'
     split_match = re.search(split_pattern, clean_verdict, re.IGNORECASE)
@@ -131,8 +140,13 @@ def generate_incident_markdown(
             "</details>\n\n"
         )
         clean_verdict = scratchpad_html + clean_verdict.strip()
+
+    if facts_md:
+        clean_verdict = f"{facts_md}\n\n{clean_verdict}"
     
     integrity = summarize_receipt_integrity(receipts)
+    if ev_stats is not None:
+        integrity["claim_line"] = claim_summary(ev_stats)
 
     lines = [
         f"# Core Defense - {report_title}",
@@ -166,9 +180,14 @@ def generate_incident_markdown(
             tool = r.get("tool", "unknown")
             dur = f"{r.get('duration_ms', 0.0):.1f}ms"
             st = integrity["statuses"][i - 1].upper()
-            args_str = str(r.get("args", {}))
-            if len(args_str) > 40:
-                args_str = args_str[:37] + "..."
+            args = r.get("args", {})
+            key_arg = next(
+                (f"{k}={args[k]}" for k in ("xpath", "target", "cmd", "command") if isinstance(args, dict) and args.get(k)),
+                "",
+            )
+            args_str = key_arg or str(args)
+            if len(args_str) > 90:
+                args_str = args_str[:87] + "..."
             lines.append(f"| {i} | `{tool}` | {dur} | {st} | `{args_str}` |")
         
         lines.append("")

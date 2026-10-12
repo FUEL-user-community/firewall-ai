@@ -53,6 +53,7 @@ def _load_devices_config() -> dict:
 # Standard Absolute Imports
 from core.pipeline.tool_keeper import ToolKeeper
 from core.pipeline.outcomes import classify_outcome
+from core.pipeline.evidence import apply_evidence, render_facts
 from core.safety.circuit_breaker import CircuitBreaker, CircuitBreakerError
 
 # Secrets management -- fail-soft
@@ -156,6 +157,8 @@ class InvestigationState:
     abort_event: Optional[threading.Event] = None
     chunk_callback: Optional[Callable[[str], None]] = None
     receipts: List[Dict[str, Any]] = field(default_factory=list)
+    user_query: str = ""
+    last_facts: str = ""
 
     def emit(self, msg: str) -> None:
         """Emits user status update if a callback is registered."""
@@ -474,7 +477,8 @@ class CoreBrain:
             status_callback=status_callback,
             target_mode=target_mode or "default",
             abort_event=abort_event,
-            chunk_callback=chunk_callback
+            chunk_callback=chunk_callback,
+            user_query=user_query,
         )
         state.emit(f"Connecting to firewall -- {mode} mode...")
         return state
@@ -660,6 +664,7 @@ class CoreBrain:
                     drive_call_history=state.drive_call_history,
                     turn=turn,
                     thought_signatures=thought_signatures,
+                    step_number=len(state.receipts) + 1,
                 )
                 result.tool_parts.append(exec_result.response_part)
                 state.prev_turn_tools.append(exec_result.tool_name)
@@ -779,6 +784,17 @@ class CoreBrain:
         if pivot_directive:
             message_payload.append(pivot_directive)
 
+        # Code-owned facts: re-sent only when new receipts change them.
+        if state.target_mode != "range":
+            facts = render_facts(state.receipts)
+            if facts and facts != state.last_facts:
+                state.last_facts = facts
+                message_payload.append(
+                    "[SYSTEM: COMPUTED FACTS - derived by code from your SUCCESS receipts. "
+                    "These are ground truth: do not contradict them, and cite their [Step N] when you use them. "
+                    "A GAP line means that data is UNKNOWN, not absent.]\n" + facts
+                )
+
         # Probe Ceiling Guard: Enforce graceful synthesis before hitting turn limits
         ceiling_applied = False
         if state.target_mode == "range" and turn >= RANGE_PROBE_LIMIT - 1:
@@ -829,6 +845,13 @@ class CoreBrain:
         # Enforce strict JSON schema for range simulation mode
         if state.target_mode == "range":
             final_text = self._enforce_range_schema(final_text, state.trace_id)
+        else:
+            # Code owns the facts and marks every claim not backed by a SUCCESS receipt.
+            try:
+                final_text, ev_stats = apply_evidence(final_text, state.receipts, state.user_query)
+                logger.info(f"[{state.trace_id}] [EVIDENCE] {ev_stats}")
+            except Exception as ev_err:
+                logger.warning(f"[{state.trace_id}] [EVIDENCE] Annotation skipped: {ev_err}")
 
         state.emit_chunk(final_text)
         return final_text
