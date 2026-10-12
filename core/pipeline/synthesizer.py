@@ -136,6 +136,11 @@ class ResponseSynthesizer:
                 tool_config={"function_calling_config": {"mode": "NONE"}}
             )
 
+        # If in Advisory mode:
+        if target_mode == "advisory":
+            if len(clean_text) >= 20:
+                return None
+
         # Standard / Investigate mode: Check if report has substance and structure
         is_deep_investigation = False
         user_q_str = str(history[0]) if history else ""

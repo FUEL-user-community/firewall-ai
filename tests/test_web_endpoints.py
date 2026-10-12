@@ -40,6 +40,8 @@ def test_static_index_html():
     assert 'id="input"' in res_index.text
     assert 'id="hitlTextPopup"' in res_index.text
     assert 'id="perimeterStatusChip"' in res_index.text
+    assert 'id="btnModeDiag"' in res_index.text
+    assert 'id="btnModeAdvisor"' in res_index.text
 
 
 def test_static_range_html():
@@ -61,6 +63,9 @@ def test_static_js_and_css_assets():
     assert "function esc" in res_app.text
     assert "function showToast" in res_app.text
     assert "function toggleReceiptsDrawer" in res_app.text
+    assert "function bindModeSelector" in res_app.text
+    assert "function setMode" in res_app.text
+    assert "function renderPostReportPrompt" in res_app.text
 
     res_range = client.get("/range.js")
     assert res_range.status_code == 200
@@ -73,6 +78,9 @@ def test_static_js_and_css_assets():
     assert res_css.status_code == 200
     assert "body" in res_css.text
     assert "toast-container" in res_css.text
+    assert "mode-selector-bar" in res_css.text
+    assert "post-report-prompt" in res_css.text
+    assert "action-chip" in res_css.text
 
 
 def test_active_telemetry_endpoints(ensure_auth_key):

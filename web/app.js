@@ -67,6 +67,7 @@ const state = {
 
 let busy = false;
 let currentFilter = 'all';
+let currentMode = 'diagnostic';
 
 // ═══════════════════════════════════════════════════════
 // Initialization
@@ -80,6 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
     bindKeyboardShortcuts();
     checkHealth();
     bindGeminiFramework();
+    bindModeSelector();
     bindCanvasControls();
     bindResizeHandle();
 
@@ -716,6 +718,9 @@ function sendMessage(text) {
     busy = true;
     updateSendBtnState();
 
+    const existingPrompt = document.querySelector('.post-report-prompt');
+    if (existingPrompt) existingPrompt.remove();
+
     const input = document.getElementById('input');
     if (input) {
         input.value = '';
@@ -726,7 +731,11 @@ function sendMessage(text) {
     if (hero) hero.style.display = 'none';
 
     addMsg('user', text);
-    showStatus('Compiling nodal telemetry and evaluating policy paths...');
+    if (currentMode === 'advisory') {
+        showStatus('Consulting PAN-OS knowledge base and synthesizing architecture advisory...');
+    } else {
+        showStatus('Compiling nodal telemetry and evaluating policy paths...');
+    }
 
     const key = getAuthKey();
     let currentReceipts = [];
@@ -743,14 +752,15 @@ function sendMessage(text) {
         },
         body: JSON.stringify({
             message: text,
-            device: selectedDevice
+            device: selectedDevice,
+            mode: currentMode
         })
     })
     .then(res => {
         if (!res.ok) {
             return res.json().catch(() => ({})).then(errData => {
                 const msg = errData.error || errData.detail || `HTTP ${res.status}: ${res.statusText}`;
-                finish(`[ERROR] ${msg}`, [], '');
+                finish(`[ERROR] ${msg}`, [], '', currentMode);
             });
         }
         const reader = res.body.getReader();
@@ -759,7 +769,7 @@ function sendMessage(text) {
 
         function read() {
             reader.read().then(({ done, value }) => {
-                if (done) return finish('', currentReceipts, currentTraceId);
+                if (done) return finish('', currentReceipts, currentTraceId, currentMode);
 
                 buf += decoder.decode(value, { stream: true });
                 const lines = buf.split('\n');
@@ -783,14 +793,14 @@ function sendMessage(text) {
                                 currentTraceId = d.trace_id;
                                 lastTraceId = d.trace_id;
                             }
-                            return finish(d.content, currentReceipts, currentTraceId);
+                            return finish(d.content, currentReceipts, currentTraceId, d.mode || currentMode);
                         } else if (d.type === 'done') {
                             if (d.trace_id) {
                                 currentTraceId = d.trace_id;
                                 lastTraceId = d.trace_id;
                             }
                         } else if (d.type === 'error') {
-                            return finish('[ERROR] ' + d.content);
+                            return finish('[ERROR] ' + d.content, [], currentTraceId, currentMode);
                         }
                     } catch (_) {}
                 }
@@ -799,10 +809,10 @@ function sendMessage(text) {
         }
         read();
     })
-    .catch(err => finish('[ERROR] Connection error: ' + err.message));
+    .catch(err => finish('[ERROR] Connection error: ' + err.message, [], '', currentMode));
 }
 
-function finish(text, receipts = [], traceId = '') {
+function finish(text, receipts = [], traceId = '', mode = currentMode) {
     removeStatus();
     if (text) {
         const payload = extractRangePayload(text);
@@ -814,7 +824,10 @@ function finish(text, receipts = [], traceId = '') {
                 payload.drops ?? 0
             );
         }
-        addMsg('agent', text, { receipts, traceId });
+        addMsg('agent', text, { receipts, traceId, mode });
+        if (!text.startsWith('[ERROR]')) {
+            renderPostReportPrompt(mode);
+        }
     }
     busy = false;
     updateSendBtnState();
@@ -865,6 +878,9 @@ function addMsg(role, text, metadata = {}) {
     } else if (text && text.startsWith('[ERROR]')) {
         typeClass = 'msg-crit';
         speakerPrefix = 'SYSTEM ERROR';
+    } else if (metadata.mode === 'advisory') {
+        typeClass = 'msg-agent msg-advisory';
+        speakerPrefix = 'ADVISOR';
     }
 
     entry.className = `msg ${typeClass}`;
@@ -923,7 +939,7 @@ function addMsg(role, text, metadata = {}) {
         <div class="msg-header">
             <span class="msg-author">${speakerPrefix}</span>
         </div>
-        <div class="msg-body">${formatMsgText(text)}</div>
+        <div class="msg-content msg-body">${formatMsgText(text)}</div>
         ${receiptsHtml}
     `;
 
@@ -1054,6 +1070,9 @@ function bindGeminiFramework() {
 }
 
 function resetToZeroState() {
+    const existingPrompt = document.querySelector('.post-report-prompt');
+    if (existingPrompt) existingPrompt.remove();
+
     const msgs = document.getElementById('messages');
     if (msgs) {
         msgs.innerHTML = `
@@ -1065,6 +1084,7 @@ function resetToZeroState() {
             </div>
         `;
     }
+    setMode('diagnostic');
     const input = document.getElementById('input');
     if (input) {
         input.value = '';
@@ -1073,7 +1093,116 @@ function resetToZeroState() {
     }
     updateSendBtnState();
     loadPreflightGraph();
-    showToast('Workstation reset', 'info');
+    showToast('Workstation reset to baseline', 'info');
+}
+
+function bindModeSelector() {
+    const btnDiag = document.getElementById('btnModeDiag');
+    const btnAdvisor = document.getElementById('btnModeAdvisor');
+
+    if (btnDiag) {
+        btnDiag.addEventListener('click', () => {
+            setMode('diagnostic');
+            showToast('Diagnostic Engine activated (Live Telemetry)', 'info');
+        });
+    }
+    if (btnAdvisor) {
+        btnAdvisor.addEventListener('click', () => {
+            setMode('advisory');
+            showToast('Architecture Advisor activated (Knowledge Base Grounded)', 'info');
+        });
+    }
+}
+
+function setMode(mode) {
+    if (mode !== 'diagnostic' && mode !== 'advisory') mode = 'diagnostic';
+    currentMode = mode;
+
+    const btnDiag = document.getElementById('btnModeDiag');
+    const btnAdvisor = document.getElementById('btnModeAdvisor');
+    const input = document.getElementById('input');
+    const disclaimer = document.querySelector('.gemini-input-disclaimer');
+
+    if (btnDiag) {
+        btnDiag.classList.toggle('active', mode === 'diagnostic');
+    }
+    if (btnAdvisor) {
+        btnAdvisor.classList.toggle('active', mode === 'advisory');
+    }
+
+    if (input) {
+        if (mode === 'advisory') {
+            input.placeholder = 'Ask architectural questions, design migration strategy, or consult best practices...';
+        } else {
+            input.placeholder = 'Simulate attack vector, verify FIB route, or audit policy...';
+        }
+    }
+
+    if (disclaimer) {
+        if (mode === 'advisory') {
+            disclaimer.innerHTML = 'Architecture Advisor &bull; Knowledge Base Grounded &bull; Physical Tools Quarantined';
+        } else {
+            disclaimer.innerHTML = 'PAN-OS Grounded &bull; Zero-Turn Digital Twin &bull; Evidence Engine Verified';
+        }
+    }
+}
+
+function renderPostReportPrompt(lastMode) {
+    const existing = document.querySelector('.post-report-prompt');
+    if (existing) existing.remove();
+
+    const messages = document.getElementById('messages');
+    if (!messages) return;
+
+    const promptDiv = document.createElement('div');
+    promptDiv.className = 'post-report-prompt';
+
+    const isAdvisor = lastMode === 'advisory';
+    promptDiv.innerHTML = `
+        <span class="post-report-label">Next Action:</span>
+        <button type="button" class="action-chip chip-diag" id="chipContinueDiag" title="${isAdvisor ? 'Switch to live telemetry diagnostics' : 'Continue live telemetry investigation'}">
+            <span class="mode-led led-green"></span> ${isAdvisor ? 'Switch to Diagnostic Mode' : 'Continue Diagnosis'}
+        </button>
+        <button type="button" class="action-chip chip-advisor" id="chipSwitchAdvisor" title="${isAdvisor ? 'Continue architectural consultation' : 'Switch to Architecture Advisor with Knowledge Base'}">
+            <span class="mode-led led-blue"></span> ${isAdvisor ? 'Continue Consultation' : 'Switch to Advisor Mode'}
+        </button>
+        <button type="button" class="action-chip chip-stop" id="chipStopSession" title="Clear diagnostic session">
+            Stop &amp; Clear
+        </button>
+    `;
+
+    messages.appendChild(promptDiv);
+    scrollChatToBottom();
+
+    const chipDiag = document.getElementById('chipContinueDiag');
+    const chipAdv = document.getElementById('chipSwitchAdvisor');
+    const chipStop = document.getElementById('chipStopSession');
+
+    if (chipDiag) {
+        chipDiag.addEventListener('click', () => {
+            setMode('diagnostic');
+            showToast(isAdvisor ? 'Switched to Diagnostic Engine' : 'Ready for further diagnostic queries', 'info');
+            const input = document.getElementById('input');
+            if (input) input.focus();
+            promptDiv.remove();
+        });
+    }
+
+    if (chipAdv) {
+        chipAdv.addEventListener('click', () => {
+            setMode('advisory');
+            showToast(isAdvisor ? 'Continuing Advisor consultation' : 'Switched to Architecture Advisor mode', 'info');
+            const input = document.getElementById('input');
+            if (input) input.focus();
+            promptDiv.remove();
+        });
+    }
+
+    if (chipStop) {
+        chipStop.addEventListener('click', () => {
+            resetToZeroState();
+        });
+    }
 }
 
 function updateSendBtnState() {

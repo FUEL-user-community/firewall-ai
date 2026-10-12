@@ -65,6 +65,7 @@ def _cache_investigation(trace_id: str, query: str, verdict: str, receipts: list
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="Investigation query or message")
     device: Optional[str] = Field("default", description="Target firewall device alias from devices.yaml")
+    mode: Optional[str] = Field("default", description="Execution mode: 'default', 'investigate', 'diagnostic', or 'advisory'")
 
 class ExportDocRequest(BaseModel):
     trace_id: str = Field(..., min_length=1, description="Trace ID of the investigation to export")
@@ -261,6 +262,7 @@ async def chat(payload: ChatRequest, request: Request):
     
     target_device = (payload.device or "default").strip()
     effective_device = None if target_device in ("all", "default", "") else target_device
+    target_mode = (payload.mode or "default").strip()
 
     async def generate():
         """Stream the investigation response with granular status updates."""
@@ -272,10 +274,13 @@ async def chat(payload: ChatRequest, request: Request):
             def status_callback(msg: str):
                 status_queue.put(msg)
             
-            yield f"data: {json.dumps({'type': 'status', 'content': 'Cartographer compiling nodal graph...'})}\n\n"
-            from core.panos.cartographer import Cartographer
-            cartographer = Cartographer(target_device=effective_device)
-            base_graph_json = cartographer.build_graph()
+            if target_mode == "advisory":
+                base_graph_json = "{}"
+            else:
+                yield f"data: {json.dumps({'type': 'status', 'content': 'Cartographer compiling nodal graph...'})}\n\n"
+                from core.panos.cartographer import Cartographer
+                cartographer = Cartographer(target_device=effective_device)
+                base_graph_json = cartographer.build_graph()
             
             loop = asyncio.get_running_loop()
             result_future = loop.run_in_executor(
@@ -285,6 +290,7 @@ async def chat(payload: ChatRequest, request: Request):
                     user_id="web-user",
                     status_callback=status_callback,
                     target_device=effective_device,
+                    target_mode=target_mode,
                     base_graph_json=base_graph_json,
                     abort_event=abort_event,
                     return_details=True
@@ -338,7 +344,7 @@ async def chat(payload: ChatRequest, request: Request):
 
                     if receipts:
                         yield f"data: {json.dumps({'type': 'receipts', 'content': receipts, 'trace_id': trace_id})}\n\n"
-                    yield f"data: {json.dumps({'type': 'response', 'content': verdict, 'trace_id': trace_id})}\n\n"
+                    yield f"data: {json.dumps({'type': 'response', 'content': verdict, 'trace_id': trace_id, 'mode': target_mode})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'trace_id': trace_id})}\n\n"
             finally:
                 abort_event.set()

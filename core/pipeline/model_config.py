@@ -46,6 +46,7 @@ PRICE_PER_M_OUTPUT = 10.00
 THINKING_LEVEL_INVESTIGATE = "high"
 THINKING_LEVEL_DIAGNOSTIC = "medium"
 THINKING_LEVEL_RANGE = "medium"
+THINKING_LEVEL_ADVISORY = "high"
 
 # Investigation keyword triggers — word boundaries (\b) prevent false positives
 # (e.g. 'fiber' matching 'fib', 'download' matching 'down', 'history' matching 'to').
@@ -81,15 +82,17 @@ RANGE_PROBE_LIMIT = 7
 
 def classify_mode(query: str, target_mode: str = "default") -> str:
     """
-    Returns 'range', 'investigate', or 'diagnostic' based on target_mode and query intent.
+    Returns 'range', 'advisory', 'investigate', or 'diagnostic' based on target_mode and query intent.
     Routes incident diagnostics and traffic drops to high reasoning ('investigate'),
-    attack range queries to 'range', and baseline health sweeps to 'diagnostic'.
+    attack range queries to 'range', architectural advice to 'advisory',
+    and baseline health sweeps to 'diagnostic'.
 
-    Counter-logic: uses word-boundary regex to prevent false-positive routing on
-    substring matches (e.g., 'fiber' vs 'fib', 'download' vs 'down', 'history' vs 'to').
+    Counter-logic: explicit target_mode overrides regex inference.
     """
     if target_mode == "range":
         return "range"
+    if target_mode == "advisory":
+        return "advisory"
     if not query or not isinstance(query, str):
         return "diagnostic"
 
@@ -111,6 +114,8 @@ def get_thinking_level(mode: str) -> str:
         return THINKING_LEVEL_RANGE
     if mode == "investigate":
         return THINKING_LEVEL_INVESTIGATE
+    if mode == "advisory":
+        return THINKING_LEVEL_ADVISORY
     return THINKING_LEVEL_DIAGNOSTIC
 
 

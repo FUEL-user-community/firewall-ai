@@ -440,16 +440,22 @@ class CoreBrain:
         trace_id = str(uuid.uuid4())[:DEFAULT_TRACE_ID_LEN]
         circuit_breaker = CircuitBreaker(max_steps=30, max_loops=4)
 
+        effective_mode = target_mode or "default"
+        if effective_mode == "advisory":
+            all_available = self.tools or self.keeper.get_all_tools()
+            all_tools = [t for t in all_available if t.__name__ == "query_knowledge_base"]
+        else:
+            all_tools = self.tools or self.keeper.get_tools("#core")
+
+        manifest_str = ", ".join([t.__name__ for t in all_tools])
+
         tool_executor = ToolExecutor(
             policy=self.policy,
             hitl=self.hitl,
             circuit_breaker=circuit_breaker,
-            tools=self.tools
+            tools=all_tools
         )
 
-        all_tools = self.tools or self.keeper.get_tools("#core")
-        manifest_str = ", ".join([t.__name__ for t in all_tools])
-        effective_mode = target_mode or "default"
         base_config = get_generation_config(target_mode=effective_mode)
         if temperature is not None:
             try:
@@ -480,7 +486,10 @@ class CoreBrain:
             chunk_callback=chunk_callback,
             user_query=user_query,
         )
-        state.emit(f"Connecting to firewall -- {mode} mode...")
+        if mode == "advisory":
+            state.emit("Consulting PAN-OS Architecture Advisor...")
+        else:
+            state.emit(f"Connecting to firewall -- {mode} mode...")
         return state
 
     def _build_reality_prompt(self, user_query: str, state: InvestigationState) -> str:
@@ -489,11 +498,23 @@ class CoreBrain:
         mode = classify_mode(user_query)
         thinking_level = get_thinking_level(mode)
 
-        reality_check = (
-            f"REALITY_CHECK: You only have these tools: [{state.manifest_str}].\n"
-            "Verify tool names against this list before every call.\n\n"
-            f"{fleet_context}"
-        )
+        if state.target_mode == "advisory":
+            reality_check = (
+                "REALITY_CHECK: You are operating in ARCHITECTURAL ADVISORY MODE.\n"
+                f"You only have access to official documentation: [{state.manifest_str}].\n"
+                "Live firewall execution tools are disabled for safety.\n"
+                "Deliver strategic guidance, best practices, and candidate configurations.\n"
+                "Ground recommendations in official PAN-OS manuals, hardening blueprints, and CVE data.\n"
+                "Prefix any candidate configuration CLI blocks with:\n"
+                "# [ADVISORY SPECIFICATION - VALIDATE IN LAB BEFORE PRODUCTION COMMIT]\n\n"
+                f"{fleet_context}"
+            )
+        else:
+            reality_check = (
+                f"REALITY_CHECK: You only have these tools: [{state.manifest_str}].\n"
+                "Verify tool names against this list before every call.\n\n"
+                f"{fleet_context}"
+            )
 
         if self.license_context:
             reality_check += f"\n\n{self.license_context}"
@@ -868,6 +889,9 @@ class CoreBrain:
         # Enforce strict JSON schema for range simulation mode
         if state.target_mode == "range":
             final_text = self._enforce_range_schema(final_text, state.trace_id)
+        elif state.target_mode == "advisory":
+            # Advisory mode emits conversational strategic guidance without forcing Device Facts banner
+            pass
         else:
             # Code owns the facts and marks every claim not backed by a SUCCESS receipt.
             try:

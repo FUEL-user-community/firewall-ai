@@ -85,6 +85,14 @@
 
             <!-- Floating Prompt Capsule -->
             <div class="gemini-input-container">
+                <div class="mode-selector-bar">
+                    <button type="button" class="mode-toggle-btn active" id="btnModeDiag" data-mode="diagnostic" title="Forensic Diagnostic Mode with Live Telemetry">
+                        <span class="mode-led led-green"></span> Diagnostic Engine
+                    </button>
+                    <button type="button" class="mode-toggle-btn" id="btnModeAdvisor" data-mode="advisory" title="Architecture Advisor with Knowledge Base Documentation">
+                        <span class="mode-led led-blue"></span> Architecture Advisor
+                    </button>
+                </div>
                 <form class="gemini-input-capsule cli-input-area" id="chatForm">
                     <textarea id="input" name="input" rows="1" placeholder="Simulate attack vector, verify FIB route, or audit policy..." autocomplete="off"></textarea>
                     <button type="submit" id="sendBtn" class="capsule-send-btn cli-send-btn" title="Run Diagnostic (Enter)" aria-label="Send">
