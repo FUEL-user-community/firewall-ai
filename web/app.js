@@ -857,6 +857,7 @@ function updateStatus(text) {
     } else {
         showStatus(text);
     }
+    scrollChatToBottom();
 }
 
 function removeStatus() {
@@ -976,7 +977,13 @@ function formatMsgText(t) {
 
 function scrollChatToBottom() {
     const m = document.getElementById('messages');
-    if (m) requestAnimationFrame(() => m.scrollTop = m.scrollHeight);
+    if (!m) return;
+    requestAnimationFrame(() => {
+        m.scrollTop = m.scrollHeight;
+        setTimeout(() => {
+            if (m) m.scrollTop = m.scrollHeight;
+        }, 60);
+    });
 }
 
 function esc(t) {
