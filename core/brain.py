@@ -834,6 +834,7 @@ class CoreBrain:
 
         # Probe Ceiling Guard: Enforce graceful synthesis before hitting turn limits
         ceiling_applied = False
+        outward_receipts = [r for r in state.receipts if r.get("tool") != "inspect_own_harness"]
         if state.target_mode == "range" and turn >= RANGE_PROBE_LIMIT - 1:
             ceiling_directive = (
                 f"\n\n[SYSTEM: SIMULATION PROBE BUDGET REACHED (Turn {turn+1} of {RANGE_PROBE_LIMIT})]\n"
@@ -844,14 +845,14 @@ class CoreBrain:
             logger.info(f"[{state.trace_id}] [CEILING] Injecting forced Range synthesis directive at Turn {turn+1}")
             message_payload.append(ceiling_directive)
             ceiling_applied = True
-        elif state.target_mode != "range" and len(state.receipts) >= 4:
+        elif state.target_mode != "range" and len(outward_receipts) >= 6:
             ceiling_directive = (
-                f"\n\n[SYSTEM: TRIAD EVIDENCE CEILING REACHED ({len(state.receipts)} tools executed)]\n"
+                f"\n\n[SYSTEM: TRIAD EVIDENCE CEILING REACHED ({len(outward_receipts)} outward tools executed)]\n"
                 "You have gathered sufficient empirical telemetry across forwarding, policy, and appliance state.\n"
                 "Do NOT execute any further tool calls.\n"
                 "Proceed immediately to final synthesis and output your complete executive report NOW."
             )
-            logger.info(f"[{state.trace_id}] [CEILING] Injecting Triad evidence ceiling at Turn {turn+1} ({len(state.receipts)} receipts)")
+            logger.info(f"[{state.trace_id}] [CEILING] Injecting Triad evidence ceiling at Turn {turn+1} ({len(outward_receipts)} outward receipts)")
             message_payload.append(ceiling_directive)
             ceiling_applied = True
         elif turn >= MAX_TURNS - 2:

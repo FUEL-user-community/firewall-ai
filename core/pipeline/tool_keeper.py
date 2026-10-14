@@ -1,9 +1,128 @@
 import os
 import yaml
 import logging
+from pathlib import Path
 from core.panos.ops import execute_operational_command
 
 logger = logging.getLogger(__name__)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def inspect_own_harness(target_paths: str = "tree", start_line: int = 1, end_line: int = 400) -> str:
+    """
+    Inspect the agent's own harness source code and configuration files.
+    Allows inward proprioception of tool definitions, schemas, policies, and pipelines.
+
+    Args:
+        target_paths (str): Either 'tree' (or 'list'/'all') to list all available harness files,
+                            or a comma-separated list of up to 4 relative file paths
+                            (e.g. 'core/panos/config.py,core/panos/ops.py').
+        start_line (int): Starting line number (1-indexed, inclusive) when reading files.
+        end_line (int): Ending line number (1-indexed, inclusive) when reading files.
+    """
+    cmd = str(target_paths or "tree").strip()
+
+    # 1. Manifest / Tree Mode
+    if cmd.lower() in ("tree", "list", "all"):
+        entries = []
+        server_py = _REPO_ROOT / "server.py"
+        if server_py.is_file():
+            entries.append(("server.py", server_py.stat().st_size))
+
+        for base_dir in ("config", "core"):
+            dp = _REPO_ROOT / base_dir
+            if not dp.is_dir():
+                continue
+            for root, dirs, files in os.walk(dp):
+                dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+                for f in sorted(files):
+                    if f.startswith("."):
+                        continue
+                    p_file = Path(root) / f
+                    if p_file.suffix.lower() not in (".py", ".yaml", ".yml"):
+                        continue
+                    low = f.lower()
+                    if "service_account" in low or "running_config" in low or low.startswith(".env"):
+                        continue
+                    rel = p_file.relative_to(_REPO_ROOT).as_posix()
+                    entries.append((rel, p_file.stat().st_size))
+
+        lines = ["--- HARNESS SOURCE TREE ---"]
+        for rel_path, size in sorted(entries, key=lambda x: x[0]):
+            lines.append(f"- {rel_path} ({size:,} bytes)")
+        lines.append(f"\nTotal: {len(entries)} files")
+        lines.append("\nINSTRUCTIONS:")
+        lines.append("To inspect source code, call inspect_own_harness(target_paths='<relative_path>', start_line=1, end_line=200).")
+        return "\n".join(lines)
+
+    # 2. File Read Mode
+    raw_paths = [p.strip() for p in cmd.split(",") if p.strip()]
+    if not raw_paths:
+        return "Error: No target paths specified. Use 'tree' to see available harness files."
+
+    if len(raw_paths) > 4:
+        raw_paths = raw_paths[:4]
+
+    results = []
+    for p in raw_paths:
+        try:
+            cand = (_REPO_ROOT / p).resolve()
+        except Exception as ex:
+            results.append(f"Error: Invalid path '{p}': {ex}")
+            continue
+
+        try:
+            if not cand.is_relative_to(_REPO_ROOT):
+                results.append(f"Error: Access to '{p}' is forbidden (path traversal outside repository root).")
+                continue
+            rel = cand.relative_to(_REPO_ROOT).as_posix()
+        except Exception:
+            results.append(f"Error: Access to '{p}' is forbidden (path resolution error).")
+            continue
+
+        is_allowed_scope = rel == "server.py" or rel.startswith("config/") or rel.startswith("core/")
+        if not is_allowed_scope:
+            results.append(f"Error: Access to '{p}' is forbidden (strictly scoped to config/, core/, and server.py).")
+            continue
+
+        parts = rel.split("/")
+        if "tests" in parts:
+            results.append(f"Error: Access to '{p}' is forbidden (test fixtures are protected).")
+            continue
+
+        low_name = cand.name.lower()
+        if low_name.startswith(".env") or "service_account" in low_name or "running_config" in low_name:
+            results.append(f"Error: Access to '{p}' is forbidden (credential files are protected).")
+            continue
+
+        if cand.suffix.lower() not in (".py", ".yaml", ".yml"):
+            results.append(f"Error: Access to '{p}' is forbidden (only .py, .yaml, and .yml files allowed).")
+            continue
+
+        if not cand.is_file():
+            results.append(f"Error: File not found: '{rel}'")
+            continue
+
+        try:
+            content = cand.read_text(encoding="utf-8", errors="replace")
+            lines = content.splitlines()
+            total_lines = len(lines)
+            s_line = max(1, int(start_line))
+            e_line = min(total_lines, max(s_line, int(end_line)))
+
+            slice_lines = lines[s_line - 1 : e_line]
+            formatted = [
+                f"{idx}: {line}"
+                for idx, line in enumerate(slice_lines, start=s_line)
+            ]
+            header = f"--- HARNESS SOURCE: {rel} (Lines {s_line}-{e_line} of {total_lines}) ---"
+            results.append(header + "\n" + "\n".join(formatted))
+        except Exception as ex:
+            results.append(f"Error reading '{rel}': {ex}")
+
+    return "\n\n".join(results)
+
 
 def summon_toolkit(tray: str):
     """
@@ -118,8 +237,9 @@ class ToolKeeper:
 
         tools = []
         
-        # Rule 1: Always include the Pivot Tool (summon_toolkit)
+        # Rule 1: Always include the Pivot Tool (summon_toolkit) and Harness Proprioception (inspect_own_harness)
         tools.append(summon_toolkit)
+        tools.append(inspect_own_harness)
         
         # Rule 2: Include Native Python Tools
         try:
@@ -189,6 +309,7 @@ class ToolKeeper:
         """
         tools = []
         tools.append(summon_toolkit)
+        tools.append(inspect_own_harness)
 
         try:
             from core.panos.research import search_live_docs

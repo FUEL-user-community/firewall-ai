@@ -497,7 +497,7 @@ def test_cartographer_context_ips_are_known():
 
 
 def test_facts_gap_clean_word_truncation():
-    """Verify that long error messages in GAP facts lines are cleanly truncated without awkward mid-word breaks."""
+    """Verify that GAP facts lines preserve full messages under 240 chars and cleanly truncate longer errors."""
     long_error = (
         "ERROR: Security Policy Block - XPath '/config/devices/entry/deviceconfig/system' is not permitted. "
         "Reason: XPath '/config/devices/entry/deviceconfig/system' is not in the safe configuration allowlist."
@@ -510,6 +510,19 @@ def test_facts_gap_clean_word_truncation():
     }]
     facts = build_facts(receipts)
     assert len(facts) == 1
-    assert "deviceconfig/system'..." in facts[0]
+    # Full message preserved under 240 chars without awkward mid-sentence cut
+    assert "safe configuration allowlist." in facts[0]
     assert "is ." not in facts[0]
+
+    # Verify message over 240 chars truncates cleanly with ellipsis
+    massive_error = long_error + " Extra diagnostic trace details that push total length well past 240 characters."
+    receipts_massive = [{
+        "tool": "get_live_config",
+        "args": {"xpath": "/config/devices/entry/deviceconfig/system"},
+        "raw_output": massive_error,
+        "blocked_by": "policy"
+    }]
+    facts_massive = build_facts(receipts_massive)
+    assert "..." in facts_massive[0]
+    assert facts_massive[0].endswith("Anything that depends on it is UNKNOWN, not absent.")
 

@@ -33,6 +33,7 @@ class PolicyEngine:
 
     READ_TOOLS: Set[str] = {
         "summon_toolkit",
+        "inspect_own_harness",
         "search_live_docs",
         "query_forensic_matrix",
         "query_knowledge_base",

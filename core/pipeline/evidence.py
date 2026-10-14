@@ -314,15 +314,16 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
         first = out_lines[0] if out_lines else "no output"
         detail = _short_args(r.get("args"))
         detail = f" ({detail})" if detail else ""
-        err_msg = first.strip()
-        if len(err_msg) > 160:
-            truncated = err_msg[:157]
+        first_clean = first.strip().rstrip(".")
+        if len(first_clean) > 240:
+            truncated = first_clean[:237]
             if " " in truncated:
                 truncated = truncated.rsplit(" ", 1)[0]
             err_msg = truncated + "..."
-        punct = "" if err_msg.endswith((".", "!", "?")) else "."
+        else:
+            err_msg = first_clean + "."
         facts.append(
-            f"GAP: Step {i} `{r.get('tool', 'unknown')}`{detail} {st.upper()}: {err_msg}{punct} "
+            f"GAP: Step {i} `{r.get('tool', 'unknown')}`{detail} {st.upper()}: {err_msg} "
             "Anything that depends on it is UNKNOWN, not absent."
         )
 

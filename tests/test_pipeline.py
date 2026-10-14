@@ -7,7 +7,7 @@ tool execution caching, prompt assembly, and cognitive trace logging.
 import pytest
 from unittest.mock import MagicMock
 
-from core.pipeline.tool_keeper import ToolKeeper, summon_toolkit
+from core.pipeline.tool_keeper import ToolKeeper, summon_toolkit, inspect_own_harness
 from core.pipeline.tool_schemas import (
     ExecuteOperationalCommandArgs,
     TestSecurityPolicyArgs,
@@ -28,6 +28,7 @@ def test_tool_keeper_loads_single_commands_and_macros():
     tool_names = [t.__name__ for t in tools]
 
     assert "summon_toolkit" in tool_names
+    assert "inspect_own_harness" in tool_names
     # Verify native tools
     assert "test_security_policy" in tool_names
     assert "test_pbf_policy" in tool_names
@@ -42,6 +43,44 @@ def test_summon_toolkit_pivot():
     """Verify summon_toolkit returns expected pivot string."""
     res = summon_toolkit("#net")
     assert "#net" in res
+
+
+def test_inspect_own_harness_manifest_tree():
+    """Verify inspect_own_harness in tree mode lists scoped files without leaking credentials or tests."""
+    manifest = inspect_own_harness("tree")
+    assert "--- HARNESS SOURCE TREE ---" in manifest
+    assert "server.py" in manifest
+    assert "config/commands.yaml" in manifest
+    assert "core/brain.py" in manifest
+    assert ".env" not in manifest
+    assert "tests/" not in manifest
+
+
+def test_inspect_own_harness_file_read():
+    """Verify inspect_own_harness can read allowed files with line numbers."""
+    content = inspect_own_harness("core/pipeline/tool_keeper.py", start_line=1, end_line=15)
+    assert "--- HARNESS SOURCE: core/pipeline/tool_keeper.py (Lines 1-15 of" in content
+    assert "1: import" in content
+
+
+def test_inspect_own_harness_security_blocks():
+    """Verify inspect_own_harness enforces path traversal, credential, and test fixture guardrails."""
+    # Test directory blocked
+    res_test = inspect_own_harness("tests/test_pipeline.py")
+    assert "forbidden" in res_test
+
+    # .env blocked
+    res_env = inspect_own_harness(".env")
+    assert "forbidden" in res_env
+
+    # Path traversal blocked
+    res_trav = inspect_own_harness("../../../etc/passwd")
+    assert "forbidden" in res_trav
+
+    # Non-python/yaml extension blocked
+    res_ext = inspect_own_harness("README.md")
+    assert "forbidden" in res_ext
+
 
 
 # ─── 2. Tool Schemas Tests ────────────────────────────────────────────
