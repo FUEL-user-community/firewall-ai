@@ -460,3 +460,78 @@ def test_build_graph_extracts_virtual_router(mock_client_pool):
     assert mock_client.virtual_router == "lab-vr"
 
 
+def test_build_graph_extracts_permitted_ips_and_saml_profiles(mock_client_pool):
+    """Verify Cartographer extracts management permitted-ips and SAML certificate validation status."""
+    _, mock_client = mock_client_pool
+
+    config_xml = """
+    <response status="success">
+      <result>
+        <config>
+          <devices>
+            <entry name="localhost.localdomain">
+              <deviceconfig>
+                <system>
+                  <permitted-ip>
+                    <entry name="192.168.1.50/32"/>
+                    <entry name="192.168.1.20/32"/>
+                  </permitted-ip>
+                </system>
+              </deviceconfig>
+              <vsys>
+                <entry name="vsys1">
+                  <server-profile>
+                    <saml-idp>
+                      <entry name="okta-idp">
+                        <validate-idp-certificate>yes</validate-idp-certificate>
+                      </entry>
+                      <entry name="legacy-idp">
+                        <validate-idp-certificate>no</validate-idp-certificate>
+                      </entry>
+                    </saml-idp>
+                  </server-profile>
+                </entry>
+              </vsys>
+            </entry>
+          </devices>
+        </config>
+      </result>
+    </response>
+    """
+    system_xml = """
+    <response status="success">
+      <result>
+        <system>
+          <ip-address>192.168.1.254</ip-address>
+          <netmask>255.255.255.0</netmask>
+          <default-gateway>192.168.1.1</default-gateway>
+        </system>
+      </result>
+    </response>
+    """
+
+    def mock_op(cmd):
+        if "running" in cmd:
+            return (200, config_xml)
+        elif "system" in cmd:
+            return (200, system_xml)
+        return (400, "<response status='error'></response>")
+
+    mock_client.execute_op.side_effect = mock_op
+
+    cartographer = Cartographer()
+    graph_json = cartographer.build_graph()
+    data = json.loads(graph_json)
+
+    posture = data["metadata"]["posture"]
+    assert "192.168.1.50/32" in posture["mgmt_permitted_ips"]
+    assert "192.168.1.20/32" in posture["mgmt_permitted_ips"]
+    assert posture["saml_idp_validate_cert"]["okta-idp"] == "yes"
+    assert posture["saml_idp_validate_cert"]["legacy-idp"] == "no"
+
+    nodes_by_id = {n["id"]: n for n in data["nodes"]}
+    assert "interface_mgmt" in nodes_by_id
+    assert "192.168.1.50/32" in nodes_by_id["interface_mgmt"]["permitted_ips"]
+
+
+

@@ -17,6 +17,9 @@ class TestSecurityPolicyArgs(BaseModel):
     destination: str
     port: str
     protocol: str = "6"
+    from_zone: Optional[str] = None
+    to_zone: Optional[str] = None
+    application: Optional[str] = None
     target_device: Optional[str] = None
 
     @field_validator('source', 'destination')

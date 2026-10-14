@@ -109,7 +109,9 @@ def get_device_inventory() -> str:
 
 
 def test_security_policy(source: str = None, destination: str = None, port: str = "443",
-                         protocol: str = "6", target_device: str = None) -> str:
+                         protocol: str = "6", from_zone: Optional[str] = None,
+                         to_zone: Optional[str] = None, application: Optional[str] = None,
+                         target_device: str = None) -> str:
     """
     Simulate a packet against the firewall's Security Policy rulebase.
     Returns which rule would ALLOW or DENY the traffic without sending real packets.
@@ -123,6 +125,9 @@ def test_security_policy(source: str = None, destination: str = None, port: str 
         destination (str): Destination IP address (e.g., '192.168.1.1').
         port (str): Destination port number (e.g., '443', '53', '80').
         protocol (str): IP protocol number. Default '6' (TCP). Use '17' for UDP, '1' for ICMP.
+        from_zone (str): Ingress security zone (e.g., 'inside', 'trust'). Optional.
+        to_zone (str): Egress security zone (e.g., 'outside', 'dmz'). Optional.
+        application (str): Application name (e.g., 'web-browsing', 'ssl'). Optional.
         target_device (str): Device name from fleet inventory (e.g., 'fw-hq'). Uses default if not specified.
     """
     if not source or not str(source).strip():
@@ -140,10 +145,16 @@ def test_security_policy(source: str = None, destination: str = None, port: str 
 
     root = Element("test")
     spm = SubElement(root, "security-policy-match")
+    if from_zone and str(from_zone).strip():
+        SubElement(spm, "from").text = str(from_zone).strip()
+    if to_zone and str(to_zone).strip():
+        SubElement(spm, "to").text = str(to_zone).strip()
     SubElement(spm, "source").text = source_clean
     SubElement(spm, "destination").text = destination_clean
     SubElement(spm, "protocol").text = protocol_clean
     SubElement(spm, "destination-port").text = port_clean
+    if application and str(application).strip():
+        SubElement(spm, "application").text = str(application).strip()
     xml_cmd = tostring(root, encoding="unicode")
 
     logger.info(f"[PolicyMath] Testing: {source_clean} → {destination_clean}:{port_clean}/proto={protocol_clean} on {target_device or 'default'}")

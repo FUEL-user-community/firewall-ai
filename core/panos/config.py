@@ -41,6 +41,9 @@ SAFE_XPATH_PREFIXES = (
     "/config/devices/entry/network/ike",
     "/config/devices/entry/network/profiles",
     "/config/devices/entry/vsys/entry/global-protect",
+    "/config/devices/entry/deviceconfig/system",
+    "/config/devices/entry/vsys/entry/server-profile/saml-idp",
+    "/config/devices/entry/vsys/entry/authentication-profile",
     "/config/shared/rulebase",
     "/config/shared/address",
     "/config/shared/address-group",
@@ -51,6 +54,8 @@ SAFE_XPATH_PREFIXES = (
     "/config/shared/profiles",
     "/config/shared/profile-group",
     "/config/shared/tag",
+    "/config/shared/server-profile/saml-idp",
+    "/config/shared/authentication-profile",
 )
 
 # Sensitive subtrees and keyword fragments strictly blocked from retrieval (C2)

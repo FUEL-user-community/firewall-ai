@@ -355,6 +355,15 @@ class Cartographer:
         mgmt_gateway = sys_info.get("default-gateway")
         mgmt_net = None
         overlap_interfaces: List[str] = []
+        mgmt_permitted_ips = [
+            e.get("name").strip()
+            for e in root.findall(".//deviceconfig/system/permitted-ip/entry")
+            if e.get("name") and e.get("name").strip()
+        ]
+        saml_profiles = {
+            e.get("name"): (e.findtext("validate-idp-certificate") or "no").strip()
+            for e in root.findall(".//server-profile/saml-idp/entry") if e.get("name")
+        }
 
         if mgmt_ip and mgmt_netmask:
             try:
@@ -373,7 +382,8 @@ class Cartographer:
                     "type": "management_interface",
                     "ip": mgmt_ip,
                     "netmask": mgmt_netmask,
-                    "gateway": mgmt_gateway
+                    "gateway": mgmt_gateway,
+                    "permitted_ips": mgmt_permitted_ips
                 })
                 seen_node_ids.add(mgt_node_id)
 
@@ -481,6 +491,8 @@ class Cartographer:
             "mgmt_ip": mgmt_ip,
             "mgmt_dataplane_overlap": len(overlap_interfaces) > 0,
             "overlap_interfaces": list(dict.fromkeys(overlap_interfaces)),
+            "mgmt_permitted_ips": mgmt_permitted_ips,
+            "saml_idp_validate_cert": saml_profiles,
             "active_admin_sessions": admin_sessions
         }
 

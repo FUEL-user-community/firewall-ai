@@ -225,6 +225,28 @@ def test_security_policy_requires_source_and_destination():
     assert "destination IP address is required" in res2
 
 
+def test_security_policy_includes_zones_and_application_in_xml(mock_client_pool):
+    """Verify test_security_policy injects from_zone, to_zone, and application into XML when provided."""
+    _, mock_client = mock_client_pool
+    mock_client.execute_op.return_value = (200, "<response status='success'><result/></response>")
+
+    panos_ops.test_security_policy(
+        source="192.168.1.100",
+        destination="192.168.1.1",
+        port="443",
+        protocol="6",
+        from_zone="inside",
+        to_zone="inside",
+        application="web-browsing",
+    )
+    xml_called = mock_client.execute_op.call_args[0][0]
+    assert "<from>inside</from>" in xml_called
+    assert "<to>inside</to>" in xml_called
+    assert "<application>web-browsing</application>" in xml_called
+    assert "<source>192.168.1.100</source>" in xml_called
+    assert "<destination>192.168.1.1</destination>" in xml_called
+
+
 def test_pbf_policy_validation_and_no_match(mock_client_pool):
     """Verify test_pbf_policy validates input and cleanly parses 'No rule matched'."""
     _, mock_client = mock_client_pool

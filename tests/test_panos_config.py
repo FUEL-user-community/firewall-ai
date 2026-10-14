@@ -162,3 +162,18 @@ def test_fetch_running_config_xml_redacts_credentials(mock_client_pool):
     assert "<phash>[REDACTED]</phash>" in res
     assert "$1$secret" not in res
     assert "<rule>allow-all</rule>" in res
+
+
+def test_validate_xpath_allows_system_and_saml_profiles():
+    """Verify safe XPaths include deviceconfig/system and SAML/auth profiles."""
+    for xp in (
+        "/config/devices/entry/deviceconfig/system",
+        "/config/devices/entry/vsys/entry/server-profile/saml-idp",
+        "/config/devices/entry/vsys/entry/authentication-profile",
+        "/config/shared/server-profile/saml-idp",
+        "/config/shared/authentication-profile",
+    ):
+        valid, res = _validate_xpath(xp)
+        assert valid is True
+        assert res == xp
+
