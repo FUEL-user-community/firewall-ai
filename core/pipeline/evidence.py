@@ -45,7 +45,7 @@ _PAGE_RE = re.compile(
     r"\b(?:pp?\.|pages?)\s*(\d{1,4}(?:\s*(?:-|–|,|and|&|to)\s*\d{1,4})*)", re.IGNORECASE
 )
 _IP_RE = re.compile(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3})(?:/\d{1,2})?(?!(?:\.\d|[\d]))")
-_QUOTE_RE = re.compile(r"[\"“]([^\"“”]{20,})[\"”]")
+_QUOTE_RE = re.compile(r'"([^"\n]+)"|“([^”\n]+)”')
 # Recommendations are judgment, not facts: a line that starts with an action verb
 # needs no receipt. Everything else that reads as a statement must cite one.
 _RECOMMENDATION_RE = re.compile(
@@ -416,16 +416,18 @@ def _read_pages_from_receipt(receipt: Dict[str, Any]) -> List[Tuple[int, int]]:
 
 
 def _is_claim_line(stripped: str) -> bool:
-    if not stripped or len(stripped) < 25:
+    stripped = (stripped or "").strip()
+    if not stripped:
+        return False
+    if stripped.rstrip("*_` \t").endswith(":"):
+        return False
+    if len(stripped) < 25:
         return False
     if stripped.startswith(("#", ">", "<", "---", "===", "|:", "| :", "```")):
         return False
     if re.match(r"^\[(?:CRITICAL|CAUTION|NORMAL|ENFORCING)\]\s+", stripped):
         return False
     if re.fullmatch(r"[\s|:\-]+", stripped):
-        return False
-    clean_end = re.sub(r"[\*_`\s]+$", "", stripped)
-    if clean_end.endswith(":") and len(clean_end) < 120:
         return False
     return True
 
@@ -532,7 +534,8 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
             if step < 1 or step > len(receipts):
                 problems.append(f"Step {step} does not exist")
             elif statuses[step - 1] != "success":
-                problems.append(f"Step {step} was {statuses[step - 1].upper()}")
+                if not re.search(r"\b(?:unknown|failed|blocked|error)\b", stripped, re.IGNORECASE):
+                    problems.append(f"Step {step} was {statuses[step - 1].upper()}")
 
         scope_ranges: List[Tuple[int, int]] = []
         step_scoped = [read_ranges[s] for s in cited if s in read_ranges]
@@ -553,7 +556,10 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
             problems.append(f"{label} {', '.join(str(p) for p in unread)} never read")
 
         for qm in _QUOTE_RE.finditer(stripped):
-            fragments = [f for f in re.split(r"\.\.\.|…", qm.group(1)) if len(f.strip()) >= 15]
+            raw_quote = qm.group(1) or qm.group(2) or ""
+            if len(raw_quote.strip()) < 20:
+                continue
+            fragments = [f for f in re.split(r"\.\.\.|…", raw_quote) if len(f.strip()) >= 15]
             missing = [f for f in fragments if _norm(f).strip(" .,;") not in corpus]
             if missing:
                 problems.append("quoted text not found in any receipt")

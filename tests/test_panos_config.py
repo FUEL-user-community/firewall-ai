@@ -88,6 +88,29 @@ def test_get_live_config_success(mock_client_pool):
     assert "ERROR" not in res
 
 
+def test_get_live_config_empty_branch_returns_absent_true(mock_client_pool):
+    """Verify empty XML branch returns absent: true rather than an error."""
+    _, mock_client = mock_client_pool
+    mock_client.fw.xapi.xml_result.return_value = "<response status='success'><result/></response>"
+
+    res = get_live_config("/config/devices/entry/vsys/entry/global-protect")
+    assert "absent: true" in res
+    assert "is empty (not configured on device)" in res
+
+
+def test_validate_xpath_allows_saml_validate_idp_certificate():
+    """Verify validate-idp-certificate is permitted while certificate stores remain blocked."""
+    valid, res = _validate_xpath("/config/devices/entry/vsys/entry/server-profile/saml-idp")
+    assert valid is True
+    assert res == "/config/devices/entry/vsys/entry/server-profile/saml-idp"
+
+    valid, _ = _validate_xpath("/config/shared/certificate")
+    assert valid is False
+
+    valid, _ = _validate_xpath("/config/devices/entry/vsys/entry/certificate")
+    assert valid is False
+
+
 def test_audit_user_id_xml_injection_defense(mock_client_pool):
     """Verify C1: XML injection payloads are properly escaped in audit_user_id."""
     _, mock_client = mock_client_pool

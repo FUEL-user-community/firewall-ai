@@ -534,4 +534,69 @@ def test_build_graph_extracts_permitted_ips_and_saml_profiles(mock_client_pool):
     assert "192.168.1.50/32" in nodes_by_id["interface_mgmt"]["permitted_ips"]
 
 
+def test_build_graph_extracts_global_protect_and_telemetry(mock_client_pool):
+    """Verify Cartographer extracts GlobalProtect portals, gateways, and device telemetry."""
+    _, mock_client = mock_client_pool
+
+    config_xml = """
+    <response status="success">
+      <result>
+        <config>
+          <devices>
+            <entry name="localhost.localdomain">
+              <deviceconfig>
+                <system>
+                  <device-telemetry>
+                    <device-health-performance>yes</device-health-performance>
+                  </device-telemetry>
+                </system>
+              </deviceconfig>
+              <vsys>
+                <entry name="vsys1">
+                  <global-protect>
+                    <global-protect-portal>
+                      <entry name="GP-Portal-External"/>
+                    </global-protect-portal>
+                    <global-protect-gateway>
+                      <entry name="GP-GW-Primary"/>
+                    </global-protect-gateway>
+                  </global-protect>
+                </entry>
+              </vsys>
+            </entry>
+          </devices>
+        </config>
+      </result>
+    </response>
+    """
+    system_xml = """
+    <response status="success">
+      <result>
+        <system>
+          <ip-address>192.168.1.254</ip-address>
+          <netmask>255.255.255.0</netmask>
+          <default-gateway>192.168.1.1</default-gateway>
+        </system>
+      </result>
+    </response>
+    """
+
+    def mock_op(cmd):
+        if "running" in cmd:
+            return (200, config_xml)
+        elif "system" in cmd:
+            return (200, system_xml)
+        return (400, "<response status='error'></response>")
+
+    mock_client.execute_op.side_effect = mock_op
+
+    cartographer = Cartographer()
+    data = json.loads(cartographer.build_graph())
+
+    posture = data["metadata"]["posture"]
+    assert posture["gp_portals"] == ["GP-Portal-External"]
+    assert posture["gp_gateways"] == ["GP-GW-Primary"]
+    assert posture["device_telemetry_configured"] is True
+
+
 

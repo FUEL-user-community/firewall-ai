@@ -364,6 +364,19 @@ class Cartographer:
             e.get("name"): (e.findtext("validate-idp-certificate") or "no").strip()
             for e in root.findall(".//server-profile/saml-idp/entry") if e.get("name")
         }
+        gp_portals = [
+            e.get("name").strip()
+            for e in root.findall(".//global-protect/global-protect-portal/entry")
+            if e.get("name") and e.get("name").strip()
+        ]
+        gp_gateways = [
+            e.get("name").strip()
+            for e in root.findall(".//global-protect/global-protect-gateway/entry")
+            if e.get("name") and e.get("name").strip()
+        ]
+        device_telemetry_enabled = bool(
+            root.findall(".//deviceconfig/system/device-telemetry")
+        )
 
         if mgmt_ip and mgmt_netmask:
             try:
@@ -493,6 +506,9 @@ class Cartographer:
             "overlap_interfaces": list(dict.fromkeys(overlap_interfaces)),
             "mgmt_permitted_ips": mgmt_permitted_ips,
             "saml_idp_validate_cert": saml_profiles,
+            "gp_portals": gp_portals,
+            "gp_gateways": gp_gateways,
+            "device_telemetry_configured": device_telemetry_enabled,
             "active_admin_sessions": admin_sessions
         }
 

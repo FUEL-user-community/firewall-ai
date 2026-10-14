@@ -70,7 +70,8 @@ DISALLOWED_XPATH_KEYWORDS = (
     "bind-password",
     "community",
     "passphrase",
-    "certificate",
+    "config/shared/certificate",
+    "vsys/entry/certificate",
 )
 
 
@@ -168,13 +169,16 @@ def get_live_config(xpath: str, target_device: str = None) -> str:
             client.fw.xapi.get(xpath=clean_xpath)
             result = client.fw.xapi.xml_result()
         if not result:
-            return "Error: No data returned from firewall."
+            return f"# Configuration branch '{clean_xpath}' is empty (not configured on device).\nabsent: true"
 
         # Redact any sensitive child nodes before YAML conversion (M1)
         sanitized_xml = _redact_sensitive_xml(result)
 
         sanitizer = ToxicXmlSanitizer()
-        return sanitizer.convert_string(sanitized_xml)
+        converted = sanitizer.convert_string(sanitized_xml)
+        if not converted or converted.strip() in ("response:\n  result: ''", "response:\n  result: null", "result: ''"):
+            return f"# Configuration branch '{clean_xpath}' is empty (not configured on device).\nabsent: true"
+        return converted
 
     except Exception as e:
         logger.error(f"Error fetching config for '{clean_xpath}': {e}", exc_info=True)

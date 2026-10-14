@@ -276,6 +276,15 @@ def test_tool_keeper_registers_telemetry_snapshot():
     assert "get_telemetry_snapshot" in all_names
 
 
+def test_tool_keeper_registers_execute_operational_command():
+    """Verify execute_operational_command is registered in #core and all_tools catalog."""
+    keeper = ToolKeeper()
+    core_names = [t.__name__ for t in keeper.get_tools("#core")]
+    all_names = [t.__name__ for t in keeper.get_all_tools()]
+    assert "execute_operational_command" in core_names
+    assert "execute_operational_command" in all_names
+
+
 
 
 # ─── 5. Prompt Assembler Tests ────────────────────────────────────────

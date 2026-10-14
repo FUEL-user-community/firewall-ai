@@ -526,3 +526,41 @@ def test_facts_gap_clean_word_truncation():
     assert "..." in facts_massive[0]
     assert facts_massive[0].endswith("Anything that depends on it is UNKNOWN, not absent.")
 
+
+def test_two_short_quotes_on_same_line_do_not_bridge():
+    """Verify that two short quoted words (<20 chars) on the same line do not bridge unquoted prose into false quote."""
+    line = 'At line 73 of core/panos/config.py, "certificate" is in DISALLOWED_XPATH_KEYWORDS [Step 2] and blocked by the substring "certificate".'
+    annotated, stats = annotate_claims(line, RECEIPTS, QUERY)
+    assert "quoted text not found in any receipt" not in annotated
+    assert stats["unverified"] == 0
+    assert stats["cited_ok"] == 1
+
+
+def test_explicit_failure_or_block_report_is_exempt_from_unverified():
+    """Verify that reporting a step failed or was blocked is not marked [UNVERIFIED: Step N was FAILED/BLOCKED]."""
+    line_blocked = "- Permitted IPs: UNKNOWN (Step 9 was blocked by policy) [Step 9]."
+    annotated_b, stats_b = annotate_claims(line_blocked, RECEIPTS, QUERY)
+    assert "UNVERIFIED" not in annotated_b
+    assert stats_b["cited_ok"] == 1
+    assert stats_b["unverified"] == 0
+
+    line_failed = "- Threat feed retrieval failed in Step 6 [Step 6]."
+    annotated_f, stats_f = annotate_claims(line_failed, RECEIPTS, QUERY)
+    assert "UNVERIFIED" not in annotated_f
+    assert stats_f["cited_ok"] == 1
+    assert stats_f["unverified"] == 0
+
+
+def test_long_header_ending_with_colon_is_not_claim():
+    """Verify that long numbered/bulleted section headers ending with a colon (>120 chars) are exempt from claim checks."""
+    header = (
+        "2. **Blindspot 2 — core/panos/cartographer.py (Missing GlobalProtect and Telemetry Extraction "
+        "Required for CVE-2024-3400 / CVE-2020-2021 Security Posture Auditing):**"
+    )
+    assert len(header) > 120
+    annotated, stats = annotate_claims(header, [], "")
+    assert "UNCITED" not in annotated
+    assert stats["claims"] == 0
+    assert stats["uncited"] == 0
+
+

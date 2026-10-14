@@ -845,7 +845,7 @@ class CoreBrain:
             logger.info(f"[{state.trace_id}] [CEILING] Injecting forced Range synthesis directive at Turn {turn+1}")
             message_payload.append(ceiling_directive)
             ceiling_applied = True
-        elif state.target_mode != "range" and len(outward_receipts) >= 6:
+        elif state.target_mode != "range" and len(outward_receipts) >= 14:
             ceiling_directive = (
                 f"\n\n[SYSTEM: TRIAD EVIDENCE CEILING REACHED ({len(outward_receipts)} outward tools executed)]\n"
                 "You have gathered sufficient empirical telemetry across forwarding, policy, and appliance state.\n"

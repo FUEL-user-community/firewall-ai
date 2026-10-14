@@ -263,6 +263,7 @@ class ToolKeeper:
             from core.panos.ops import get_device_inventory, get_telemetry_snapshot
             tools.append(get_device_inventory)
             tools.append(get_telemetry_snapshot)
+            tools.append(execute_operational_command)
         except Exception as e:
             logger.warning(f"[TOOLS] Device Inventory/Telemetry Init Error: {e}")
 
@@ -330,6 +331,7 @@ class ToolKeeper:
             from core.panos.ops import get_device_inventory, get_telemetry_snapshot
             tools.append(get_device_inventory)
             tools.append(get_telemetry_snapshot)
+            tools.append(execute_operational_command)
         except Exception as e:
             logger.warning(f"[TOOLS] Device Inventory/Telemetry Init Error: {e}")
 
