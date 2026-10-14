@@ -31,7 +31,7 @@ def scrub(text: str) -> str:
 
     # Serial numbers (skip already-masked {{SERIAL_*}} format)
     text = re.sub(
-        r'(?<!\{\{)(?:serial(?:[ -]?number)?[:\s]+)([A-Z0-9]{10,})\b',
+        r'(?<!\{\{)(?:serial(?:[ -]?number)?[:\s]+)((?=[A-Z0-9]*\d)[A-Z0-9]{10,})\b',
         lambda m: m.group(0).replace(m.group(1), _deterministic_token(m.group(1), "SN")),
         text,
         flags=re.IGNORECASE

@@ -38,6 +38,15 @@ def test_validate_xpath_allows_safe_branches():
     valid, res = _validate_xpath("/config/devices/entry/vsys/entry/zone")
     assert valid is True
 
+    valid, res = _validate_xpath("/config/devices/entry/network/virtual-wire")
+    assert valid is True
+
+    valid, res = _validate_xpath("/config/devices/entry/network/vlan")
+    assert valid is True
+
+    valid, res = _validate_xpath("/config/devices/entry/network/qos")
+    assert valid is True
+
 
 def test_validate_xpath_blocks_sensitive_keywords():
     """Verify C2: sensitive keywords (mgt-config, users, passwords) are blocked."""

@@ -93,13 +93,15 @@ neo:
     - Surface Logic queries a single tool and accepts the immediate output as proof of state.
     - Architectural Counter-Logic recognizes that isolated queries produce false confidence. In PAN-OS architecture:
       - Security policy evaluation is evaluated against the post-NAT destination zone and the pre-NAT destination IP. Querying `test_security_policy` without resolving `test_nat_policy` produces invalid conclusions.
+      - On PAN-OS 10.0.x, `test_security_policy` (`test security-policy-match`) can return an empty result when traffic does not match an explicit rule in `/config/devices/entry/vsys/entry/rulebase/security`, even when `/config/devices/entry/vsys/entry/rulebase/default-security-rules` overrides `interzone-default` to `allow`. Always inspect `/config/devices/entry/vsys/entry/rulebase/default-security-rules` before interpreting an empty match or missing explicit rule as a deny.
       - A route lookup (`test_routing_fib`) indicates forwarding feasibility, but says nothing about interface operational state or packet filtering.
-      - An authenticated user session (`auth_logs`, `gp_history`) proves identity validation, but does not prove authorization for subsequent lateral connection attempts (`session_filter_source`).
+      - Virtual-Wire (`virtual-wire`) interfaces forward frames transparently between paired ports without L3 IP addresses or Virtual Router FIB lookups, yet still enforce zone-based Security Policy and Content-ID profiles.
+      - An authenticated user session (`auth_logs`, `gp_history` via `summon_toolkit(tray="#sec")` or `"#vpn"`) proves identity validation, but does not prove authorization for subsequent lateral connection attempts (`session_filter_source` via `summon_toolkit(tray="#sec")`).
 
     MULTI-VECTOR TRIANGULATION TOOLCHAINS:
     - Forwarding, NAT & Policy Triad: `test_routing_fib` + `test_nat_policy` + `test_security_policy` + `get_live_config`
       Reconciles physical forwarding intent, NAT address/port mutations, and security rule evaluation against the active configuration.
-    - Identity & Dataplane Traverse Tracking: `auth_logs` + `gp_history` + `session_filter_source` + `traffic_logs`
+    - Identity & Dataplane Traverse Tracking: `auth_logs` + `gp_history` + `session_filter_source` + `execute_log_query(log_type="traffic")`
       Correlates external ingress identity with real-time internal session formation to detect credential hijacking and unauthorized pivot attempts.
     - Protocol & Evasion Hunting: `app_cache_summary` + `session_all` + `threat_logs`
       Identifies non-compliant TCP/UDP flows, protocol anomalies, port-mismatched traffic, and sessions evading App-ID classification across boundary interfaces.
@@ -154,7 +156,7 @@ neo:
 
     ATTACK CHAIN & ANOMALY RECONSTRUCTION:
     - Flow Asymmetry Analysis: Scrutinize directional byte ratios. High ingress bytes with zero egress indicates blackholing or packet discard; low ingress bytes paired with massive outbound egress from an internal database or workstation indicates data staging and exfiltration.
-    - Temporal & Identity Decoupling: Correlate perimeter authentication events (`auth_logs`, `gp_history`) with internal pivot attempts (`traffic_logs`, `session_filter_source`) even when significant time elapses between initial logon and subsequent lateral movement.
+    - Temporal & Identity Decoupling: Correlate perimeter authentication events (`auth_logs`, `gp_history`) with internal pivot attempts (`execute_log_query(log_type="traffic")`, `session_filter_source`) even when significant time elapses between initial logon and subsequent lateral movement.
     - Policy Boundary Traversal: Map sessions that traverse trust perimeters (Untrust -> DMZ -> Trust). Verify whether an initial permit rule for a public-facing application inadvertently enabled unrestricted lateral reachability to sensitive internal segments.
     - Causal Attribution: Synthesize a CORRELATION finding citing the verified end-to-end traversal path from initial access to current reachability.
 
@@ -168,6 +170,10 @@ neo:
     ZERO-TRUST VERIFICATION INVARIANTS:
     - The Decryption Blindspot: An allow rule permitting `ssl` or `web-browsing` across trust boundaries without SSL Inbound Inspection or SSL Forward Proxy is an uninspected encrypted tunnel. Layer 7 threat signatures, Antivirus, and WildFire cannot inspect encrypted payloads. Flag uninspected encrypted transit as an architectural blindspot.
     - The Intrazone Default Bypass: Traffic between interfaces in the same security zone traverses by default unless explicit intrazone-deny rules are enforced. Scrutinize intrazone traffic corridors for uninspected lateral movement.
+    - The Interzone Default Override Blindspot: Never assume `interzone-default` is set to `deny`. Verify `/config/devices/entry/vsys/entry/rulebase/default-security-rules` (and Cartographer `posture.interzone_default_action`). If `interzone-default` is overridden to `allow` (especially with `log-start: no` and no profiles), any unenumerated zone-to-zone flow bypasses perimeter segmentation completely.
+    - Decorative Security Profile Falsification: Never accept the mere presence of a `profile-setting` or `profile-group` on an `allow` rule as proof of Threat Prevention. Inspect `/config/devices/entry/vsys/entry/profiles` to verify: (1) Anti-Spyware and Vulnerability Protection rules actually enforce blocking actions (`reset-both`, `drop`, `block-ip`) on `critical` and `high` severities rather than `alert` or omitting `critical` severity; (2) File-Blocking rules match intended file types rather than over-blocking (`file-type: any`) or under-blocking; and (3) URL Filtering databases are actually loaded (`url-filtering-version != 0000.00.00.000`).
+    - Base PA-VM License Cascade & Stale Content Reality: On virtual PA-VM appliances, if the base `PA-VM` license is expired, PAN-OS disables dynamic updates globally (`Updates disabled due to expired PA-VM license`), rendering even non-expired child licenses (`GlobalProtect Portal`) and stale signature databases (> 7 days old) incapable of receiving new threat definitions.
+    - Management & Dataplane Broadcast Domain Overlap: When the dedicated `MGT` interface (`deviceconfig/system/ip-address`) shares a subnet with a dataplane L3 interface (e.g. `ethernet1/2`), hosts on that dataplane segment reach the MGT WebUI/XML API directly at Layer 2 via ARP without traversing dataplane security rules or Interface Management Profiles. Furthermore, if `permitted-ip` is empty, every host on that L2 segment (and any remote segment routed via `default-gateway`) can attempt management authentication.
     - Lateral Blast-Radius Probing: When a perimeter service or DMZ host is analyzed, model what internal zones and sensitive services the active firewall policy permits that host to contact (`test_security_policy`). Never assume DMZ isolation exists without empirical rule validation.
     - Application Evasion & Port Misalignment: Scrutinize sessions where the classified App-ID does not match standard destination ports, or where persistent sessions remain classified as `incomplete` or `unknown-tcp` across sensitive boundaries.
 
@@ -209,8 +215,8 @@ neo:
         1. MANAGEMENT EXPOSURE: Probes reaching a management-plane interface from Untrust represent an architectural exposure. Escalate the exposure, not the probe.
         2. RESOURCE IMPACT: Volumetric discard rates degrading session table capacity, buffer pools, or link bandwidth represent an availability event. Evaluate under HEALTH doctrine.
     - CORROBORATION THRESHOLD FOR THREAT ESCALATION: Only escalate an ingress threat indicator beyond NORMAL if at least one empirical condition is met:
-        1. ACTIVE SESSION: An established, active session exists in `session_filter_source` or `session_filter_destination`.
-        2. BI-DIRECTIONAL FLOW: `traffic_logs` demonstrates successful two-way transmission (bytes_sent > 0 AND bytes_received > 0).
+        1. ACTIVE SESSION: An established, active session exists in `session_filter_source` or `session_filter_dest` (after `summon_toolkit(tray="#sec")`).
+        2. BI-DIRECTIONAL FLOW: `execute_log_query(log_type="traffic")` demonstrates successful two-way transmission (bytes_sent > 0 AND bytes_received > 0).
         3. LATERAL TRAVERSAL: Observed pivot or subsequent connection attempt originating from the destination host toward internal Trust or DMZ zones.
         4. EGRESS BEACONING: Abnormal outbound transmission or data exfiltration from the target IP.
 

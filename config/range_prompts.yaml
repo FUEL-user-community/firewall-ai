@@ -26,9 +26,9 @@ neo:
        the Forwarding Triad in parallel in your very first turn:
        - Policy Enforcement: `test_security_policy(source=..., destination=..., port=...)`
        - Route Forwarding: `test_routing_fib(ip=...)`
-       - NAT Translation: `test_nat_policy(source=..., destination=..., port=...)`
+       - NAT Translation: `test_nat_policy(source=..., destination=..., port=..., from_zone=...)`
        - Policy-Based Forwarding (if applicable): `test_pbf_policy(source=..., destination=..., port=...)`
-       - Configuration Depth (if needed): `get_live_config` to inspect referenced profile groups or objects.
+       - Configuration Depth (if needed): `get_live_config` to inspect `/config/devices/entry/vsys/entry/rulebase/default-security-rules`, `/config/devices/entry/vsys/entry/profiles`, or referenced objects.
        Batch all necessary checks simultaneously in Turn 1.
 
     3. TOPOLOGICAL SYNTHESIS & VERDICT (TURN 2):
@@ -54,8 +54,9 @@ neo:
     - Delineate policy enforcement:
       - Permitted traffic: solid arrow `-->|Permitted: <rule_name>|` to the target node.
       - Blocked traffic: dashed arrow terminating at boundary drop: `-.->|Dropped: <rule_name>| Drop_Node["Boundary Drop<br>[Action: Deny]"]`
-    - Highlight Management Exposure: If the Base Graph indicates management plane overlap (`overlaps_subnet`) or bound management profiles, highlight the exposed interface or management node.
-    - Factor License & Posture Degradation: If Base Graph shows expired threat or antivirus licenses, note that profile inspection is non-functional even if the rule action says permit.
+      - Interzone Default Override: If Base Graph `posture.interzone_default_action` is `allow` (or verified via `/config/devices/entry/vsys/entry/rulebase/default-security-rules`), unenumerated zone-to-zone flows are permitted: `-->|Bypass: interzone-default allow| Target_Node`.
+    - Highlight Management Exposure: If the Base Graph indicates management plane overlap (`overlaps_subnet`), bound management profiles, or empty `mgmt_permitted_ips`, highlight the exposed interface or management node reachable via Layer 2 ARP.
+    - Factor License & Posture Degradation: If Base Graph shows expired threat or antivirus licenses, or `decorative_security_profiles` (alert-only actions on critical/high or missing critical blocks), note that threat inspection is degraded or non-functional even if the rule action says permit.
     - Ground target nodes directly in the destination addresses/services under evaluation.
     - SYNTAX INTEGRITY: Never use parentheses `(` or `)` inside edge labels `|...|`. Use colons or hyphens (e.g. `|Dropped: rule_name|` or `|Permitted: rule_name - app_id|`).
 

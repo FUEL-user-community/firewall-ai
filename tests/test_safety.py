@@ -173,6 +173,10 @@ def test_scrubber_preserves_standard_network_constants():
     assert "[IP_" not in result
     assert "[SN_" in result
 
+    # English phrases like 'serial identifiers' must not be masked
+    prose = "Extract hardware models and serial identifiers from output."
+    assert scrub(prose) == prose
+
 
 # ─── 7. HITL Provider Tests ──────────────────────────────────────────
 

@@ -497,11 +497,7 @@ def execute_operational_command(
         return execute_live_app_analytics(target_device=target_device)
 
     # OPERATIONAL: Execute standard operational command
-    # Enforce actual routing limit to prevent token overflow (M1)
     effective_cmd = cmd.strip()
-    if "show routing route" in effective_cmd and "type" not in effective_cmd and "destination" not in effective_cmd and "count" not in effective_cmd:
-        logger.info("[Ops] Appending count 50 to unbounded routing query to prevent token overflow.")
-        effective_cmd = f"{effective_cmd} count 50"
 
     # Management Plane Protection: Guard against unbounded session dumps (DoS risk on high-throughput firewalls)
     # Counter-logic defense: handle multiple spaces/tabs, empty filter arguments, and word boundaries

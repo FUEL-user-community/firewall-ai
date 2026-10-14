@@ -378,6 +378,18 @@ class Cartographer:
                         edges.append({"source": zone_id, "target": subnet_id, "label": "contains"})
                         seen_edges.add(sub_edge_key)
 
+        # Map virtual-wire bindings between paired interfaces
+        for vw_entry in root.findall(".//network/virtual-wire/entry"):
+            vw_name = vw_entry.get("name", "vwire")
+            i1 = (vw_entry.findtext("interface1") or "").strip()
+            i2 = (vw_entry.findtext("interface2") or "").strip()
+            if i1 and i2:
+                edges.append({
+                    "source": f"subnet_{i1.replace('/', '_').replace('.', '_')}",
+                    "target": f"subnet_{i2.replace('/', '_').replace('.', '_')}",
+                    "label": f"virtual_wire:{vw_name}"
+                })
+
         # 8. Management Interface & Overlap Detection
         mgmt_ip = sys_info.get("ip-address")
         mgmt_netmask = sys_info.get("netmask")

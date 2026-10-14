@@ -40,14 +40,14 @@ def test_execute_operational_command_empty():
     assert "ERROR: [execute_operational_command]" in panos_ops.execute_operational_command(None)
 
 
-def test_execute_operational_command_routing_query_auto_limit(mock_client_pool):
-    """Verify M1: 'show routing route' automatically appends count 50."""
+def test_execute_operational_command_routing_query_clean(mock_client_pool):
+    """Verify 'show routing route' is passed cleanly without illegal count 50."""
     _, mock_client = mock_client_pool
     mock_client.execute_op.return_value = (200, "<response status='success'><result><routes/></result></response>")
 
     panos_ops.execute_operational_command("show routing route")
     called_cmd = mock_client.execute_op.call_args[0][0]
-    assert called_cmd == "show routing route count 50"
+    assert called_cmd == "show routing route"
 
 
 def test_get_telemetry_snapshot_parses_raw_xml(mock_client_pool):

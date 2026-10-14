@@ -144,7 +144,7 @@ def step_header(step: int, status: str) -> str:
 def _short_args(args: Any) -> str:
     if not isinstance(args, dict):
         return ""
-    for key in ("xpath", "target", "cmd", "command"):
+    for key in ("xpath", "target", "cmd", "command", "source", "destination", "ip", "log_type", "filter_query"):
         if args.get(key):
             return f"{key}={args[key]}"
     return ""
@@ -447,8 +447,13 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
     receipts = receipts or []
     statuses = [effective_status(r) for r in receipts]
     ok_raw = {i: _raw(r) for i, (r, st) in enumerate(zip(receipts, statuses), 1) if st == "success"}
+    ok_args = [
+        str(r.get("args") or "")
+        for r, st in zip(receipts, statuses)
+        if st == "success" and r.get("args")
+    ]
     corpus = _norm("\n".join(ok_raw.values()) + "\n" + (query or ""))
-    ip_corpus = "\n".join(ok_raw.values()) + "\n" + (query or "")
+    ip_corpus = "\n".join(list(ok_raw.values()) + ok_args) + "\n" + (query or "")
     known_ips = set(_IP_RE.findall(ip_corpus))
     for cidr in re.findall(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3}/\d{1,2})(?![\d.])", ip_corpus):
         try:

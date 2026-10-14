@@ -652,6 +652,12 @@ def test_build_graph_non_l3_modes_and_enterprise_posture(mock_client_pool):
                     </entry>
                   </aggregate-ethernet>
                 </interface>
+                <virtual-wire>
+                  <entry name="vwire-dmz">
+                    <interface1>ethernet1/2</interface1>
+                    <interface2>ethernet1/3</interface2>
+                  </entry>
+                </virtual-wire>
               </network>
               <vsys>
                 <entry name="vsys1">
@@ -774,6 +780,14 @@ def test_build_graph_non_l3_modes_and_enterprise_posture(mock_client_pool):
     assert posture["threat_update_action"] == "download-only"
     assert "spyware:AlertOnly-Spyware:alert_on_crit_high" in posture["decorative_security_profiles"]
     assert "vulnerability:Weak-Vuln:missing_critical_block" in posture["decorative_security_profiles"]
+
+    # Verify virtual-wire peer edge
+    assert any(
+        e.get("source") == "subnet_ethernet1_2" and
+        e.get("target") == "subnet_ethernet1_3" and
+        e.get("label") == "virtual_wire:vwire-dmz"
+        for e in data["edges"]
+    )
 
 
 

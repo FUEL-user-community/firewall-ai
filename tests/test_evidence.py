@@ -564,3 +564,19 @@ def test_long_header_ending_with_colon_is_not_claim():
     assert stats["uncited"] == 0
 
 
+def test_tested_args_ips_are_credited_in_ip_corpus():
+    """Verify external test IP supplied in tool args is recognized in ip_corpus and not flagged as unverified."""
+    receipts = [{
+        "tool": "test_security_policy",
+        "args": {"source": "192.168.1.50", "destination": "203.0.113.50", "port": 443},
+        "raw_output": "response:\n  result: ''",
+        "status": "success"
+    }]
+    line = "- Probed security policy match to external destination 203.0.113.50 [Step 1]."
+    annotated, stats = annotate_claims(line, receipts, "")
+    assert "203.0.113.50 not found" not in annotated
+    assert "UNVERIFIED" not in annotated
+    assert stats["cited_ok"] == 1
+    assert stats["unverified"] == 0
+
+
