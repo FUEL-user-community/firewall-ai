@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 MAX_AMBIENT_ALERTS = 5
 DEFAULT_TRACE_ID_LEN = 8
-DEFAULT_REQUEST_TIMEOUT = float(os.getenv("GEMINI_REQUEST_TIMEOUT", "60.0"))
+DEFAULT_REQUEST_TIMEOUT = float(os.getenv("GEMINI_REQUEST_TIMEOUT", "180.0"))
 
 # Devices inventory path & mtime-cached loader
 _DEVICES_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "devices.yaml"
@@ -528,17 +528,20 @@ class CoreBrain:
         max_retries: int = 3,
         operation_name: str = "Model Call"
     ) -> Any:
-        """Executes SDK model call with exponential backoff and jitter on 429 Rate Limit errors."""
+        """Executes SDK model call with exponential backoff on 429 Rate Limit and 504 Deadline errors."""
         for attempt in range(max_retries + 1):
             try:
                 return call_fn()
             except Exception as e:
-                is_quota = "429" in str(e) or "Quota exceeded" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
-                if not is_quota or attempt >= max_retries:
+                err_str = str(e)
+                is_quota = "429" in err_str or "Quota exceeded" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                is_timeout = "504" in err_str or "Deadline" in err_str or "DEADLINE_EXCEEDED" in err_str or "timed out" in err_str.lower()
+                if (not is_quota and not is_timeout) or attempt >= max_retries:
                     raise
                 wait = (2 ** attempt) + random.uniform(0, 1)
+                reason = "rate-limited" if is_quota else "deadline/timeout (504)"
                 logger.warning(
-                    f"[QUOTA] {GEMINI_MODEL} rate-limited during {operation_name} "
+                    f"[RETRY] {GEMINI_MODEL} {reason} during {operation_name} "
                     f"(attempt {attempt + 1}/{max_retries}). Retrying in {wait:.1f}s..."
                 )
                 time.sleep(wait)
