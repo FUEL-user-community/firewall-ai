@@ -599,4 +599,182 @@ def test_build_graph_extracts_global_protect_and_telemetry(mock_client_pool):
     assert posture["device_telemetry_configured"] is True
 
 
+def test_build_graph_non_l3_modes_and_enterprise_posture(mock_client_pool):
+    """Verify Cartographer extracts non-L3 modes and universal enterprise security posture."""
+    _, mock_client = mock_client_pool
+
+    config_xml = """
+    <response status="success">
+      <result>
+        <config>
+          <devices>
+            <entry name="localhost.localdomain">
+              <deviceconfig>
+                <system>
+                  <update-schedule>
+                    <threats>
+                      <recurring>
+                        <weekly>
+                          <action>download-only</action>
+                        </weekly>
+                      </recurring>
+                    </threats>
+                  </update-schedule>
+                </system>
+              </deviceconfig>
+              <network>
+                <interface>
+                  <ethernet>
+                    <entry name="ethernet1/1">
+                      <layer3>
+                        <ip>
+                          <entry name="10.0.0.1/24"/>
+                        </ip>
+                      </layer3>
+                    </entry>
+                    <entry name="ethernet1/2">
+                      <virtual-wire>
+                        <units>
+                          <entry name="ethernet1/2.100"/>
+                        </units>
+                      </virtual-wire>
+                    </entry>
+                    <entry name="ethernet1/3">
+                      <layer2/>
+                    </entry>
+                    <entry name="ethernet1/4">
+                      <tap/>
+                    </entry>
+                  </ethernet>
+                  <aggregate-ethernet>
+                    <entry name="ae1">
+                      <ha/>
+                    </entry>
+                  </aggregate-ethernet>
+                </interface>
+              </network>
+              <vsys>
+                <entry name="vsys1">
+                  <zone>
+                    <entry name="l3-trust">
+                      <network>
+                        <layer3>
+                          <member>ethernet1/1</member>
+                        </layer3>
+                      </network>
+                    </entry>
+                    <entry name="vw-zone">
+                      <network>
+                        <virtual-wire>
+                          <member>ethernet1/2</member>
+                        </virtual-wire>
+                      </network>
+                    </entry>
+                    <entry name="l2-zone">
+                      <network>
+                        <layer2>
+                          <member>ethernet1/3</member>
+                        </layer2>
+                      </network>
+                    </entry>
+                    <entry name="tap-zone">
+                      <network>
+                        <tap>
+                          <member>ethernet1/4</member>
+                        </tap>
+                      </network>
+                    </entry>
+                  </zone>
+                  <rulebase>
+                    <default-security-rules>
+                      <rules>
+                        <entry name="interzone-default">
+                          <action>deny</action>
+                        </entry>
+                      </rules>
+                    </default-security-rules>
+                  </rulebase>
+                  <profiles>
+                    <spyware>
+                      <entry name="AlertOnly-Spyware">
+                        <rules>
+                          <entry name="rule1">
+                            <severity>
+                              <member>critical</member>
+                              <member>high</member>
+                            </severity>
+                            <action>
+                              <alert/>
+                            </action>
+                          </entry>
+                        </rules>
+                      </entry>
+                    </spyware>
+                    <vulnerability>
+                      <entry name="Weak-Vuln">
+                        <rules>
+                          <entry name="rule1">
+                            <severity>
+                              <member>low</member>
+                            </severity>
+                            <action>
+                              <drop/>
+                            </action>
+                          </entry>
+                        </rules>
+                      </entry>
+                    </vulnerability>
+                  </profiles>
+                </entry>
+              </vsys>
+            </entry>
+          </devices>
+        </config>
+      </result>
+    </response>
+    """
+    system_xml = """
+    <response status="success">
+      <result>
+        <system>
+          <ip-address>192.168.1.254</ip-address>
+          <netmask>255.255.255.0</netmask>
+          <default-gateway>192.168.1.1</default-gateway>
+        </system>
+      </result>
+    </response>
+    """
+
+    def mock_op(cmd):
+        if "running" in cmd:
+            return (200, config_xml)
+        elif "system" in cmd:
+            return (200, system_xml)
+        return (400, "<response status='error'></response>")
+
+    mock_client.execute_op.side_effect = mock_op
+
+    cartographer = Cartographer()
+    data = json.loads(cartographer.build_graph())
+
+    posture = data["metadata"]["posture"]
+    assert posture["interface_modes"]["ethernet1/1"] == "layer3"
+    assert posture["interface_modes"]["ethernet1/2"] == "virtual-wire"
+    assert posture["interface_modes"]["ethernet1/2.100"] == "virtual-wire"
+    assert posture["interface_modes"]["ethernet1/3"] == "layer2"
+    assert posture["interface_modes"]["ethernet1/4"] == "tap"
+    assert posture["interface_modes"]["ae1"] == "ha"
+
+    assert posture["zone_modes"]["l3-trust"] == "layer3"
+    assert posture["zone_modes"]["vw-zone"] == "virtual-wire"
+    assert posture["zone_modes"]["l2-zone"] == "layer2"
+    assert posture["zone_modes"]["tap-zone"] == "tap"
+
+    assert posture["interzone_default_action"] == "deny"
+    assert posture["threat_update_action"] == "download-only"
+    assert "spyware:AlertOnly-Spyware:alert_on_crit_high" in posture["decorative_security_profiles"]
+    assert "vulnerability:Weak-Vuln:missing_critical_block" in posture["decorative_security_profiles"]
+
+
+
 

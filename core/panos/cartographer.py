@@ -231,13 +231,17 @@ class Cartographer:
 
         # 4. Data Structures
         interfaces: Dict[str, List[str]] = {}
+        interface_modes: Dict[str, str] = {}
         interface_mgmt_profiles: Dict[str, str] = {}
         zones: Dict[str, List[str]] = {}
+        zone_modes: Dict[str, str] = {}
 
         # 5. Extract Interfaces & IPs across all PAN-OS interface families
         intf_selectors = [
             (".//interface/ethernet/entry", ".//layer3/ip/entry"),
             (".//interface/ethernet/entry/layer3/units/entry", ".//ip/entry"),
+            (".//interface/aggregate-ethernet/entry", ".//layer3/ip/entry"),
+            (".//interface/aggregate-ethernet/entry/layer3/units/entry", ".//ip/entry"),
             (".//interface/loopback/units/entry", ".//ip/entry"),
             (".//interface/tunnel/units/entry", ".//ip/entry"),
             (".//interface/vlan/units/entry", ".//ip/entry"),
@@ -255,6 +259,7 @@ class Cartographer:
                         ips.append(ip_val.strip())
 
                 if ips:
+                    interface_modes[intf_name] = "layer3"
                     if intf_name in interfaces:
                         for ip in ips:
                             if ip not in interfaces[intf_name]:
@@ -267,20 +272,44 @@ class Cartographer:
                 if prof_elem is not None and prof_elem.text and prof_elem.text.strip():
                     interface_mgmt_profiles[intf_name] = prof_elem.text.strip()
 
-        # 6. Extract Zones & Interface Mappings
+        # 5b. Extract Non-IP Interfaces (virtual-wire, layer2, tap, ha) across Ethernet & AE
+        for non_l3_xpath in (".//interface/ethernet/entry", ".//interface/aggregate-ethernet/entry"):
+            for intf_entry in root.findall(non_l3_xpath):
+                intf_name = intf_entry.get("name")
+                if not intf_name:
+                    continue
+                if intf_name not in interfaces:
+                    for mode in ("virtual-wire", "layer2", "tap", "ha"):
+                        if intf_entry.find(mode) is not None:
+                            interfaces[intf_name] = [mode]
+                            interface_modes[intf_name] = mode
+                            break
+                # Also check non-L3 subinterfaces (e.g., virtual-wire or layer2 vlan units)
+                for mode in ("virtual-wire", "layer2"):
+                    for unit_entry in intf_entry.findall(f"./{mode}/units/entry"):
+                        u_name = unit_entry.get("name")
+                        if u_name and u_name not in interfaces:
+                            interfaces[u_name] = [mode]
+                            interface_modes[u_name] = mode
+
+        # 6. Extract Zones & Interface Mappings (layer3, virtual-wire, layer2, tap, external)
         for zone in root.findall(".//zone/entry"):
             zone_name = zone.get('name')
             if not zone_name:
                 continue
             members = []
-            for member in zone.findall(".//network/layer3/member"):
-                if member.text and member.text.strip():
-                    clean_member = member.text.strip()
-                    if clean_member not in members:
-                        members.append(clean_member)
+            detected_mode = "layer3"
+            for zmode in ("layer3", "virtual-wire", "layer2", "tap", "external"):
+                for member in zone.findall(f".//network/{zmode}/member"):
+                    if member.text and member.text.strip():
+                        detected_mode = zmode
+                        clean_member = member.text.strip()
+                        if clean_member not in members:
+                            members.append(clean_member)
 
             if members:
                 zones[zone_name] = members
+                zone_modes[zone_name] = detected_mode
 
         # 6b. Extract Virtual Routers & Populate Active VR Cache
         discovered_vrs: List[str] = []
@@ -377,6 +406,35 @@ class Cartographer:
         device_telemetry_enabled = bool(
             root.findall(".//deviceconfig/system/device-telemetry")
         )
+        interzone_default_action = (
+            root.findtext(".//rulebase/default-security-rules/rules/entry[@name='interzone-default']/action")
+            or "deny"
+        ).strip()
+        threat_update_action = (
+            root.findtext(".//deviceconfig/system/update-schedule/threats/recurring/weekly/action")
+            or root.findtext(".//deviceconfig/system/update-schedule/threats/recurring/daily/action")
+            or root.findtext(".//deviceconfig/system/update-schedule/threats/recurring/hourly/action")
+            or "unknown"
+        ).strip()
+        weak_profiles: List[str] = []
+        blocking_actions = ("reset-both", "drop", "reset-client", "reset-server", "block-ip", "default")
+        for sp_entry in root.findall(".//profiles/spyware/entry"):
+            sp_name = sp_entry.get("name", "unknown")
+            for r_entry in sp_entry.findall(".//rules/entry"):
+                sev_list = [s.text.strip() for s in r_entry.findall(".//severity/member") if s.text]
+                if ("critical" in sev_list or "high" in sev_list) and r_entry.find(".//action/alert") is not None:
+                    weak_profiles.append(f"spyware:{sp_name}:alert_on_crit_high")
+        for vp_entry in root.findall(".//profiles/vulnerability/entry"):
+            vp_name = vp_entry.get("name", "unknown")
+            covered_sevs = {
+                s.text.strip()
+                for r in vp_entry.findall(".//rules/entry")
+                if any(r.find(f".//action/{act}") is not None for act in blocking_actions)
+                for s in r.findall(".//severity/member")
+                if s.text
+            }
+            if "critical" not in covered_sevs and "any" not in covered_sevs:
+                weak_profiles.append(f"vulnerability:{vp_name}:missing_critical_block")
 
         if mgmt_ip and mgmt_netmask:
             try:
@@ -509,6 +567,11 @@ class Cartographer:
             "gp_portals": gp_portals,
             "gp_gateways": gp_gateways,
             "device_telemetry_configured": device_telemetry_enabled,
+            "interface_modes": interface_modes,
+            "zone_modes": zone_modes,
+            "interzone_default_action": interzone_default_action,
+            "threat_update_action": threat_update_action,
+            "decorative_security_profiles": list(dict.fromkeys(weak_profiles)),
             "active_admin_sessions": admin_sessions
         }
 
