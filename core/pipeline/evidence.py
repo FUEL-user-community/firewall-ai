@@ -56,7 +56,10 @@ _RECOMMENDATION_RE = re.compile(
     r"test|trigger|upgrade|use|validate|verify)\b",
     re.IGNORECASE,
 )
-_INFERENCE_RE = re.compile(r"\b(?:inference|general knowledge)\s*:", re.IGNORECASE)
+_INFERENCE_RE = re.compile(
+    r"\b(?:inference|general knowledge)\s*:|^(?:[-*+]\s+)?(?:\*\*|\*|_)?logic\s*\(",
+    re.IGNORECASE,
+)
 
 
 # =============================================================================
@@ -311,8 +314,15 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
         first = out_lines[0] if out_lines else "no output"
         detail = _short_args(r.get("args"))
         detail = f" ({detail})" if detail else ""
+        err_msg = first.strip()
+        if len(err_msg) > 160:
+            truncated = err_msg[:157]
+            if " " in truncated:
+                truncated = truncated.rsplit(" ", 1)[0]
+            err_msg = truncated + "..."
+        punct = "" if err_msg.endswith((".", "!", "?")) else "."
         facts.append(
-            f"GAP: Step {i} `{r.get('tool', 'unknown')}`{detail} {st.upper()}: {first[:160]}. "
+            f"GAP: Step {i} `{r.get('tool', 'unknown')}`{detail} {st.upper()}: {err_msg}{punct} "
             "Anything that depends on it is UNKNOWN, not absent."
         )
 
@@ -392,14 +402,29 @@ def _slice_range(receipt: Dict[str, Any]) -> Optional[Tuple[int, int]]:
         return None
 
 
+def _read_pages_from_receipt(receipt: Dict[str, Any]) -> List[Tuple[int, int]]:
+    ranges: List[Tuple[int, int]] = []
+    if rng := _slice_range(receipt):
+        ranges.append(rng)
+    if receipt.get("tool") == "query_knowledge_base":
+        raw = _raw(receipt)
+        found_pages = [int(p) for p in re.findall(r"\[---\s*PAGE\s+(\d+)\s*---\]", raw)]
+        if found_pages:
+            ranges.append((min(found_pages), max(found_pages)))
+    return ranges
+
+
 def _is_claim_line(stripped: str) -> bool:
     if not stripped or len(stripped) < 25:
         return False
     if stripped.startswith(("#", ">", "<", "---", "===", "|:", "| :", "```")):
         return False
+    if re.match(r"^\[(?:CRITICAL|CAUTION|NORMAL|ENFORCING)\]\s+", stripped):
+        return False
     if re.fullmatch(r"[\s|:\-]+", stripped):
         return False
-    if stripped.endswith(":") and len(stripped) < 120:
+    clean_end = re.sub(r"[\*_`\s]+$", "", stripped)
+    if clean_end.endswith(":") and len(clean_end) < 120:
         return False
     return True
 
@@ -435,9 +460,9 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
                 known_ips.add(str(net24.network_address))
         except ValueError:
             pass
-    read_ranges = {
-        i: rng for i, r in enumerate(receipts, 1)
-        if statuses[i - 1] == "success" and (rng := _slice_range(r))
+    read_ranges: Dict[int, List[Tuple[int, int]]] = {
+        i: rngs for i, r in enumerate(receipts, 1)
+        if statuses[i - 1] == "success" and (rngs := _read_pages_from_receipt(r))
     }
     stats = {"claims": 0, "cited_ok": 0, "inference": 0, "unverified": 0, "uncited": 0}
 
@@ -508,11 +533,19 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
             elif statuses[step - 1] != "success":
                 problems.append(f"Step {step} was {statuses[step - 1].upper()}")
 
-        scope = {s: read_ranges[s] for s in cited if s in read_ranges} or read_ranges
+        scope_ranges: List[Tuple[int, int]] = []
+        step_scoped = [read_ranges[s] for s in cited if s in read_ranges]
+        if step_scoped:
+            for r_list in step_scoped:
+                scope_ranges.extend(r_list)
+        else:
+            for r_list in read_ranges.values():
+                scope_ranges.extend(r_list)
+
         unread: List[int] = []
         for pm in _PAGE_RE.finditer(stripped):
             for p in _expand_pages(pm.group(1)):
-                if p not in unread and not any(a <= p <= b for a, b in scope.values()):
+                if p not in unread and not any(a <= p <= b for a, b in scope_ranges):
                     unread.append(p)
         if unread:
             label = "page" if len(unread) == 1 else "pages"

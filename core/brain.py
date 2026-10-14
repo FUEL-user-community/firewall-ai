@@ -898,7 +898,8 @@ class CoreBrain:
         else:
             # Code owns the facts and marks every claim not backed by a SUCCESS receipt.
             try:
-                final_text, ev_stats = apply_evidence(final_text, state.receipts, state.user_query)
+                evidence_context = f"{state.user_query}\n{kwargs.get('base_graph_json', '')}"
+                final_text, ev_stats = apply_evidence(final_text, state.receipts, evidence_context)
                 logger.info(f"[{state.trace_id}] [EVIDENCE] {ev_stats}")
             except Exception as ev_err:
                 logger.warning(f"[{state.trace_id}] [EVIDENCE] Annotation skipped: {ev_err}")

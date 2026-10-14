@@ -423,3 +423,93 @@ def test_hallucinated_ip_in_code_block_is_unverified():
     out, stats = annotate_claims(text, receipts, query)
     assert "[UNVERIFIED: code block above uses 10.99.99.1" in out
     assert stats["unverified"] == 1
+
+
+def test_read_pages_from_list_contents_receipt():
+    """Verify that auto-extracted pages from query_knowledge_base(action='list_contents') are credited."""
+    receipts = [{
+        "tool": "query_knowledge_base",
+        "args": {"action": "list_contents", "target": "CVE"},
+        "raw_output": (
+            "--- KNOWLEDGE BASE DOCUMENTS ---\nDocument: cve-matrix.pdf\n"
+            "--- EXTRACTING TABLE OF CONTENTS (Pages 1-5) ---\n"
+            "[--- PAGE 1 ---]\nOverview of CVE-2024-3400\n"
+            "[--- PAGE 2 ---]\nAffected versions\n"
+            "[--- PAGE 3 ---]\nWorkarounds and mitigation\n"
+            "[--- PAGE 4 ---]\nIOCs\n"
+            "[--- PAGE 5 ---]\nReferences\n"
+        )
+    }]
+    line = "- Emergency advisory details SAML vulnerability mitigations [Step 1, pp. 1, 3]."
+    out, stats = annotate_claims(line, receipts, "")
+    assert "UNVERIFIED" not in out
+    assert stats["cited_ok"] == 1
+    assert stats["unverified"] == 0
+
+
+def test_markdown_bold_header_ending_colon_is_not_claim():
+    """Verify that bold section headers ending with colons (:**) are not flagged as uncited claims."""
+    headers = [
+        "- **Counter-Logic (Empirical Telemetry & Physical Reality):**",
+        "2. **Long-Term Architectural Remediation:**",
+        "- **Immediate Tactical Hardening:**",
+    ]
+    for header in headers:
+        out, stats = annotate_claims(header, [], "")
+        assert "UNCITED" not in out
+        assert stats["claims"] == 0
+        assert stats["uncited"] == 0
+
+
+def test_format3_severity_banner_is_not_claim():
+    """Verify that Format 3 severity title banners like [CRITICAL] are not flagged as uncited claims."""
+    banner = "[CRITICAL] Management Plane Layer 2 Bypass & Authentication Vulnerability Assessment"
+    out, stats = annotate_claims(banner, [], "")
+    assert "UNCITED" not in out
+    assert stats["claims"] == 0
+    assert stats["uncited"] == 0
+
+
+def test_operator_premise_logic_is_counted_as_inference():
+    """Verify that operator premise lines starting with Logic (...) are counted as inference rather than uncited."""
+    query = "Investigate if attacker 192.168.1.100 can reach firewall 192.168.1.254"
+    premise = (
+        "- **Logic (Attack Vector & Operator Premise):** Attacker at 192.168.1.100 reaches XML API/Web GUI "
+        "at 192.168.1.254:443 via dataplane transit through ethernet1/2."
+    )
+    out, stats = annotate_claims(premise, [], query)
+    assert "UNCITED" not in out
+    assert stats["inference"] == 1
+    assert stats["uncited"] == 0
+
+
+def test_cartographer_context_ips_are_known():
+    """Verify that IPs introduced by Cartographer topology context are recognized and not flagged as unknown."""
+    cartographer_context = '{"active_admin_sessions": [{"admin": "admin", "from": "192.168.1.20", "type": "Web"}]}'
+    evidence_context = f"Check firewall 192.168.1.254\n{cartographer_context}"
+    text = (
+        "- Preserved active administrator session from 192.168.1.20 in remediation.\n"
+        "```panos\nset deviceconfig system permitted-ip 192.168.1.20/32\n```"
+    )
+    out, stats = annotate_claims(text, [], evidence_context)
+    assert "UNVERIFIED" not in out
+    assert stats["unverified"] == 0
+
+
+def test_facts_gap_clean_word_truncation():
+    """Verify that long error messages in GAP facts lines are cleanly truncated without awkward mid-word breaks."""
+    long_error = (
+        "ERROR: Security Policy Block - XPath '/config/devices/entry/deviceconfig/system' is not permitted. "
+        "Reason: XPath '/config/devices/entry/deviceconfig/system' is not in the safe configuration allowlist."
+    )
+    receipts = [{
+        "tool": "get_live_config",
+        "args": {"xpath": "/config/devices/entry/deviceconfig/system"},
+        "raw_output": long_error,
+        "blocked_by": "policy"
+    }]
+    facts = build_facts(receipts)
+    assert len(facts) == 1
+    assert "deviceconfig/system'..." in facts[0]
+    assert "is ." not in facts[0]
+
