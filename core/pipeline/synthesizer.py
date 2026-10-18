@@ -7,10 +7,63 @@ and final text extraction.
 """
 
 import re
+import json
 import logging
-
+from typing import Optional, Dict, Any, List
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Structured Output Schemas
+# =============================================================================
+class RangeSimulationPayload(BaseModel):
+    """Schema contract for Breach & Attack Simulation (BAS) topological outputs."""
+    mermaid: str = Field(description="Valid Mermaid AST starting with graph TD or flowchart TD")
+    message: str = Field(description="Comprehensive breach verdict and operational analysis")
+    threats: int = Field(default=0, description="Count of active threat vectors")
+    drops: int = Field(default=0, description="Count of enforced boundary drops")
+
+
+def enforce_range_schema(raw_text: str, trace_id: str = "") -> str:
+    """Validates and guarantees pure JSON output for Breach & Attack Simulation."""
+    clean = ""
+    match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        clean = match.group(1).strip()
+    else:
+        start_idx = raw_text.find('{')
+        end_idx = raw_text.rfind('}')
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            clean = raw_text[start_idx:end_idx + 1].strip()
+        else:
+            clean = re.sub(r'^```json\s*', '', raw_text.strip(), flags=re.IGNORECASE)
+            clean = re.sub(r'\s*```$', '', clean).strip()
+    try:
+        parsed = json.loads(clean)
+        if isinstance(parsed, dict) and "mermaid" in parsed and isinstance(parsed["mermaid"], str):
+            mermaid_str = parsed["mermaid"]
+            mermaid_clean = re.sub(r'^```(?:mermaid)?\s*', '', mermaid_str.strip(), flags=re.IGNORECASE)
+            mermaid_clean = re.sub(r'\s*```$', '', mermaid_clean).strip()
+            # Sanitize unquoted parentheses in edge labels |...| to prevent Mermaid 'PS' lexer crashes
+            def _fix_pipe_label(m):
+                lbl = m.group(1).replace("(", "- ").replace(")", "")
+                clean_lbl = re.sub(r'\s+', ' ', lbl).strip()
+                return f"|{clean_lbl}|"
+            parsed["mermaid"] = re.sub(r'\|([^|\n]+)\|', _fix_pipe_label, mermaid_clean)
+
+        validated = RangeSimulationPayload.model_validate(parsed)
+        return validated.model_dump_json()
+    except Exception as e:
+        logger.warning(f"[{trace_id}] [RANGE] JSON schema validation failed: {e}. Generating clean fallback.")
+        fallback = RangeSimulationPayload(
+            mermaid="graph TD\n  Start[Attack Vector] --> Analysis[Policy Verification]",
+            message=raw_text,
+            threats=0,
+            drops=0
+        )
+        return fallback.model_dump_json()
 
 
 class ResponseSynthesizer:
@@ -207,10 +260,10 @@ class ResponseSynthesizer:
             tool_config={"function_calling_config": {"mode": "NONE"}}
         )
 
-    def synthesize_final(self, response, trace_id):
+    def synthesize_final(self, response, trace_id, target_mode="default"):
         """
         Extract final text from the response, handling empty/silent responses.
-        Returns the final text string or an error message.
+        Returns the final text string or an error message (sanitized for range mode if applicable).
         """
         try:
             # Safe parts access guarding against ValueError on safety-filtered candidates
@@ -227,6 +280,9 @@ class ResponseSynthesizer:
 
                 logger.warning(f"[{trace_id}] [-] Brain returned complete silence (Finish: {finish_reason}).")
 
+                if target_mode == "range":
+                    return enforce_range_schema("", trace_id)
+
                 return (
                     f"**Status:** Interrupted (Silent Response)\n\n"
                     f"**Observation:** The Brain processed the inputs but generated no text output. "
@@ -238,16 +294,23 @@ class ResponseSynthesizer:
             final_text = response.text
             if not final_text or not final_text.strip():
                 logger.warning(f"[{trace_id}] [-] response.text is empty or whitespace.")
+                if target_mode == "range":
+                    return enforce_range_schema("", trace_id)
                 return (
                     f"**Status:** Interrupted (Empty Response)\n\n"
                     f"**Observation:** The model completed its execution but generated no narrative text.\n\n"
                     f"**Recommendation:** Please review the execution receipts above or re-run the diagnostic."
                 )
 
+            if target_mode == "range":
+                final_text = enforce_range_schema(final_text, trace_id)
+
             logger.info(f"[{trace_id}] [ARCHITECT] Investigation Complete.")
             return final_text
         except Exception as e:
             logger.warning(f"[{trace_id}] [-] Synthesis Failed: {e}")
+            if target_mode == "range":
+                return enforce_range_schema("", trace_id)
             return "The investigation was completed, but the final report was empty/blocked."
 
     def check_guards(

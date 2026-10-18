@@ -21,7 +21,8 @@ def _deterministic_token(value: str, prefix: str = "ENTITY") -> str:
 
 def scrub(text: str) -> str:
     """
-    Masks hardware serial numbers in tool output while preserving real IP addresses.
+    Masks hardware serial numbers, private keys, API keys, password hashes,
+    and pre-shared keys in tool output while preserving real IP addresses.
     """
     if not SCRUB_PII:
         return text
@@ -29,7 +30,44 @@ def scrub(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
 
-    # Serial numbers (skip already-masked {{SERIAL_*}} format)
+    # 1. Private cryptographic keys
+    text = re.sub(
+        r'-----BEGIN [A-Z0-9_\- ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9_\- ]*PRIVATE KEY-----',
+        '[REDACTED_PRIVATE_KEY]',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # 2. Sensitive XML configuration elements (phash, password, pre-shared-key, secret, passphrase)
+    text = re.sub(
+        r'<(?P<tag>phash|password|pre-shared-key|secret|passphrase|private-key)>(?:(?!<\/(?P=tag)>)[\s\S])*?<\/(?P=tag)>',
+        r'<\g<tag>>[REDACTED_\g<tag>]</\g<tag>>',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # 3. PAN-OS API Keys (LUFRPT...)
+    text = re.sub(
+        r'\bLUFRPT[a-zA-Z0-9+/=]{16,}',
+        '[REDACTED_API_KEY]',
+        text
+    )
+
+    # 4. Bearer tokens and generic API key assignments
+    text = re.sub(
+        r'\bBearer\s+[a-zA-Z0-9_\-\.]{20,}\b',
+        'Bearer [REDACTED_TOKEN]',
+        text,
+        flags=re.IGNORECASE
+    )
+    text = re.sub(
+        r'\b(api[_-]?key|secret[_-]?key)[:=\s]+[\'"]?[a-zA-Z0-9_\-]{16,}[\'"]?',
+        r'\1=[REDACTED_KEY]',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # 5. Serial numbers (skip already-masked {{SERIAL_*}} format)
     text = re.sub(
         r'(?<!\{\{)(?:serial(?:[ -]?number)?[:\s]+)((?=[A-Z0-9]*\d)[A-Z0-9]{10,})\b',
         lambda m: m.group(0).replace(m.group(1), _deterministic_token(m.group(1), "SN")),
@@ -38,3 +76,4 @@ def scrub(text: str) -> str:
     )
 
     return text
+

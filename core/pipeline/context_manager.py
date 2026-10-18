@@ -79,13 +79,19 @@ class ContextManager:
             "the next tool. Only deliver the final report once nothing material remains unresolved.]"
         )
 
+    MAX_FILES_PER_TURN = 5
+
     def extract_drive_files(self, tool_parts, trace_id):
         """
         Scan tool response parts for GEMINI_FILE_URI sentinels.
-        Returns a list of resolved Gemini file objects for context injection.
+        Returns a list of resolved Gemini file objects for context injection (deduplicated, bounded).
         """
         drive_files = []
+        seen_uris = set()
+
         for part in tool_parts:
+            if len(drive_files) >= self.MAX_FILES_PER_TURN:
+                break
             if not hasattr(part, 'function_response'):
                 continue
             result_text = part.function_response.response.get('result', '')
@@ -96,6 +102,10 @@ class ContextManager:
             file_match = re.search(r'GEMINI_FILE_URI:\s*(files/[a-zA-Z0-9_-]{8,64})\b', result_text)
             if file_match:
                 file_uri = file_match.group(1)
+                if file_uri in seen_uris:
+                    continue
+                seen_uris.add(file_uri)
+
                 try:
                     gemini_file = genai.get_file(file_uri)
                     drive_files.append(gemini_file)

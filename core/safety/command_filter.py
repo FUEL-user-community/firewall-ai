@@ -52,6 +52,8 @@ class CommandFilter:
         r"^\s*configure\b",
         r"\bconfigure\s+",
         r"\btest\s+vpn\b",
+        r"\breboot\b",
+        r"\bshutdown\b",
     )
 
     @classmethod
@@ -65,6 +67,11 @@ class CommandFilter:
 
         cmd_clean = cmd.strip()
         cmd_lower = cmd_clean.lower()
+
+        # Reject multiline and command chaining injection attempts
+        if re.search(r"[\r\n;&`$]", cmd_clean):
+            logger.warning(f"[CMDFILTER] BLOCKED command chaining or line break: {cmd_clean[:80]}")
+            return False, "Commands must not contain line breaks or command chaining operators (; & ` $)."
 
         # Allow verified read-only operational XML queries required by pan-os-python
         if cmd_lower in cls.ALLOWED_XML_EXACT:

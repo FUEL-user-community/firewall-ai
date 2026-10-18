@@ -141,11 +141,11 @@ class ToolExecutor:
 
         # --- 2.5 DEVICE ACCESS GATE ---
         if result is None and self.policy:
-            target_device = fargs.get("target_device")
+            target_device = fargs.get("target_device") or fargs.get("device") or fargs.get("target")
             if target_device:
                 try:
                     from core.safety.policy_engine import DeviceAccessDeniedError
-                    self.policy.check_device_access(user_id, target_device)
+                    self.policy.check_device_access(user_id, str(target_device))
                 except DeviceAccessDeniedError as dade:
                     logger.warning(f"[{trace_id}] [RBAC] {dade}")
                     result = f"DEVICE ACCESS DENIED: {dade}"
@@ -153,7 +153,10 @@ class ToolExecutor:
 
         # --- 3. HITL GATE ---
         if result is None and self.hitl and self.policy:
-            is_write_op = fname in self.policy.WRITE_TOOLS
+            is_write_op = (
+                fname in self.policy.WRITE_TOOLS
+                or any(fname.startswith(p) for p in getattr(self.policy, "WRITE_PREFIXES", ()))
+            )
             is_unbounded_session = False
 
             if fname == "execute_operational_command":

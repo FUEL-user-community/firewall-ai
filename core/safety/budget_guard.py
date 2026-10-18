@@ -81,6 +81,10 @@ class BudgetGuard:
             cost = self._compute_cost(prompt_tokens, response_tokens)
 
             if trace_id:
+                if len(self._investigation_costs) >= 1000 and trace_id not in self._investigation_costs:
+                    excess = len(self._investigation_costs) - 800
+                    for k in list(self._investigation_costs.keys())[:excess]:
+                        del self._investigation_costs[k]
                 current_inv = self._investigation_costs.get(trace_id, 0.0) + cost
                 self._investigation_costs[trace_id] = current_inv
             else:

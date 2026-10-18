@@ -25,6 +25,8 @@ WRAPPER_PREFIXES = ("--- READING SLICE:", "--- READING CSV DATA:")
 STATUSES = ("success", "failed", "blocked", "skipped")
 
 
+import re
+
 def classify_outcome(raw_output: str, blocked_by: str = "") -> str:
     """
     Classify a tool execution for the audit trail.
@@ -42,6 +44,13 @@ def classify_outcome(raw_output: str, blocked_by: str = "") -> str:
         return "blocked"
     if text.startswith(FAILURE_PREFIXES):
         return "failed"
+    # Catch PAN-OS XML and JSON API error responses
+    if text.startswith("<?xml") or text.startswith("<response"):
+        if re.search(r'status=[\'"]error[\'"]', text[:200], re.IGNORECASE):
+            return "failed"
+    if text.startswith("{"):
+        if re.search(r'["\']status["\']\s*:\s*["\']error["\']', text[:100], re.IGNORECASE):
+            return "failed"
     if text.startswith(WRAPPER_PREFIXES):
         body = text.split("\n", 1)[1].lstrip() if "\n" in text else ""
         if not body or body.startswith(FAILURE_PREFIXES):

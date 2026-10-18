@@ -41,23 +41,6 @@ let currentRawMarkdown = '';
 let lastTraceId = null;
 let lastReceipts = [];
 
-// Cross-tab and persistent authentication helpers
-function getAuthKey() {
-    return sessionStorage.getItem('nodal_key') || localStorage.getItem('nodal_key') || '';
-}
-
-function setAuthKey(key) {
-    if (key) {
-        sessionStorage.setItem('nodal_key', key);
-        localStorage.setItem('nodal_key', key);
-    }
-}
-
-function clearAuthKey() {
-    sessionStorage.removeItem('nodal_key');
-    localStorage.removeItem('nodal_key');
-}
-
 // Centralized State Store
 const state = {
     devices: [],
@@ -74,6 +57,7 @@ let currentMode = 'diagnostic';
 // ═══════════════════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
+    window.onAppUnlocked = () => unlockApp();
     bindLogin();
     bindSetup();
     bindForm();
@@ -97,18 +81,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
-
-    // Real-time cross-tab unlock synchronization
-    window.addEventListener('storage', (e) => {
-        if (e.key === 'nodal_key' && e.newValue) {
-            sessionStorage.setItem('nodal_key', e.newValue);
-            const overlay = document.getElementById('loginOverlay');
-            if (overlay && overlay.style.display !== 'none') {
-                unlockApp();
-                showToast('Synchronized authentication from active tab', 'info');
-            }
-        }
-    });
 });
 
 // ═══════════════════════════════════════════════════════
@@ -116,58 +88,11 @@ document.addEventListener('DOMContentLoaded', () => {
 // ═══════════════════════════════════════════════════════
 
 function checkHealth() {
-    fetch('/api/health')
-        .then(r => r.json())
-        .then(data => {
-            if (data.access_token) {
-                setAuthKey(data.access_token);
-            }
-
-            const loginOverlay = document.getElementById('loginOverlay');
-            const setupOverlay = document.getElementById('setupOverlay');
-
-            if (!data.configured) {
-                if (loginOverlay) loginOverlay.style.display = 'none';
-                if (setupOverlay) setupOverlay.style.display = 'flex';
-            } else if (getAuthKey()) {
-                unlockApp();
-            } else {
-                if (setupOverlay) setupOverlay.style.display = 'none';
-                if (loginOverlay) {
-                    loginOverlay.style.display = 'flex';
-                    const loginInput = document.getElementById('loginInput');
-                    if (loginInput) loginInput.focus();
-                }
-            }
-
-            const statusChip = document.getElementById('perimeterStatusChip');
-            const statusText = document.getElementById('perimeterStatusText');
-            if (statusText) {
-                if (data.firewall_reachable) {
-                    statusText.textContent = data.firewall_ip ? `PAN-OS (${data.firewall_ip})` : 'PAN-OS CONNECTED';
-                    if (statusChip) statusChip.className = 'perimeter-status-chip nominal';
-                } else if (data.configured) {
-                    statusText.textContent = 'PAN-OS UNREACHABLE';
-                    if (statusChip) statusChip.className = 'perimeter-status-chip critical';
-                } else {
-                    statusText.textContent = 'NOT CONFIGURED';
-                    if (statusChip) statusChip.className = 'perimeter-status-chip warning';
-                }
-            }
-        })
-        .catch(() => {
-            const statusChip = document.getElementById('perimeterStatusChip');
-            const statusText = document.getElementById('perimeterStatusText');
-            if (statusText) statusText.textContent = 'OFFLINE';
-            if (statusChip) statusChip.className = 'perimeter-status-chip critical';
-        });
+    return CoreDefense.checkHealth();
 }
 
 function loadDevices() {
-    const key = getAuthKey();
-    fetch('/api/devices', {
-        headers: { 'X-API-Key': key }
-    })
+    authFetch('/api/devices')
     .then(r => r.json())
     .then(data => {
         const firewalls = data.firewalls || {};
@@ -221,32 +146,8 @@ function verifyKey(key) {
 }
 
 function bindLogin() {
-    const form = document.getElementById('loginForm');
-    if (!form) return;
-    form.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const input = document.getElementById('loginInput');
-        const err = document.getElementById('loginError');
-        const pass = input.value.trim();
-        if (!pass) return;
-
-        fetch('/api/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ passphrase: pass })
-        })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success && data.token) {
-                setAuthKey(data.token);
-                unlockApp();
-            } else {
-                if (err) err.textContent = data.error || 'Invalid session passphrase';
-            }
-        })
-        .catch(errText => {
-            if (err) err.textContent = 'Login request failed: ' + errText.message;
-        });
+    CoreDefense.bindLogin({
+        onSuccess: () => unlockApp()
     });
 }
 
@@ -265,79 +166,11 @@ function unlockApp() {
 }
 
 function bindSetup() {
-    const s1 = document.getElementById('setupStep1');
-    const s2 = document.getElementById('setupStep2');
-    const s3 = document.getElementById('setupStep3');
-    if (!s1 || !s2 || !s3) return;
-
-    document.getElementById('btnSetupSimple').addEventListener('click', () => {
-        document.getElementById('setupBackend').value = 'dotenv';
-        document.getElementById('setupSimpleFields').style.display = 'flex';
-        document.getElementById('setupVaultFields').style.display = 'none';
-        s1.style.display = 'none';
-        s2.style.display = 'block';
-    });
-
-    document.getElementById('btnSetupVault').addEventListener('click', () => {
-        document.getElementById('setupBackend').value = 'vault';
-        document.getElementById('setupSimpleFields').style.display = 'none';
-        document.getElementById('setupVaultFields').style.display = 'block';
-        s1.style.display = 'none';
-        s2.style.display = 'block';
-    });
-
-    document.getElementById('btnSetupBack').addEventListener('click', () => {
-        s2.style.display = 'none';
-        s1.style.display = 'block';
-    });
-
-    document.getElementById('setupForm').addEventListener('submit', (e) => {
-        e.preventDefault();
-        const err = document.getElementById('setupError');
-        const payload = {
-            backend: document.getElementById('setupBackend').value,
-            gemini_api_key: document.getElementById('setupGeminiKey').value.trim(),
-            panos_api_key: document.getElementById('setupPanosKey').value.trim(),
-            vault_url: document.getElementById('setupVaultAddr').value.trim(),
-            vault_role_id: document.getElementById('setupVaultRole').value.trim(),
-            vault_secret_id: document.getElementById('setupVaultSecret').value.trim(),
-            panos_hostname: document.getElementById('setupFwIp').value.trim(),
-        };
-
-        fetch('/api/setup', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                s2.style.display = 'none';
-                s3.style.display = 'block';
-                document.getElementById('setupPassphrase').textContent = data.passphrase || 'Initialized';
-                if (data.token) setAuthKey(data.token);
-            } else {
-                if (err) err.textContent = data.error || 'Setup failed';
-            }
-        })
-        .catch(errText => {
-            if (err) err.textContent = 'Setup request failed: ' + errText.message;
-        });
-    });
-
-    document.getElementById('btnCopyPassphrase').addEventListener('click', () => {
-        const text = document.getElementById('setupPassphrase').textContent;
-        navigator.clipboard.writeText(text).then(() => {
-            showToast('Passphrase copied to clipboard', 'success');
-        });
-    });
-
-    document.getElementById('btnProceedLogin').addEventListener('click', () => {
-        const sOverlay = document.getElementById('setupOverlay');
-        if (sOverlay) sOverlay.style.display = 'none';
-        unlockApp();
+    CoreDefense.bindSetup({
+        onProceed: () => unlockApp()
     });
 }
+
 
 function bindKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
@@ -361,18 +194,7 @@ function bindKeyboardShortcuts() {
 // ═══════════════════════════════════════════════════════
 
 function showToast(message, type = 'info', duration = 3500) {
-    const container = document.getElementById('toastContainer');
-    if (!container) return;
-
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.textContent = message;
-
-    container.appendChild(toast);
-    setTimeout(() => {
-        toast.classList.add('fade-out');
-        setTimeout(() => toast.remove(), 400);
-    }, duration);
+    return CoreDefense.showToast(message, type, duration);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -382,12 +204,9 @@ function showToast(message, type = 'info', duration = 3500) {
 async function loadPreflightGraph() {
     const deviceSelect = document.getElementById('deviceFilter');
     const selectedDevice = deviceSelect ? deviceSelect.value : 'default';
-    const key = getAuthKey();
 
     try {
-        const res = await fetch(`/api/cartographer/base-graph?device=${encodeURIComponent(selectedDevice)}`, {
-            headers: { 'X-API-Key': key }
-        });
+        const res = await authFetch(`/api/cartographer/base-graph?device=${encodeURIComponent(selectedDevice)}`);
         if (!res.ok) return;
         const data = await res.json();
 
@@ -737,18 +556,16 @@ function sendMessage(text) {
         showStatus('Compiling nodal telemetry and evaluating policy paths...');
     }
 
-    const key = getAuthKey();
     let currentReceipts = [];
     let currentTraceId = '';
 
     const deviceSelect = document.getElementById('deviceFilter');
     const selectedDevice = deviceSelect ? deviceSelect.value : 'default';
 
-    fetch('/api/chat', {
+    authFetch('/api/chat', {
         method: 'POST',
         headers: {
-            'Content-Type': 'application/json',
-            'X-API-Key': key
+            'Content-Type': 'application/json'
         },
         body: JSON.stringify({
             message: text,
@@ -1015,12 +832,10 @@ async function exportInvestigationToDoc(traceId, btn) {
     btn.innerHTML = `<span>Exporting...</span>`;
 
     try {
-        const key = getAuthKey();
-        const res = await fetch('/api/export/markdown', {
+        const res = await authFetch('/api/export/markdown', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': key
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({ trace_id: traceId })
         });
@@ -1320,14 +1135,11 @@ function bindResizeHandle() {
 function fetchTelemetry(device = null) {
     const select = document.getElementById('deviceFilter');
     const dev = device || (select ? select.value : 'default');
-    const key = getAuthKey();
     const chip = document.getElementById('perimeterStatusChip');
     const text = document.getElementById('perimeterStatusText');
     if (!text) return;
 
-    fetch(`/api/telemetry?device=${encodeURIComponent(dev)}`, {
-        headers: { 'X-API-Key': key }
-    })
+    authFetch(`/api/telemetry?device=${encodeURIComponent(dev)}`)
     .then(r => r.json())
     .then(d => {
         if (d.success) {

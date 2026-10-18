@@ -87,7 +87,15 @@ except ImportError:
 # =============================================================================
 # Core Pipeline Modules
 # =============================================================================
-from core.pipeline.prompt_assembler import SYSTEM_PROMPT
+from core.pipeline.prompt_assembler import (
+    SYSTEM_PROMPT,
+    CIRCUIT_BREAKER_REFLECTION_PROMPT,
+    BUDGET_EXCEEDED_PROMPT,
+    build_reality_prompt,
+    build_fleet_context,
+    resolve_target_device,
+    get_ceiling_directive,
+)
 from core.pipeline.model_config import (
     GEMINI_MODEL, PRICE_PER_M_INPUT, PRICE_PER_M_OUTPUT,
     MAX_TURNS, RANGE_PROBE_LIMIT,
@@ -95,7 +103,7 @@ from core.pipeline.model_config import (
 )
 from core.pipeline.tool_executor import ToolExecutor
 from core.pipeline.context_manager import ContextManager
-from core.pipeline.synthesizer import ResponseSynthesizer
+from core.pipeline.synthesizer import ResponseSynthesizer, RangeSimulationPayload, enforce_range_schema
 from core.integrations.telemetry import UsageTracker
 
 # Budget guard -- fail-soft if not available
@@ -105,34 +113,6 @@ except ImportError:
     BudgetGuard = None
     BudgetExceededError = None
     logger.warning("[BUDGET] budget_guard not available -- cost limits disabled.")
-
-
-# =============================================================================
-# System Prompt Constants
-# =============================================================================
-CIRCUIT_BREAKER_REFLECTION_PROMPT = (
-    "[SYSTEM: LOOP DETECTED. Your investigation is being terminated for safety. "
-    "Before shutdown, produce a PARTIAL REPORT: "
-    "1) WHAT_TRIED: List every tool you called and key findings. "
-    "2) WHY_STALLED: One sentence on why you were repeating actions. "
-    "3) RECOMMENDATION: What the human should investigate manually.]"
-)
-
-BUDGET_EXCEEDED_PROMPT = (
-    "[SYSTEM: Budget limit reached. Produce a PARTIAL REPORT from the data "
-    "you have gathered so far. Include all findings and recommendations.]"
-)
-
-
-# =============================================================================
-# Structured Output Schemas
-# =============================================================================
-class RangeSimulationPayload(BaseModel):
-    """Schema contract for Breach & Attack Simulation (BAS) topological outputs."""
-    mermaid: str = Field(description="Valid Mermaid AST starting with graph TD or flowchart TD")
-    message: str = Field(description="Comprehensive breach verdict and operational analysis")
-    threats: int = Field(default=0, description="Count of active threat vectors")
-    drops: int = Field(default=0, description="Count of enforced boundary drops")
 
 
 # =============================================================================
@@ -314,30 +294,9 @@ class CoreBrain:
     def _build_fleet_context(self) -> str:
         """
         Produces a structured fleet inventory string for injection into the LLM context.
-        Uses mtime caching so changes to devices.yaml are picked up without restart.
+        Delegates to prompt_assembler with mtime caching.
         """
-        try:
-            data = _load_devices_config()
-            if not data and not _DEVICES_CONFIG_PATH.exists():
-                return "FLEET_INVENTORY: Single device mode (no devices.yaml found)."
-
-            firewalls = data.get("firewalls", {}) if data else {}
-            if not firewalls:
-                return "FLEET_INVENTORY: No firewalls configured."
-
-            lines = ["FLEET_INVENTORY: Managed devices:"]
-            for name, info in firewalls.items():
-                label = info.get("label", "")
-                is_default = info.get("default", False)
-                marker = " <- DEFAULT" if is_default else ""
-                lines.append(f"  - {name}: {label}{marker}")
-
-            lines.append("Use target_device=\"<alias>\" in tool calls to target a specific device.")
-            return "\n".join(lines)
-
-        except Exception as e:
-            logger.warning(f"[FLEET] Failed to build fleet context: {e}")
-            return "FLEET_INVENTORY: Unable to load (using default device)."
+        return build_fleet_context()
 
     # -------------------------------------------------------------------------
     # Private Investigation Step Handlers
@@ -345,17 +304,8 @@ class CoreBrain:
 
     def _resolve_target_device(self, user_query: str, explicit_device: Optional[str] = None) -> Optional[str]:
         """Resolves target device alias from explicit parameter or query text."""
-        if explicit_device:
-            return explicit_device
-        try:
-            fw_dict = _load_devices_config().get("firewalls", {})
-            for fw_alias in fw_dict:
-                pattern = r'(?<![a-zA-Z0-9_-])' + re.escape(fw_alias.lower()) + r'(?![a-zA-Z0-9_-])'
-                if re.search(pattern, user_query.lower()):
-                    return fw_alias
-        except Exception as ex:
-            logger.debug(f"[BRAIN] Device resolution failed: {ex}")
-        return None
+        return resolve_target_device(user_query, explicit_device)
+
 
     def _create_workflow_tool_bridge(self) -> Callable[[str, dict], str]:
         """Creates a signature-safe tool dispatch bridge for deterministic workflows."""
@@ -494,33 +444,17 @@ class CoreBrain:
 
     def _build_reality_prompt(self, user_query: str, state: InvestigationState) -> str:
         """Builds grounded reality anchor string including fleet inventory and diagnostic parameters."""
-        fleet_context = self._build_fleet_context()
         mode = classify_mode(user_query)
         thinking_level = get_thinking_level(mode)
+        return build_reality_prompt(
+            user_query=user_query,
+            manifest_str=state.manifest_str,
+            fleet_context=self._build_fleet_context(),
+            license_context=self.license_context,
+            thinking_level=thinking_level,
+            target_mode=state.target_mode,
+        )
 
-        if state.target_mode == "advisory":
-            reality_check = (
-                "REALITY_CHECK: You are operating in ARCHITECTURAL ADVISORY MODE.\n"
-                f"You only have access to official documentation: [{state.manifest_str}].\n"
-                "Live firewall execution tools are disabled for safety.\n"
-                "Deliver strategic guidance, best practices, and candidate configurations.\n"
-                "Ground recommendations in official PAN-OS manuals, hardening blueprints, and CVE data.\n"
-                "Prefix any candidate configuration CLI blocks with:\n"
-                "# [ADVISORY SPECIFICATION - VALIDATE IN LAB BEFORE PRODUCTION COMMIT]\n\n"
-                f"{fleet_context}"
-            )
-        else:
-            reality_check = (
-                f"REALITY_CHECK: You only have these tools: [{state.manifest_str}].\n"
-                "Verify tool names against this list before every call.\n\n"
-                f"{fleet_context}"
-            )
-
-        if self.license_context:
-            reality_check += f"\n\n{self.license_context}"
-
-        reality_check += f"\n\n[SYSTEM COGNITIVE BOUNDS: Execute with {thinking_level.upper()} reasoning depth.]"
-        return reality_check
 
     def _execute_with_quota_retry(
         self,
@@ -760,42 +694,8 @@ class CoreBrain:
 
     def _enforce_range_schema(self, raw_text: str, trace_id: str) -> str:
         """Validates and guarantees pure JSON output for Breach & Attack Simulation."""
-        clean = ""
-        match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL | re.IGNORECASE)
-        if match:
-            clean = match.group(1).strip()
-        else:
-            start_idx = raw_text.find('{')
-            end_idx = raw_text.rfind('}')
-            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                clean = raw_text[start_idx:end_idx + 1].strip()
-            else:
-                clean = re.sub(r'^```json\s*', '', raw_text.strip(), flags=re.IGNORECASE)
-                clean = re.sub(r'\s*```$', '', clean).strip()
-        try:
-            parsed = json.loads(clean)
-            if isinstance(parsed, dict) and "mermaid" in parsed and isinstance(parsed["mermaid"], str):
-                mermaid_str = parsed["mermaid"]
-                mermaid_clean = re.sub(r'^```(?:mermaid)?\s*', '', mermaid_str.strip(), flags=re.IGNORECASE)
-                mermaid_clean = re.sub(r'\s*```$', '', mermaid_clean).strip()
-                # Sanitize unquoted parentheses in edge labels |...| to prevent Mermaid 'PS' lexer crashes
-                def _fix_pipe_label(m):
-                    lbl = m.group(1).replace("(", "- ").replace(")", "")
-                    clean_lbl = re.sub(r'\s+', ' ', lbl).strip()
-                    return f"|{clean_lbl}|"
-                parsed["mermaid"] = re.sub(r'\|([^|\n]+)\|', _fix_pipe_label, mermaid_clean)
+        return enforce_range_schema(raw_text, trace_id)
 
-            validated = RangeSimulationPayload.model_validate(parsed)
-            return validated.model_dump_json()
-        except Exception as e:
-            logger.warning(f"[{trace_id}] [RANGE] JSON schema validation failed: {e}. Generating clean fallback.")
-            fallback = RangeSimulationPayload(
-                mermaid="graph TD\n  Start[Attack Vector] --> Analysis[Policy Verification]",
-                message=raw_text,
-                threats=0,
-                drops=0
-            )
-            return fallback.model_dump_json()
 
     def _step_tool_feedback(
         self,
@@ -835,35 +735,24 @@ class CoreBrain:
         # Probe Ceiling Guard: Enforce graceful synthesis before hitting turn limits
         ceiling_applied = False
         outward_receipts = [r for r in state.receipts if r.get("tool") != "inspect_own_harness"]
-        if state.target_mode == "range" and turn >= RANGE_PROBE_LIMIT - 1:
-            ceiling_directive = (
-                f"\n\n[SYSTEM: SIMULATION PROBE BUDGET REACHED (Turn {turn+1} of {RANGE_PROBE_LIMIT})]\n"
-                "You have comprehensive empirical telemetry across candidate ingress, lateral, and policy boundaries.\n"
-                "Do NOT execute any further tool calls.\n"
-                "Proceed directly to Step 3 (TOPOLOGY SYNTHESIS) and emit your terminal pure JSON payload NOW."
-            )
-            logger.info(f"[{state.trace_id}] [CEILING] Injecting forced Range synthesis directive at Turn {turn+1}")
-            message_payload.append(ceiling_directive)
-            ceiling_applied = True
-        elif state.target_mode != "range" and len(outward_receipts) >= 14:
-            ceiling_directive = (
-                f"\n\n[SYSTEM: TRIAD EVIDENCE CEILING REACHED ({len(outward_receipts)} outward tools executed)]\n"
-                "You have gathered sufficient empirical telemetry across forwarding, policy, and appliance state.\n"
-                "Do NOT execute any further tool calls.\n"
-                "Proceed immediately to final synthesis and output your complete executive report NOW."
-            )
-            logger.info(f"[{state.trace_id}] [CEILING] Injecting Triad evidence ceiling at Turn {turn+1} ({len(outward_receipts)} outward receipts)")
-            message_payload.append(ceiling_directive)
-            ceiling_applied = True
-        elif turn >= MAX_TURNS - 2:
+        ceiling_directive = get_ceiling_directive(
+            target_mode=state.target_mode,
+            turn=turn,
+            outward_receipts_count=len(outward_receipts),
+            range_probe_limit=RANGE_PROBE_LIMIT,
+        )
+        if not ceiling_directive and turn >= MAX_TURNS - 2:
             ceiling_directive = (
                 f"\n\n[SYSTEM: INVESTIGATION CEILING REACHED (Turn {turn+1} of {MAX_TURNS})]\n"
                 "Do NOT execute any further tool calls.\n"
                 "Synthesize your findings and output your final executive report NOW."
             )
-            logger.info(f"[{state.trace_id}] [CEILING] Injecting forced investigation report directive at Turn {turn+1}")
+
+        if ceiling_directive:
+            logger.info(f"[{state.trace_id}] [CEILING] Injecting forced synthesis directive at Turn {turn+1}")
             message_payload.append(ceiling_directive)
             ceiling_applied = True
+
 
         extra_kwargs = {}
         if ceiling_applied:

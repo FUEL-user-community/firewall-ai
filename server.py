@@ -75,14 +75,27 @@ class RangeSimulateRequest(BaseModel):
     message: str = Field(..., min_length=1, description="Attack scenario or simulation prompt")
     device: str = Field("default", description="Target firewall device alias from devices.yaml")
 
+class HitlDecisionRequest(BaseModel):
+    request_id: str = Field(..., min_length=1, description="Approval request ID to decide")
+    approved: bool = Field(..., description="Whether the operator approves or rejects")
+    reason: Optional[str] = Field("", description="Optional justification for the decision")
+    approver_id: Optional[str] = Field("operator", description="Operator identity")
+
 class SetupRequest(BaseModel):
-    backend_type: str = Field("dotenv", description="Secrets backend: 'dotenv' or 'vault'")
-    firewall_ip: str = Field(..., min_length=1, description="Target firewall hostname or IP")
+    backend_type: Optional[str] = Field("dotenv", description="Secrets backend: 'dotenv' or 'vault'")
+    backend: Optional[str] = None
+    firewall_ip: Optional[str] = Field(None, description="Target firewall hostname or IP")
+    panos_hostname: Optional[str] = None
     panos_key: Optional[str] = Field(None, description="PAN-OS API Key")
+    panos_api_key: Optional[str] = None
     gemini_key: Optional[str] = Field(None, description="Gemini API Key")
+    gemini_api_key: Optional[str] = None
     vault_addr: Optional[str] = Field(None, description="Vault address")
+    vault_url: Optional[str] = None
     vault_role: Optional[str] = Field(None, description="Vault Role ID")
+    vault_role_id: Optional[str] = None
     vault_secret: Optional[str] = Field(None, description="Vault Secret ID")
+    vault_secret_id: Optional[str] = None
 
 # Lazy-loaded brain instance with thread lock
 _brain = None
@@ -589,7 +602,7 @@ async def setup(payload: SetupRequest, request: Request):
     """
     existing_key = os.getenv("API_ACCESS_KEY")
     # Security bootstrap guard: require valid X-API-Key if reconfiguring an already configured system
-    if existing_key:
+    if existing_key and os.getenv("PANOS_HOSTNAME"):
         provided_key = request.headers.get("X-API-Key")
         import hmac as _hmac
         if not provided_key or not _hmac.compare_digest(provided_key, existing_key):
@@ -600,11 +613,16 @@ async def setup(payload: SetupRequest, request: Request):
                 content={"success": False, "error": "System is already configured. Reconfiguration requires existing X-API-Key."}
             )
 
-    backend_type = payload.backend_type.lower()
-    fw_ip = payload.firewall_ip.strip()
+    backend_type = (payload.backend_type or payload.backend or "dotenv").lower()
+    fw_ip = (payload.firewall_ip or payload.panos_hostname or "").strip()
+    panos_key = (payload.panos_key or payload.panos_api_key or "").strip()
+    gemini_key = (payload.gemini_key or payload.gemini_api_key or "").strip()
+    vault_addr = (payload.vault_addr or payload.vault_url or "").strip()
+    vault_role = (payload.vault_role or payload.vault_role_id or "").strip()
+    vault_secret = (payload.vault_secret or payload.vault_secret_id or "").strip()
     
     if not fw_ip:
-        return JSONResponse(status_code=400, content={"success": False, "error": "Firewall IP is required."})
+        return JSONResponse(status_code=400, content={"success": False, "error": "Firewall IP or hostname is required."})
         
     keys_to_set = {
         "PANOS_HOSTNAME": fw_ip,
@@ -612,17 +630,17 @@ async def setup(payload: SetupRequest, request: Request):
     }
     
     if backend_type == "dotenv":
-        if not payload.panos_key or not payload.gemini_key:
+        if not panos_key or not gemini_key:
             return JSONResponse(status_code=400, content={"success": False, "error": "Both PAN-OS and Gemini API keys are required for local setup."})
-        keys_to_set["PANOS_API_KEY_FW_HQ"] = payload.panos_key.strip()
-        keys_to_set["GEMINI_API_KEY"] = payload.gemini_key.strip()
+        keys_to_set["PANOS_API_KEY_FW_HQ"] = panos_key
+        keys_to_set["GEMINI_API_KEY"] = gemini_key
         
     elif backend_type == "vault":
-        if not all([payload.vault_addr, payload.vault_role, payload.vault_secret]):
+        if not all([vault_addr, vault_role, vault_secret]):
             return JSONResponse(status_code=400, content={"success": False, "error": "Vault details are required."})
-        keys_to_set["VAULT_ADDR"] = payload.vault_addr.strip()
-        keys_to_set["VAULT_ROLE_ID"] = payload.vault_role.strip()
-        keys_to_set["VAULT_SECRET_ID"] = payload.vault_secret.strip()
+        keys_to_set["VAULT_ADDR"] = vault_addr
+        keys_to_set["VAULT_ROLE_ID"] = vault_role
+        keys_to_set["VAULT_SECRET_ID"] = vault_secret
     else:
         return JSONResponse(status_code=400, content={"success": False, "error": f"Unknown backend type: {backend_type}"})
         
@@ -660,7 +678,8 @@ async def setup(payload: SetupRequest, request: Request):
 
         return JSONResponse(content={
             "success": True,
-            "passphrase": api_access_key
+            "passphrase": api_access_key,
+            "token": api_access_key
         })
     except Exception as e:
         logger.exception(f"[SETUP] Failed: {e}")
@@ -699,6 +718,46 @@ async def list_devices():
             content={"error": "Failed to load device list."},
             status_code=500
         )
+
+
+@app.get("/api/hitl/pending")
+async def list_pending_hitl_approvals():
+    """List all pending write operation approval requests requiring operator sign-off."""
+    from core.safety.hitl import get_pending_approvals
+    pending = get_pending_approvals()
+    return JSONResponse(
+        content={
+            "success": True,
+            "count": len(pending),
+            "pending": pending
+        }
+    )
+
+
+@app.post("/api/hitl/decide")
+async def submit_hitl_decision(payload: HitlDecisionRequest):
+    """Approve or reject a pending write operation request in the interactive HITL queue."""
+    from core.safety.hitl import submit_approval_decision
+    success, message = submit_approval_decision(
+        request_id=payload.request_id,
+        approved=payload.approved,
+        approver_id=payload.approver_id or "operator",
+        reason=payload.reason or ""
+    )
+    if not success:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": message}
+        )
+    return JSONResponse(
+        content={
+            "success": True,
+            "request_id": payload.request_id,
+            "approved": payload.approved,
+            "message": message
+        }
+    )
+
 
 
 # =============================================================================

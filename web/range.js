@@ -60,11 +60,6 @@ function esc(t) {
     return d.innerHTML;
 }
 
-// Cross-tab and persistent authentication helper
-function getAuthKey() {
-    return sessionStorage.getItem('nodal_key') || localStorage.getItem('nodal_key') || '';
-}
-
 // Helper to append logs to terminal safely (Gemini Chat Style)
 function appendLog(speaker, message, styleClass) {
     if (!terminal) return;
@@ -125,10 +120,7 @@ function checkAuthNotice() {
 }
 
 function loadFleetDevices() {
-    const key = getAuthKey();
-    fetch('/api/devices', {
-        headers: { 'X-API-Key': key }
-    })
+    authFetch('/api/devices')
     .then(r => r.json())
     .then(data => {
         if (!deviceSelect) return;
@@ -203,13 +195,9 @@ async function exportSimulationReport() {
     btnExportSimulation.innerHTML = `<span>Exporting...</span>`;
 
     try {
-        const key = getAuthKey();
-        const res = await fetch('/api/export/markdown', {
+        const res = await authFetch('/api/export/markdown', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': key
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ trace_id: targetTrace })
         });
 
@@ -279,15 +267,11 @@ function runSimulation(text) {
         canvasError.style.display = 'none';
     }
 
-    const key = getAuthKey();
     const selectedDevice = deviceSelect ? deviceSelect.value : 'default';
 
-    fetch('/api/range/simulate', {
+    authFetch('/api/range/simulate', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-API-Key': key
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, device: selectedDevice })
     })
     .then(res => {
@@ -798,187 +782,23 @@ function restoreRangeWidth() {
 // Authentication & Setup Wizard Engine
 // ═══════════════════════════════════════════════════════
 
-function setAuthKey(key) {
-    if (key) {
-        sessionStorage.setItem('nodal_key', key);
-        localStorage.setItem('nodal_key', key);
-    }
-}
-
-function clearAuthKey() {
-    sessionStorage.removeItem('nodal_key');
-    localStorage.removeItem('nodal_key');
-}
-
 function checkHealth() {
-    fetch('/api/health')
-        .then(r => r.json())
-        .then(data => {
-            if (data.access_token) {
-                setAuthKey(data.access_token);
-            }
-            checkAuthNotice();
-
-            const loginOverlay = document.getElementById('loginOverlay');
-            const setupOverlay = document.getElementById('setupOverlay');
-
-            if (!data.configured) {
-                if (loginOverlay) loginOverlay.style.display = 'none';
-                if (setupOverlay) setupOverlay.style.display = 'flex';
-            } else if (getAuthKey()) {
-                unlockApp();
-            } else {
-                if (setupOverlay) setupOverlay.style.display = 'none';
-                if (loginOverlay) {
-                    loginOverlay.style.display = 'flex';
-                    const loginInput = document.getElementById('loginInput');
-                    if (loginInput) loginInput.focus();
-                }
-            }
-
-            const statusChip = document.getElementById('perimeterStatusChip');
-            const statusText = document.getElementById('perimeterStatusText');
-            if (statusText) {
-                if (data.firewall_reachable) {
-                    statusText.textContent = data.firewall_ip ? `PAN-OS (${data.firewall_ip})` : 'PAN-OS CONNECTED';
-                    if (statusChip) statusChip.className = 'perimeter-status-chip nominal';
-                } else if (data.configured) {
-                    statusText.textContent = 'PAN-OS UNREACHABLE';
-                    if (statusChip) statusChip.className = 'perimeter-status-chip critical';
-                } else {
-                    statusText.textContent = 'NOT CONFIGURED';
-                }
-            }
-        })
-        .catch(err => {
-            console.warn('[RANGE] Health check failed:', err);
-        });
+    return CoreDefense.checkHealth({
+        onSuccess: () => checkAuthNotice()
+    });
 }
 
 function unlockApp() {
-    const loginOverlay = document.getElementById('loginOverlay');
-    if (loginOverlay) loginOverlay.style.display = 'none';
-    const setupOverlay = document.getElementById('setupOverlay');
-    if (setupOverlay) setupOverlay.style.display = 'none';
-    const workspace = document.getElementById('workspace');
-    if (workspace) workspace.style.display = 'flex';
+    CoreDefense.unlockApp();
 }
 
 function bindLogin() {
-    const form = document.getElementById('loginForm');
-    if (!form) return;
-
-    form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const input = document.getElementById('loginInput');
-        const btn = document.getElementById('loginBtn');
-        const err = document.getElementById('loginError');
-        const key = input.value.trim();
-        if (!key) return;
-
-        btn.disabled = true;
-        btn.textContent = 'Verifying...';
-        err.textContent = '';
-
-        try {
-            const res = await fetch('/api/login', {
-                method: 'POST',
-                headers: { 'X-API-Key': key }
-            });
-            if (res.ok) {
-                setAuthKey(key);
-                unlockApp();
-                appendLog('SYS', 'Session unlocked successfully', 'log-sys');
-            } else {
-                clearAuthKey();
-                err.textContent = 'Invalid passphrase. Try again.';
-            }
-        } catch (_) {
-            err.textContent = 'Connection error verifying passphrase.';
-        }
-        btn.disabled = false;
-        btn.textContent = 'Connect';
+    CoreDefense.bindLogin({
+        onSuccess: () => appendLog('SYS', 'Session unlocked successfully', 'log-sys')
     });
 }
 
 function bindSetup() {
-    const s1 = document.getElementById('setupStep1');
-    const s2 = document.getElementById('setupStep2');
-    const s3 = document.getElementById('setupStep3');
-    if (!s1 || !s2 || !s3) return;
-
-    document.getElementById('btnSetupSimple').addEventListener('click', () => {
-        document.getElementById('setupBackend').value = 'dotenv';
-        document.getElementById('setupSimpleFields').style.display = 'flex';
-        document.getElementById('setupVaultFields').style.display = 'none';
-        s1.style.display = 'none';
-        s2.style.display = 'block';
-    });
-
-    document.getElementById('btnSetupVault').addEventListener('click', () => {
-        document.getElementById('setupBackend').value = 'vault';
-        document.getElementById('setupSimpleFields').style.display = 'none';
-        document.getElementById('setupVaultFields').style.display = 'flex';
-        s1.style.display = 'none';
-        s2.style.display = 'block';
-    });
-
-    document.getElementById('btnSetupBack').addEventListener('click', () => {
-        s2.style.display = 'none';
-        s1.style.display = 'block';
-    });
-
-    document.getElementById('setupForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const btn = document.getElementById('setupSubmitBtn');
-        const err = document.getElementById('setupError');
-        btn.disabled = true;
-        btn.textContent = 'Saving...';
-        err.textContent = '';
-
-        const payload = {
-            backend_type: document.getElementById('setupBackend').value,
-            firewall_ip: document.getElementById('setupFwIp').value,
-            panos_key: document.getElementById('setupPanosKey').value,
-            gemini_key: document.getElementById('setupGeminiKey').value,
-            vault_addr: document.getElementById('setupVaultAddr').value,
-            vault_role: document.getElementById('setupVaultRole').value,
-            vault_secret: document.getElementById('setupVaultSecret').value
-        };
-
-        try {
-            const res = await fetch('/api/setup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const data = await res.json();
-            if (data.success) {
-                document.getElementById('setupPassphrase').textContent = data.passphrase;
-                s2.style.display = 'none';
-                s3.style.display = 'block';
-            } else {
-                err.textContent = data.error || 'Setup failed';
-            }
-        } catch (_) {
-            err.textContent = 'Network error saving configuration.';
-        }
-        btn.disabled = false;
-        btn.textContent = 'Save & Initialize';
-    });
-
-    document.getElementById('btnCopyPassphrase').addEventListener('click', () => {
-        const text = document.getElementById('setupPassphrase').textContent;
-        navigator.clipboard.writeText(text);
-        const btn = document.getElementById('btnCopyPassphrase');
-        btn.textContent = 'Copied!';
-        setTimeout(() => btn.textContent = 'Copy to Clipboard', 2000);
-    });
-
-    document.getElementById('btnProceedLogin').addEventListener('click', () => {
-        document.getElementById('setupOverlay').style.display = 'none';
-        document.getElementById('loginOverlay').style.display = 'flex';
-        document.getElementById('loginInput').focus();
-        checkHealth();
-    });
+    CoreDefense.bindSetup();
 }
+

@@ -45,7 +45,21 @@ _PAGE_RE = re.compile(
     r"\b(?:pp?\.|pages?)\s*(\d{1,4}(?:\s*(?:-|–|,|and|&|to)\s*\d{1,4})*)", re.IGNORECASE
 )
 _IP_RE = re.compile(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3})(?:/\d{1,2})?(?!(?:\.\d|[\d]))")
-_QUOTE_RE = re.compile(r'"([^"\n]+)"|“([^”\n]+)”')
+def _extract_all_ips(text: str) -> List[str]:
+    v4 = _IP_RE.findall(text or "")
+    v6_candidates = re.findall(r"(?<![a-fA-F0-9:])([a-fA-F0-9:]{2,39})(?:/\d{1,3})?(?![:a-fA-F0-9])", text or "")
+    v6 = []
+    for cand in v6_candidates:
+        if ":" in cand:
+            try:
+                ip_obj = ipaddress.ip_address(cand)
+                if isinstance(ip_obj, ipaddress.IPv6Address):
+                    v6.append(cand)
+            except ValueError:
+                pass
+    return list(dict.fromkeys(v4 + v6))
+
+_QUOTE_RE = re.compile(r'"([^"\n]+)"|“([^”\n]+)”|\'([a-zA-Z0-9_\-\.]{2,50})\'|‘([a-zA-Z0-9_\-\.]{2,50})’')
 # Recommendations are judgment, not facts: a line that starts with an action verb
 # needs no receipt. Everything else that reads as a statement must cite one.
 _RECOMMENDATION_RE = re.compile(
@@ -56,10 +70,40 @@ _RECOMMENDATION_RE = re.compile(
     r"test|trigger|upgrade|use|validate|verify)\b",
     re.IGNORECASE,
 )
+_CAUSAL_CONJUNCTIONS = re.compile(
+    r"\b(?:because|due to|caused by|resulting from|in order to stop|mitigating the|after the|which caused|which triggered)\b",
+    re.IGNORECASE,
+)
+_STATUS_KEYWORD_RE = re.compile(
+    r"\b(?:up|down|dropped|blocked|allowed|applied|failing|failed|degraded|offline|online)\b",
+    re.IGNORECASE,
+)
 _INFERENCE_RE = re.compile(
     r"\b(?:inference|general knowledge)\s*:|^(?:[-*+]\s+)?(?:\*\*|\*|_)?logic\s*\(",
     re.IGNORECASE,
 )
+_ASSERTIVE_VERBS_RE = re.compile(
+    r"\b(?:is|was|are|were|dropped|blocked|failed|caused by|identified as)\b",
+    re.IGNORECASE,
+)
+DISJOINT_TOOL_AFFINITY = {
+    "routing": {
+        "pattern": re.compile(
+            r"\b(?:bgp peer|ospf neighbor|fib lookup|next-hop|egress route|route flapping)\b",
+            re.IGNORECASE,
+        ),
+        "forbidden_tools": {"system_info", "license_info", "admin_sessions", "clock_status", "ntp_status"},
+        "domain_name": "routing/BGP",
+    },
+    "vpn": {
+        "pattern": re.compile(
+            r"\b(?:ipsec tunnel|ike phase|ike sa|globalprotect active users)\b",
+            re.IGNORECASE,
+        ),
+        "forbidden_tools": {"system_info", "license_info", "admin_sessions", "disk_space"},
+        "domain_name": "VPN",
+    },
+}
 
 
 # =============================================================================
@@ -114,10 +158,28 @@ def _walk_dicts(obj: Any):
 
 
 def _parse_device_time(value: str) -> Optional[datetime.datetime]:
-    try:
-        return datetime.datetime.strptime(str(value).strip(), "%a %b %d %H:%M:%S %Y")
-    except (ValueError, TypeError):
+    if not value:
         return None
+    val_str = str(value).strip()
+    for fmt in (
+        "%a %b %d %H:%M:%S %Y",
+        "%a %b %d %H:%M:%S %Z %Y",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+    ):
+        try:
+            return datetime.datetime.strptime(val_str, fmt)
+        except (ValueError, TypeError):
+            continue
+    # Strip potential timezone token e.g. "Mon Oct 12 07:04:10 PDT 2026"
+    parts = val_str.split()
+    if len(parts) == 6:
+        no_tz = f"{parts[0]} {parts[1]} {parts[2]} {parts[3]} {parts[5]}"
+        try:
+            return datetime.datetime.strptime(no_tz, "%a %b %d %H:%M:%S %Y")
+        except (ValueError, TypeError):
+            pass
+    return None
 
 
 def _parse_release(value: str) -> Optional[datetime.datetime]:
@@ -160,17 +222,19 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
     statuses = [effective_status(r) for r in receipts]
     ok = [(i, r) for i, (r, st) in enumerate(zip(receipts, statuses), 1) if st == "success"]
 
-    system, system_step = None, None
+    systems: List[Tuple[int, Dict[str, Any], Any]] = []
     for i, r in ok:
         data = _load(_raw(r))
         if data is not None and _find(data, "sw-version") is not None:
-            system, system_step = data, i
-            break
+            systems.append((i, data, r))
 
     device_time = None
     mgmt_net, mgmt_ip = None, None
-    if system is not None:
-        s = system_step
+    system_step = None
+
+    if len(systems) == 1:
+        s, system, r = systems[0]
+        system_step = s
         model = _find(system, "model") or "UNKNOWN"
         host = _find(system, "hostname") or _find(system, "devicename") or "UNKNOWN"
         facts.append(f"PAN-OS {_find(system, 'sw-version')} on {model} (hostname {host}) {_cite(s)}")
@@ -216,6 +280,29 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
                 )
             except ValueError:
                 pass
+    elif len(systems) > 1:
+        for s, system, r in systems:
+            model = _find(system, "model") or "UNKNOWN"
+            host = _find(system, "hostname") or _find(system, "devicename") or (r.get("args") or {}).get("target_device") or f"device-{s}"
+            facts.append(f"Device [{host}]: PAN-OS {_find(system, 'sw-version')} on {model} {_cite(s)}")
+            d_time = _parse_device_time(_find(system, "time"))
+            if _find(system, "time"):
+                facts.append(f"  [{host}] Device clock: {_find(system, 'time')} {_cite(s)}")
+            for label, ver_key, date_key in (
+                ("App/threat content", "threat-version", "threat-release-date"),
+                ("Antivirus content", "av-version", "av-release-date"),
+                ("WildFire content", "wildfire-version", "wildfire-release-date"),
+            ):
+                ver = _find(system, ver_key)
+                if ver is None:
+                    continue
+                rel = _parse_release(_find(system, date_key))
+                if rel:
+                    age = f", {(d_time - rel).days} days old" if d_time else ""
+                    stale = " (STALE: over 7 days)" if d_time and (d_time - rel).days > 7 else ""
+                    facts.append(f"  [{host}] {label} {ver}, released {rel.date().isoformat()}{age}{stale} {_cite(s)}")
+                else:
+                    facts.append(f"  [{host}] {label} {ver}, release date unknown {_cite(s)}")
 
     # Licenses
     for i, r in ok:
@@ -303,6 +390,53 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
                 f"idle {e.get('idle-for')}, expires {e.get('session-expiry')} {_cite(i)}"
             )
         break
+
+    # Core Diagnostic Verdicts: Security Policy Matches
+    for i, r in ok:
+        tool = r.get("tool")
+        if tool in ("test_security_policy", "test_policy_match"):
+            data = _load(_raw(r))
+            if data:
+                rule = _find(data, "rule") or _find(data, "rules")
+                action = _find(data, "action")
+                idx = _find(data, "index") or _find(data, "rule-idx")
+                args = r.get("args") or {}
+                flow = ""
+                if args.get("source") and args.get("destination"):
+                    flow = f" ({args['source']} -> {args['destination']}:{args.get('port', '*')})"
+                if rule and action:
+                    idx_str = f" (index {idx})" if idx else ""
+                    facts.append(
+                        f"Security policy verdict{flow}: rule '{rule}'{idx_str} -> action {str(action).upper()} {_cite(i)}"
+                    )
+
+    # Core Diagnostic Verdicts: Routing FIB Lookups
+    for i, r in ok:
+        tool = r.get("tool")
+        if tool in ("test_routing_fib", "test_routing_lookup"):
+            data = _load(_raw(r))
+            if data:
+                iface = _find(data, "interface") or _find(data, "egress-interface")
+                nh = _find(data, "next-hop") or _find(data, "nexthop")
+                ip_arg = (r.get("args") or {}).get("ip", "")
+                target_str = f" for {ip_arg}" if ip_arg else ""
+                if iface:
+                    nh_str = f", next-hop {nh}" if nh else ""
+                    facts.append(
+                        f"Routing FIB verdict{target_str}: egress interface {iface}{nh_str} {_cite(i)}"
+                    )
+
+    # Core Diagnostic Verdicts: NAT Policy Matches
+    for i, r in ok:
+        tool = r.get("tool")
+        if tool in ("test_nat_policy", "test_nat_match"):
+            data = _load(_raw(r))
+            if data:
+                rule = _find(data, "rule")
+                action = _find(data, "action") or _find(data, "type")
+                if rule:
+                    act_str = f" ({action})" if action else ""
+                    facts.append(f"NAT policy match: rule '{rule}'{act_str} {_cite(i)}")
 
     # Gaps
     for i, (r, st) in enumerate(zip(receipts, statuses), 1):
@@ -409,9 +543,19 @@ def _read_pages_from_receipt(receipt: Dict[str, Any]) -> List[Tuple[int, int]]:
         ranges.append(rng)
     if receipt.get("tool") == "query_knowledge_base":
         raw = _raw(receipt)
-        found_pages = [int(p) for p in re.findall(r"\[---\s*PAGE\s+(\d+)\s*---\]", raw)]
+        found_pages = sorted({int(p) for p in re.findall(r"\[---\s*PAGE\s+(\d+)\s*---\]", raw)})
         if found_pages:
-            ranges.append((min(found_pages), max(found_pages)))
+            # Group strictly contiguous runs: e.g. [1, 2, 3, 80] -> [(1, 3), (80, 80)]
+            start = found_pages[0]
+            prev = start
+            for p in found_pages[1:]:
+                if p == prev + 1:
+                    prev = p
+                else:
+                    ranges.append((start, prev))
+                    start = p
+                    prev = p
+            ranges.append((start, prev))
     return ranges
 
 
@@ -420,8 +564,10 @@ def _is_claim_line(stripped: str) -> bool:
     if not stripped:
         return False
     if stripped.rstrip("*_` \t").endswith(":"):
-        return False
-    if len(stripped) < 25:
+        if not _ASSERTIVE_VERBS_RE.search(stripped):
+            return False
+    min_len = 12 if _STATUS_KEYWORD_RE.search(stripped) else 25
+    if len(stripped) < min_len:
         return False
     if stripped.startswith(("#", ">", "<", "---", "===", "|:", "| :", "```")):
         return False
@@ -454,7 +600,7 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
     ]
     corpus = _norm("\n".join(ok_raw.values()) + "\n" + (query or ""))
     ip_corpus = "\n".join(list(ok_raw.values()) + ok_args) + "\n" + (query or "")
-    known_ips = set(_IP_RE.findall(ip_corpus))
+    known_ips = set(_extract_all_ips(ip_corpus))
     for cidr in re.findall(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3}/\d{1,2})(?![\d.])", ip_corpus):
         try:
             known_ips.add(str(ipaddress.ip_interface(cidr).network.network_address))
@@ -466,6 +612,9 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
             if isinstance(ip_obj, ipaddress.IPv4Address) and ip_obj.is_private:
                 net24 = ipaddress.ip_network(f"{ip_str}/24", strict=False)
                 known_ips.add(str(net24.network_address))
+            elif isinstance(ip_obj, ipaddress.IPv6Address):
+                net64 = ipaddress.ip_network(f"{ip_str}/64", strict=False)
+                known_ips.add(str(net64.network_address))
         except ValueError:
             pass
     read_ranges: Dict[int, List[Tuple[int, int]]] = {
@@ -519,7 +668,7 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
                 out.append(line)
             continue
         if in_fence:
-            fence_ips.extend(_IP_RE.findall(line))
+            fence_ips.extend(_extract_all_ips(line))
             out.append(line)
             continue
 
@@ -542,6 +691,14 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
                 if not re.search(r"\b(?:unknown|failed|blocked|error)\b", stripped, re.IGNORECASE):
                     problems.append(f"Step {step} was {statuses[step - 1].upper()}")
 
+        for domain, config in DISJOINT_TOOL_AFFINITY.items():
+            if config["pattern"].search(stripped):
+                cited_tools = [receipts[s - 1].get("tool", "") for s in cited if 1 <= s <= len(receipts)]
+                if cited_tools and all(t in config["forbidden_tools"] for t in cited_tools):
+                    problems.append(
+                        f"cites {', '.join(dict.fromkeys(cited_tools))} which cannot provide {config['domain_name']} telemetry"
+                    )
+
         scope_ranges: List[Tuple[int, int]] = []
         step_scoped = [read_ranges[s] for s in cited if s in read_ranges]
         if step_scoped:
@@ -561,19 +718,31 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
             problems.append(f"{label} {', '.join(str(p) for p in unread)} never read")
 
         for qm in _QUOTE_RE.finditer(stripped):
-            raw_quote = qm.group(1) or qm.group(2) or ""
-            if len(raw_quote.strip()) < 20:
-                continue
-            fragments = [f for f in re.split(r"\.\.\.|…", raw_quote) if len(f.strip()) >= 15]
-            missing = [f for f in fragments if _norm(f).strip(" .,;") not in corpus]
-            if missing:
-                problems.append("quoted text not found in any receipt")
+            raw_quote = next((g for g in qm.groups() if g), "")
+            q_clean = raw_quote.strip()
+            if len(q_clean) >= 20:
+                fragments = [f for f in re.split(r"\.\.\.|…", q_clean) if len(f.strip()) >= 15]
+                missing = [f for f in fragments if _norm(f).strip(" .,;") not in corpus]
+                if missing:
+                    problems.append("quoted text not found in any receipt")
+            elif len(q_clean) >= 4:
+                norm_quote = _norm(q_clean)
+                entity_context = re.search(
+                    rf"\b(?:rule|zone|profile|policy|application)\s+['\"“‘]{re.escape(q_clean)}['\"”’]",
+                    stripped,
+                    re.IGNORECASE,
+                )
+                if entity_context and norm_quote not in corpus:
+                    if norm_quote not in {"any", "none", "drop", "allow", "reset", "alert"}:
+                        problems.append(f"quoted entity '{q_clean}' not found in any receipt")
 
-        unknown_ips = sorted({ip for ip in _IP_RE.findall(stripped) if ip not in known_ips})
+        unknown_ips = sorted({ip for ip in _extract_all_ips(stripped) if ip not in known_ips})
         if unknown_ips:
             problems.append(f"{', '.join(unknown_ips)} not found in any receipt or the query")
 
-        has_signal = not _RECOMMENDATION_RE.match(stripped)
+        is_rec = bool(_RECOMMENDATION_RE.match(stripped))
+        has_causal_claim = is_rec and bool(_CAUSAL_CONJUNCTIONS.search(stripped))
+        has_signal = (not is_rec) or has_causal_claim
         if problems or cited or has_signal:
             stats["claims"] += 1
 

@@ -580,3 +580,102 @@ def test_tested_args_ips_are_credited_in_ip_corpus():
     assert stats["unverified"] == 0
 
 
+def test_causal_recommendation_requires_citation_or_marked_uncited():
+    """Verify that a recommendation smuggling a causal assertion gets caught as a claim."""
+    line = "- Configure rate-limiting immediately to mitigate the active attack which caused the outage."
+    annotated, stats = annotate_claims(line, RECEIPTS, QUERY)
+    assert "[UNCITED]" in annotated
+    assert stats["uncited"] == 1
+
+
+def test_ipv6_hallucination_is_unverified():
+    """Verify that an unverified IPv6 address is caught and flagged."""
+    line = "- Traffic is routed to gateway 2001:db8:85a3::8a2e:370:7334 [Step 2]."
+    annotated, stats = annotate_claims(line, RECEIPTS, QUERY)
+    assert "2001:db8:85a3::8a2e:370:7334 not found" in annotated
+    assert stats["unverified"] == 1
+
+
+def test_short_quoted_firewall_entity_is_unverified():
+    """Verify that a quoted firewall entity (<20 chars) not in receipts is flagged."""
+    line = "- Packet was dropped by rule 'fake-deny-p2p' in the security policy [Step 2]."
+    annotated, stats = annotate_claims(line, RECEIPTS, QUERY)
+    assert "quoted entity 'fake-deny-p2p' not found in any receipt" in annotated
+    assert stats["unverified"] == 1
+
+
+def test_multi_device_facts_fleet():
+    """Verify that multi-device receipts produce fact entries for all queried firewalls."""
+    dev2_sys = SYSTEM_INFO.replace("firewall-a", "firewall-b").replace("10.0.12-h3", "11.1.2")
+    fleet_receipts = [
+        {"tool": "system_info", "status": "success", "raw_output": SYSTEM_INFO, "args": {"target_device": "fw-a"}},
+        {"tool": "system_info", "status": "success", "raw_output": dev2_sys, "args": {"target_device": "fw-b"}},
+    ]
+    facts = build_facts(fleet_receipts)
+    joined = "\n".join(facts)
+    assert "Device [firewall-a]: PAN-OS 10.0.12-h3" in joined
+    assert "Device [firewall-b]: PAN-OS 11.1.2" in joined
+
+
+def test_short_status_claim_is_marked_uncited():
+    """Verify that short lines (<25 chars) asserting status are treated as claims."""
+    line = "- Tunnel 1 is down."
+    annotated, stats = annotate_claims(line, RECEIPTS, QUERY)
+    assert "[UNCITED]" in annotated
+    assert stats["uncited"] == 1
+
+
+def test_contiguous_page_intervals_rejects_gap_pages():
+    """Verify that non-contiguous page outputs do not bridge gap pages into verified ranges."""
+    gap_receipts = [{
+        "tool": "query_knowledge_base",
+        "status": "success",
+        "args": {"action": "search"},
+        "raw_output": "[--- PAGE 1 ---]\nIntroduction\n[--- PAGE 50 ---]\nIndex and References",
+    }]
+    line = "- The hardening guide recommends disabling telnet on p. 25 [Step 1]."
+    annotated, stats = annotate_claims(line, gap_receipts, "")
+    assert "page 25 never read" in annotated
+    assert stats["unverified"] == 1
+
+
+def test_colon_ending_assertion_is_marked_uncited():
+    """Verify that a factual claim ending with a colon is audited as a claim and marked uncited."""
+    line = "- Root cause was determined to be an unassigned security zone on ethernet1/1:"
+    annotated, stats = annotate_claims(line, [], "")
+    assert "[UNCITED]" in annotated
+    assert stats["uncited"] == 1
+
+
+def test_semantic_citation_hijacking_is_unverified():
+    """Verify that citing an unrelated system_info tool for a BGP/routing claim is flagged."""
+    line = "- BGP peer 192.168.1.20 is down due to route flapping [Step 2]."
+    annotated, stats = annotate_claims(line, RECEIPTS, QUERY)
+    assert "cannot provide routing/BGP telemetry" in annotated
+    assert stats["unverified"] == 1
+
+
+def test_deterministic_policy_and_fib_verdicts_in_facts():
+    """Verify that test_security_policy and test_routing_fib produce deterministic facts."""
+    verdict_receipts = [
+        {
+            "tool": "test_security_policy",
+            "status": "success",
+            "args": {"source": "10.0.1.5", "destination": "192.168.1.1", "port": 443},
+            "raw_output": "response:\n  result:\n    rules:\n      entry:\n        rule: Block-Web-Inbound\n        action: deny\n        index: 14\n"
+        },
+        {
+            "tool": "test_routing_fib",
+            "status": "success",
+            "args": {"ip": "8.8.8.8"},
+            "raw_output": "response:\n  result:\n    fib:\n      entry:\n        interface: ethernet1/1\n        next-hop: 203.0.113.1\n"
+        }
+    ]
+    facts = build_facts(verdict_receipts)
+    facts_str = "\n".join(facts)
+    assert "Security policy verdict (10.0.1.5 -> 192.168.1.1:443): rule 'Block-Web-Inbound' (index 14) -> action DENY [Step 1]" in facts_str
+    assert "Routing FIB verdict for 8.8.8.8: egress interface ethernet1/1, next-hop 203.0.113.1 [Step 2]" in facts_str
+
+
+
+

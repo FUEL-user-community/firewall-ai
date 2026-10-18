@@ -186,3 +186,153 @@ class _LazyPromptProxy:
 
 # Backward compatible — existing code uses `SYSTEM_PROMPT` as a string constant.
 SYSTEM_PROMPT = _LazyPromptProxy()
+
+
+# =============================================================================
+# Prompt Directives & Safety Constants
+# =============================================================================
+
+CIRCUIT_BREAKER_REFLECTION_PROMPT = (
+    "[SYSTEM: LOOP DETECTED. Your investigation is being terminated for safety. "
+    "Before shutdown, produce a PARTIAL REPORT: "
+    "1) WHAT_TRIED: List every tool you called and key findings. "
+    "2) WHY_STALLED: One sentence on why you were repeating actions. "
+    "3) RECOMMENDATION: What the human should investigate manually.]"
+)
+
+BUDGET_EXCEEDED_PROMPT = (
+    "[SYSTEM: Budget limit reached. Produce a PARTIAL REPORT from the data "
+    "you have gathered so far. Include all findings and recommendations.]"
+)
+
+
+# =============================================================================
+# Dynamic Fleet & Reality Prompt Assembly
+# =============================================================================
+
+_DEVICES_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "devices.yaml"
+_devices_cache: dict = {}
+_devices_last_mtime: float = 0.0
+_devices_lock = threading.Lock()
+
+
+def load_devices_config() -> dict:
+    """Loads devices.yaml with mtime caching to eliminate disk I/O on hot query paths."""
+    global _devices_cache, _devices_last_mtime
+    if not _DEVICES_CONFIG_PATH.exists():
+        return {}
+    try:
+        current_mtime = _DEVICES_CONFIG_PATH.stat().st_mtime
+        if current_mtime != _devices_last_mtime:
+            with _devices_lock:
+                if current_mtime != _devices_last_mtime:
+                    with open(_DEVICES_CONFIG_PATH, "r", encoding="utf-8") as f:
+                        _devices_cache = yaml.safe_load(f) or {}
+                    _devices_last_mtime = current_mtime
+        return _devices_cache
+    except Exception as e:
+        logger.warning(f"[FLEET] Error reading devices config: {e}")
+        return _devices_cache
+
+
+def build_fleet_context() -> str:
+    """
+    Produces a structured fleet inventory string for injection into the LLM context.
+    Uses mtime caching so changes to devices.yaml are picked up without restart.
+    """
+    try:
+        data = load_devices_config()
+        if not data and not _DEVICES_CONFIG_PATH.exists():
+            return "FLEET_INVENTORY: Single device mode (no devices.yaml found)."
+
+        firewalls = data.get("firewalls", {}) if data else {}
+        if not firewalls:
+            return "FLEET_INVENTORY: No firewalls configured."
+
+        lines = ["FLEET_INVENTORY: Managed devices:"]
+        for name, info in firewalls.items():
+            label = info.get("label", "")
+            is_default = info.get("default", False)
+            marker = " <- DEFAULT" if is_default else ""
+            lines.append(f"  - {name}: {label}{marker}")
+
+        lines.append('Use target_device="<alias>" in tool calls to target a specific device.')
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"[FLEET] Failed to build fleet context: {e}")
+        return "FLEET_INVENTORY: Unable to load (using default device)."
+
+
+def resolve_target_device(user_query: str, explicit_device: str = None) -> str:
+    """Resolves target device alias from explicit parameter or query text."""
+    if explicit_device:
+        return explicit_device
+    try:
+        import re
+        fw_dict = load_devices_config().get("firewalls", {})
+        for fw_alias in fw_dict:
+            pattern = r'(?<![a-zA-Z0-9_-])' + re.escape(fw_alias.lower()) + r'(?![a-zA-Z0-9_-])'
+            if re.search(pattern, user_query.lower()):
+                return fw_alias
+    except Exception as ex:
+        logger.debug(f"[PROMPT] Device resolution failed: {ex}")
+    return None
+
+
+def build_reality_prompt(
+    user_query: str,
+    manifest_str: str,
+    fleet_context: str = "",
+    license_context: str = "",
+    thinking_level: str = "high",
+    target_mode: str = "default",
+) -> str:
+    """Builds grounded reality anchor string including fleet inventory and diagnostic parameters."""
+    fleet = fleet_context or build_fleet_context()
+
+    if target_mode == "advisory":
+        reality_check = (
+            "REALITY_CHECK: You are operating in ARCHITECTURAL ADVISORY MODE.\n"
+            f"You only have access to official documentation: [{manifest_str}].\n"
+            "Live firewall execution tools are disabled for safety.\n"
+            "Deliver strategic guidance, best practices, and candidate configurations.\n"
+            "Ground recommendations in official PAN-OS manuals, hardening blueprints, and CVE data.\n"
+            "Prefix any candidate configuration CLI blocks with:\n"
+            "# [ADVISORY SPECIFICATION - VALIDATE IN LAB BEFORE PRODUCTION COMMIT]\n\n"
+            f"{fleet}"
+        )
+    else:
+        reality_check = (
+            f"REALITY_CHECK: You only have these tools: [{manifest_str}].\n"
+            "Verify tool names against this list before every call.\n\n"
+            f"{fleet}"
+        )
+
+    if license_context:
+        reality_check += f"\n\n{license_context}"
+
+    reality_check += f"\n\n[SYSTEM COGNITIVE BOUNDS: Execute with {thinking_level.upper()} reasoning depth.]"
+    return reality_check
+
+
+def get_ceiling_directive(target_mode: str, turn: int, outward_receipts_count: int, range_probe_limit: int = 7) -> str:
+    """
+    Returns forced terminal synthesis directive if turn or evidence ceilings are reached.
+    Guarantees graceful report emission before reaching hard agent loop boundaries.
+    """
+    if target_mode == "range" and turn >= range_probe_limit - 1:
+        return (
+            f"\n\n[SYSTEM: SIMULATION PROBE BUDGET REACHED (Turn {turn+1} of {range_probe_limit})]\n"
+            "You have comprehensive empirical telemetry across candidate ingress, lateral, and policy boundaries.\n"
+            "Do NOT execute any further tool calls.\n"
+            "Proceed directly to Step 3 (TOPOLOGY SYNTHESIS) and emit your terminal pure JSON payload NOW."
+        )
+    elif target_mode != "range" and outward_receipts_count >= 14:
+        return (
+            f"\n\n[SYSTEM: TRIAD EVIDENCE CEILING REACHED ({outward_receipts_count} outward tools executed)]\n"
+            "You have sufficient empirical telemetry across candidate ingress, lateral, and policy boundaries.\n"
+            "Do NOT execute any further tool calls.\n"
+            "Proceed directly to SYNTHESIS and emit your final executive diagnostic report NOW."
+        )
+    return None
+

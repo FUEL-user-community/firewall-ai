@@ -146,7 +146,34 @@ class PolicyEngine:
         "kill_",
         "update_",
         "modify_",
+        "commit_",
+        "push_",
+        "create_",
+        "disable_",
+        "reset_",
+        "reboot_",
+        "shutdown_",
+        "override_",
+        "install_",
+        "upgrade_",
+        "purge_",
+        "erase_",
+        "halt_",
+        "reload_",
+        "drop_",
     )
+
+    DANGEROUS_ACTIONS = {
+        "reboot",
+        "shutdown",
+        "commit",
+        "push",
+        "reload",
+        "reset",
+        "erase",
+        "halt",
+        "drop",
+    }
 
     def __init__(self, mode: Optional[str] = None):
         self._default_mode = (mode or os.getenv("POLICY_MODE", "READ_ONLY")).upper()
@@ -177,6 +204,7 @@ class PolicyEngine:
         else:
             is_write = (
                 clean_name in self.WRITE_TOOLS
+                or clean_name in self.DANGEROUS_ACTIONS
                 or any(clean_name.startswith(p) for p in self.WRITE_PREFIXES)
             )
 

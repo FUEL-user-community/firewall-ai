@@ -74,6 +74,12 @@ def test_static_js_and_css_assets():
     assert "function sanitizeMermaid" in res_range.text
     assert "/api/range/simulate" in res_range.text
 
+    res_api = client.get("/api.js")
+    assert res_api.status_code == 200
+    assert "window.CoreDefense" in res_api.text
+    assert "authFetch" in res_api.text
+    assert "checkHealth" in res_api.text
+
     res_css = client.get("/styles.css")
     assert res_css.status_code == 200
     assert "body" in res_css.text
@@ -125,3 +131,85 @@ def test_range_simulate_validation(ensure_auth_key):
     req = RangeSimulateRequest(message="Test scenario", device="fw-hq")
     assert req.device == "fw-hq"
     assert req.message == "Test scenario"
+
+
+def test_hitl_api_endpoints(ensure_auth_key):
+    """Test /api/hitl/pending and /api/hitl/decide endpoint authentication and decisions."""
+    import threading
+    import time
+    from core.safety.hitl import clear_pending_approvals, ApprovalRequest, InteractiveHITLProvider
+
+    clear_pending_approvals()
+    headers = {"X-API-Key": ensure_auth_key}
+
+    # Unauthorized access check
+    res_unauth = client.get("/api/hitl/pending")
+    assert res_unauth.status_code == 401
+
+    # Initially empty
+    res_empty = client.get("/api/hitl/pending", headers=headers)
+    assert res_empty.status_code == 200
+    data = res_empty.json()
+    assert data["success"] is True
+    assert data["count"] == 0
+    assert data["pending"] == []
+
+    # Enqueue a mock request via InteractiveHITLProvider
+    provider = InteractiveHITLProvider(timeout_seconds=5.0)
+    req = ApprovalRequest(
+        tool_name="override_threat_exception",
+        tool_args={"threat_id": "9999"},
+        user_id="analyst",
+        trace_id="trace-web-test"
+    )
+
+    worker_result = [None]
+    def worker():
+        worker_result[0] = provider.request_approval(req)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    # Poll endpoint
+    res_list = None
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        res_list = client.get("/api/hitl/pending", headers=headers)
+        if res_list.json().get("count", 0) > 0:
+            break
+        time.sleep(0.02)
+
+    assert res_list is not None
+    list_data = res_list.json()
+    assert list_data["count"] == 1
+    assert list_data["pending"][0]["request_id"] == req.request_id
+
+    # Decide via POST /api/hitl/decide
+    res_decide = client.post(
+        "/api/hitl/decide",
+        headers=headers,
+        json={
+            "request_id": req.request_id,
+            "approved": True,
+            "reason": "Authorized via web console",
+            "approver_id": "soc-director"
+        }
+    )
+    assert res_decide.status_code == 200
+    decide_data = res_decide.json()
+    assert decide_data["success"] is True
+    assert decide_data["approved"] is True
+
+    t.join(timeout=3.0)
+    assert worker_result[0] is not None
+    assert worker_result[0].approved is True
+    assert worker_result[0].approver_id == "soc-director"
+    assert len(worker_result[0].signature) == 16
+
+    # Deciding on a non-existent request should return 404
+    res_404 = client.post(
+        "/api/hitl/decide",
+        headers=headers,
+        json={"request_id": "ghost-request", "approved": False}
+    )
+    assert res_404.status_code == 404
