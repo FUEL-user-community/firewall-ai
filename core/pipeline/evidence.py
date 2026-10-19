@@ -708,7 +708,11 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
         for r, st in zip(receipts, statuses)
         if st == "success" and r.get("args")
     ]
-    corpus = _norm("\n".join(ok_raw.values()) + "\n" + (query or ""))
+    all_receipt_text = "\n".join(
+        [_raw(r) for r in receipts]
+        + [str(r.get("args") or "") for r in receipts if r.get("args")]
+    )
+    corpus = _norm(all_receipt_text + "\n" + (query or ""))
     ip_corpus = "\n".join(list(ok_raw.values()) + ok_args) + "\n" + (query or "")
     known_ips = set(_extract_all_ips(ip_corpus))
     for cidr in re.findall(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3}/\d{1,2})(?![\d.])", ip_corpus):

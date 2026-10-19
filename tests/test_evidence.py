@@ -795,5 +795,19 @@ def test_security_policy_to_local_dataplane_interface_has_listener_note():
     assert "Security policy verdict (192.168.1.100 -> 192.168.1.1:443): rule 'Allow-Inside-Out' -> action ALLOW (NOTE: destination is local dataplane interface ethernet1/2; requires Interface Management Profile with service enabled to accept management traffic) [Step 2]" in facts_str
 
 
-
-
+def test_quoted_text_from_failed_receipt_passes():
+    """Verify that quoting error output from a cited failed receipt is recognized and not marked unverified."""
+    receipts = [
+        {"tool": "system_info", "status": "success", "raw_output": SYSTEM_INFO, "args": {}},
+        {
+            "tool": "get_live_config",
+            "status": "failed",
+            "args": {"xpath": "/config/devices/entry/vsys/entry/global-protect"},
+            "raw_output": "Error: No data returned from firewall."
+        }
+    ]
+    line = "- Live XPath query returned \"Error: No data returned from firewall.\" when checked [Step 2 failed]."
+    annotated, stats = annotate_claims(line, receipts, "")
+    assert "UNVERIFIED" not in annotated
+    assert stats["cited_ok"] == 1
+    assert stats["unverified"] == 0
