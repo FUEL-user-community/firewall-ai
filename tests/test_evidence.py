@@ -677,8 +677,8 @@ def test_deterministic_policy_and_fib_verdicts_in_facts():
     assert "Routing FIB verdict for 8.8.8.8: egress interface ethernet1/1, next-hop 203.0.113.1 [Step 2]" in facts_str
 
 
-def test_adversary_presence_ghost_attacker_detected_in_facts():
-    """Verify that an unobserved IP in the query with empty ARP telemetry is classified as SIMULATED / GHOST ATTACKER."""
+def test_adversary_presence_not_observed_is_uncorroborated_not_simulated():
+    """Absence from checked sources is UNCORROBORATED with visibility limits, never SIMULATED, and never claims unrun checks."""
     receipts = [
         {"tool": "system_info", "status": "success", "raw_output": SYSTEM_INFO, "args": {}},
         {"tool": "interface_all", "status": "success", "raw_output": INTERFACE_ALL, "args": {}},
@@ -687,10 +687,38 @@ def test_adversary_presence_ghost_attacker_detected_in_facts():
     query = "Host 192.168.1.100 is probing 192.168.1.254 and 192.168.1.1 on port 443"
     facts = build_facts(receipts, query=query)
     facts_str = "\n".join(facts)
-    assert "Adversary Presence: Query IP 192.168.1.100 has NO wire telemetry (0 active sessions, absent from ARP/neighbor tables; evaluate as SIMULATED / GHOST ATTACKER scenario) [Step 3]" in facts_str
+    assert "Adversary Presence: Query IP 192.168.1.100 NOT OBSERVED in checked sources (L2 neighbor tables [Step 3]). UNCORROBORATED, not disproven." in facts_str
+    assert "MGT port never appear" in facts_str
+    assert "Not checked: dataplane sessions, logs, management-plane clients." in facts_str
+    assert "SIMULATED" not in facts_str
+    assert "0 active sessions" not in facts_str
     # Verify local firewall IPs (192.168.1.254, 192.168.1.1) are NOT misclassified as adversaries
     assert "Adversary Presence: Query IP 192.168.1.254" not in facts_str
     assert "Adversary Presence: Query IP 192.168.1.1 " not in facts_str
+
+
+def test_adversary_presence_not_checked_when_no_presence_source_ran():
+    """No presence source -> NOT CHECKED / UNKNOWN. Aggregate session_info and config reads are not presence sources."""
+    receipts = [
+        {"tool": "system_info", "status": "success", "raw_output": SYSTEM_INFO, "args": {}},
+        {"tool": "session_info", "status": "success", "raw_output": "response:\n  result:\n    num-active: 12\n", "args": {}},
+        {"tool": "execute_operational_command", "status": "success", "args": {"cmd": "show session info"}, "raw_output": "response:\n  result:\n    num-active: 12\n"},
+        {"tool": "arp_table", "status": "failed", "raw_output": "ERROR: timeout", "args": {}},
+    ]
+    facts_str = "\n".join(build_facts(receipts, query="Host 10.9.9.9 is scanning the firewall"))
+    assert "Adversary Presence: Query IP 10.9.9.9 NOT CHECKED" in facts_str
+    assert "Presence is UNKNOWN." in facts_str
+    assert "SIMULATED" not in facts_str
+
+
+def test_adversary_presence_config_mention_is_not_observation():
+    """An IP appearing in running config (address object) is not evidence the host is present."""
+    receipts = [
+        {"tool": "get_live_config", "status": "success", "args": {"xpath": "/config"}, "raw_output": "address:\n  entry:\n    name: bad-host\n    ip-netmask: 10.9.9.9/32\n"},
+    ]
+    facts_str = "\n".join(build_facts(receipts, query="Host 10.9.9.9 is scanning the firewall"))
+    assert "OBSERVED in device telemetry" not in facts_str
+    assert "Adversary Presence: Query IP 10.9.9.9 NOT CHECKED" in facts_str
 
 
 def test_adversary_presence_observed_live_on_wire():
@@ -701,7 +729,64 @@ def test_adversary_presence_observed_live_on_wire():
     query = "Investigate active host 192.168.1.20"
     facts = build_facts(receipts, query=query)
     facts_str = "\n".join(facts)
-    assert "Adversary Presence: Query IP 192.168.1.20 is OBSERVED on wire telemetry [Step 1]" in facts_str
+    assert "Adversary Presence: Query IP 192.168.1.20 is OBSERVED in device telemetry [Step 1]" in facts_str
+
+
+DISPUTE_RECEIPTS = [
+    {"tool": "system_info", "status": "success", "raw_output": SYSTEM_INFO, "args": {}},
+    {"tool": "execute_operational_command", "status": "success", "args": {"cmd": "show arp dynamic"}, "raw_output": "response:\n  result:\n    entries: {}\n"},
+    {"tool": "execute_log_query", "status": "success", "args": {"log_type": "traffic"}, "raw_output": "entry:\n  src: 192.168.1.100\n  dst: 192.168.1.254\n  dport: 443\n"},
+    {"tool": "mgmt_clients", "status": "failed", "raw_output": "ERROR: timeout", "args": {}},
+]
+
+
+def test_valid_dispute_is_counted_not_marked():
+    line = (
+        "DISPUTE: Content staleness verdict for App/threat content | COUNTER-RECEIPT: [Step 1] | "
+        "REASON: the release date in Step 1 is the date the code compared against."
+    )
+    annotated, stats = annotate_claims(line, DISPUTE_RECEIPTS, "")
+    assert "UNVERIFIED" not in annotated
+    assert stats["disputes"] == 1
+    assert stats["claims"] == 1
+    assert stats["cited_ok"] == 0
+    assert "1 receipt-backed DISPUTE of computed facts" in claim_summary(stats)
+
+
+def test_dispute_with_failed_counter_receipt_is_unverified():
+    line = (
+        "- **DISPUTE:** Adversary Presence for 192.168.1.100 | COUNTER-RECEIPT: [Step 4] | "
+        "REASON: the management client list failed, so it is unknown."
+    )
+    annotated, stats = annotate_claims(line, DISPUTE_RECEIPTS, "Host 192.168.1.100")
+    assert "dispute lacks SUCCESS counter-receipt" in annotated
+    assert "Step 4 was FAILED" in annotated
+    assert stats["disputes"] == 0
+    assert stats["unverified"] == 1
+
+
+def test_dispute_without_counter_receipt_or_reason_is_unverified():
+    annotated, stats = annotate_claims(
+        "DISPUTE: the Adversary Presence classification is wrong", DISPUTE_RECEIPTS, ""
+    )
+    assert "dispute lacks SUCCESS counter-receipt" in annotated
+    assert "dispute gives no REASON" in annotated
+    assert stats["disputes"] == 0
+    assert stats["unverified"] == 1
+
+
+def test_dispute_annotation_is_idempotent():
+    text = "\n".join([
+        "DISPUTE: Adversary Presence for 192.168.1.100 | COUNTER-RECEIPT: [Step 3] | REASON: traffic log shows the host.",
+        "DISPUTE: the Adversary Presence classification is wrong",
+    ])
+    once, s1 = apply_evidence(text, DISPUTE_RECEIPTS, "Host 192.168.1.100 probing 192.168.1.254")
+    twice, s2 = apply_evidence(once, DISPUTE_RECEIPTS, "Host 192.168.1.100 probing 192.168.1.254")
+    assert once == twice
+    assert s1 == s2
+    assert s1["disputes"] == 1 and s1["unverified"] == 1
+    # The log receipt contains the host, so the computed fact itself is OBSERVED.
+    assert "Query IP 192.168.1.100 is OBSERVED in device telemetry [Step 3]" in once
 
 
 def test_claim_citing_empty_arp_step_for_ghost_ip_is_unverified():

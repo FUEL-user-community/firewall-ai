@@ -728,7 +728,9 @@ class CoreBrain:
                 state.last_facts = facts
                 message_payload.append(
                     "[SYSTEM: COMPUTED FACTS - derived by code from your SUCCESS receipts. "
-                    "These are ground truth: do not contradict them, and cite their [Step N] when you use them. "
+                    "Use them and cite their [Step N]. Raw receipt values are authoritative; code "
+                    "classifications can be wrong. If a SUCCESS receipt contradicts one, write "
+                    "'DISPUTE: <fact> | COUNTER-RECEIPT: [Step N] | REASON: <one sentence>' - never override silently. "
                     "A GAP line means that data is UNKNOWN, not absent.]\n" + facts
                 )
 

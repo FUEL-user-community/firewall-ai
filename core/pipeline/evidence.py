@@ -16,6 +16,9 @@ Two deterministic layers applied to every investigation report:
      - names an IP address found in no receipt and not the query -> UNVERIFIED
      - asserts presence for an unobserved query IP citing a step lacking it -> UNVERIFIED
      - states a fact without any [Step N] citation              -> UNCITED
+     - DISPUTE: line without a SUCCESS counter-receipt or reason -> UNVERIFIED
+   Valid DISPUTE lines (the model challenging a computed fact with a SUCCESS
+   receipt) are counted separately so harness owners can review them.
 
 Counter-logic: a citation to a SUCCESS step proves the step exists, not that
 it supports the sentence. Quote and IP checks narrow that gap; they do not
@@ -111,6 +114,62 @@ _ASSERTIVE_VERBS_RE = re.compile(
     r"\b(?:is|was|are|were|dropped|blocked|failed|caused by|identified as)\b",
     re.IGNORECASE,
 )
+# Dispute channel: the model may challenge a code-computed fact only by citing a receipt.
+# Format: DISPUTE: <fact> | COUNTER-RECEIPT: [Step N] | REASON: <one sentence>
+_DISPUTE_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*|\*|_)?DISPUTE(?:\*\*|\*|_)?\s*:", re.IGNORECASE)
+_COUNTER_RE = re.compile(r"COUNTER-RECEIPT\s*:\s*(.*?)(?=\|\s*REASON\s*:|$)", re.IGNORECASE)
+_REASON_RE = re.compile(r"\|\s*REASON\s*:\s*\S", re.IGNORECASE)
+
+# Presence sources: (label, tool names, arg pattern, visibility limit).
+# Absence in a source only means something inside that source's visibility.
+_PRESENCE_SOURCES = (
+    (
+        "L2 neighbor tables",
+        {"arp_table", "mac_table"},
+        re.compile(r"\b(?:arp|neighbor|mac)\b", re.IGNORECASE),
+        "ARP/ND/MAC only list hosts on subnets attached to a dataplane interface; "
+        "routed hosts and hosts that only talk to the MGT port never appear",
+    ),
+    (
+        "dataplane sessions",
+        {"session_all", "session_filter_source", "session_filter_dest", "session_filter_app",
+         "session_details", "get_active_sessions"},
+        re.compile(r"\bsession\s+(?:all|id)\b", re.IGNORECASE),
+        "the session table only holds live flows through the dataplane; MGT-port traffic and "
+        "expired flows never appear",
+    ),
+    (
+        "logs",
+        {"execute_log_query", "threat_logs", "auth_logs"},
+        re.compile(r"\blogs?\b|log[_-]type", re.IGNORECASE),
+        "logs only hold traffic that matched a rule with logging enabled, inside the queried window",
+    ),
+    (
+        "management-plane clients",
+        {"admin_sessions", "mgmt_clients"},
+        None,
+        "admin/mgmt client lists only show authenticated or currently connected clients, not probes",
+    ),
+)
+_SIM_TOOLS = {"test_security_policy", "test_nat_policy", "test_routing_fib", "test_routing_lookup", "test_pbf_policy"}
+_CONFIG_TOOLS = {"get_live_config", "fetch_running_config_xml", "query_knowledge_base"}
+
+
+def _presence_source(tool: str, args_str: str) -> Optional[int]:
+    """Index into _PRESENCE_SOURCES for a receipt, or None if it is not a presence source."""
+    if tool in _SIM_TOOLS or tool in _CONFIG_TOOLS:
+        return None
+    for idx, (_, tools, arg_re, _) in enumerate(_PRESENCE_SOURCES):
+        if tool in tools:
+            return idx
+    if tool == "execute_operational_command":
+        if re.search(r"\bconfig\b", args_str, re.IGNORECASE):
+            return None
+        for idx, (_, _, arg_re, _) in enumerate(_PRESENCE_SOURCES):
+            if arg_re is not None and arg_re.search(args_str):
+                return idx
+    return None
+
 DISJOINT_TOOL_AFFINITY = {
     "routing": {
         "pattern": re.compile(
@@ -511,40 +570,44 @@ def build_facts(receipts: List[Dict[str, Any]], query: str = "") -> List[str]:
                     act_str = f" ({action})" if action else ""
                     facts.append(f"NAT policy match: rule '{rule}'{act_str} {_cite(i)}")
 
-    # Adversary Presence Triage (Queried external host vs wire telemetry)
+    # Adversary Presence Triage (queried host vs presence sources).
+    # Three states only: OBSERVED, NOT OBSERVED in named sources (uncorroborated, not
+    # disproven), NOT CHECKED. Absence is never promoted to "simulated": each source
+    # has a visibility limit and a real attacker outside it looks identical to a ghost.
     if query:
         cand_query_ips = _extract_query_candidate_ips(query)
         external_query_ips = [ip for ip in cand_query_ips if ip not in local_ips]
         for cand_ip in external_query_ips:
             cand_observed_steps: List[int] = []
-            wire_check_steps: List[int] = []
+            checked: Dict[int, List[int]] = {}
             for i, r in ok:
                 tool = str(r.get("tool") or "").lower()
-                raw = _raw(r)
-                args_str = str(r.get("args") or "").lower()
-                is_sim = tool in ("test_security_policy", "test_nat_policy", "test_routing_fib", "test_pbf_policy")
-                is_doc = tool == "query_knowledge_base"
-                is_wire = any(k in tool or k in args_str for k in ("arp", "session", "log", "neighbor", "client"))
-
-                if is_wire and not is_sim:
-                    wire_check_steps.append(i)
-                if not is_sim and not is_doc and cand_ip in raw:
+                args_str = str(r.get("args") or "")
+                src = _presence_source(tool, args_str)
+                if src is not None:
+                    checked.setdefault(src, []).append(i)
+                if tool not in _SIM_TOOLS and tool not in _CONFIG_TOOLS and cand_ip in _raw(r):
                     cand_observed_steps.append(i)
 
             if cand_observed_steps:
                 facts.append(
-                    f"Adversary Presence: Query IP {cand_ip} is OBSERVED on wire telemetry {_cite(*cand_observed_steps)}"
+                    f"Adversary Presence: Query IP {cand_ip} is OBSERVED in device telemetry {_cite(*cand_observed_steps)}"
                 )
-            elif wire_check_steps:
+            elif checked:
+                seen = "; ".join(
+                    f"{_PRESENCE_SOURCES[src][0]} {_cite(*steps)}" for src, steps in sorted(checked.items())
+                )
+                limits = "; ".join(_PRESENCE_SOURCES[src][3] for src in sorted(checked))
+                unchecked = [lbl for idx, (lbl, _, _, _) in enumerate(_PRESENCE_SOURCES) if idx not in checked]
+                unchecked_str = f" Not checked: {', '.join(unchecked)}." if unchecked else ""
                 facts.append(
-                    f"Adversary Presence: Query IP {cand_ip} has NO wire telemetry "
-                    f"(0 active sessions, absent from ARP/neighbor tables; evaluate as SIMULATED / GHOST ATTACKER scenario) "
-                    f"{_cite(*wire_check_steps)}"
+                    f"Adversary Presence: Query IP {cand_ip} NOT OBSERVED in checked sources ({seen}). "
+                    f"UNCORROBORATED, not disproven. Visibility limits: {limits}.{unchecked_str}"
                 )
             else:
                 facts.append(
-                    f"Adversary Presence: Query IP {cand_ip} has NO wire telemetry in receipts "
-                    "(evaluate as SIMULATED / HYPOTHETICAL adversary)"
+                    f"Adversary Presence: Query IP {cand_ip} NOT CHECKED - no successful ARP, session, log, "
+                    "or management-client receipt. Presence is UNKNOWN."
                 )
 
     # Gaps
@@ -737,7 +800,7 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
     device_raw_ips = set(_extract_all_ips("\n".join(ok_raw.values())))
     query_cand_ips = set(_extract_query_candidate_ips(query or ""))
     unobserved_query_ips = query_cand_ips - device_raw_ips
-    stats = {"claims": 0, "cited_ok": 0, "inference": 0, "unverified": 0, "uncited": 0}
+    stats = {"claims": 0, "cited_ok": 0, "inference": 0, "unverified": 0, "uncited": 0, "disputes": 0}
 
     cleaned = _MARKER_RE.sub("", text or "")
     lines = cleaned.split("\n")
@@ -791,7 +854,7 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
         # Table header rows (row directly followed by a separator row) are labels, not claims.
         nxt = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
         is_table_header = stripped.startswith("|") and re.fullmatch(r"\|?[\s|:\-]+\|?", nxt or "x") is not None
-        if is_table_header or not _is_claim_line(stripped):
+        if is_table_header or not (_is_claim_line(stripped) or _DISPUTE_RE.match(stripped)):
             out.append(line)
             continue
 
@@ -800,11 +863,26 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
         cited: List[int] = []
         for m in _CITATION_RE.finditer(stripped):
             cited.extend(_expand_steps(m.group(1)))
+        is_dispute = bool(_DISPUTE_RE.match(stripped))
+        if is_dispute:
+            # A dispute overrides a computed fact, so it gets no leniency: every
+            # counter-receipt must exist and be SUCCESS, and a reason must be given.
+            counter = _COUNTER_RE.search(stripped)
+            counter_steps: List[int] = []
+            if counter:
+                for m in _CITATION_RE.finditer(counter.group(1)):
+                    counter_steps.extend(_expand_steps(m.group(1)))
+            if not counter_steps or any(
+                s < 1 or s > len(receipts) or statuses[s - 1] != "success" for s in counter_steps
+            ):
+                problems.append("dispute lacks SUCCESS counter-receipt")
+            if not _REASON_RE.search(stripped):
+                problems.append("dispute gives no REASON")
         for step in sorted(set(cited)):
             if step < 1 or step > len(receipts):
                 problems.append(f"Step {step} does not exist")
             elif statuses[step - 1] != "success":
-                if not re.search(r"\b(?:unknown|failed|blocked|error)\b", stripped, re.IGNORECASE):
+                if is_dispute or not re.search(r"\b(?:unknown|failed|blocked|error)\b", stripped, re.IGNORECASE):
                     problems.append(f"Step {step} was {statuses[step - 1].upper()}")
 
         for domain, config in DISJOINT_TOOL_AFFINITY.items():
@@ -880,12 +958,15 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
         is_rec = bool(_RECOMMENDATION_RE.match(stripped))
         has_causal_claim = is_rec and bool(_CAUSAL_CONJUNCTIONS.search(stripped))
         has_signal = (not is_rec) or has_causal_claim
-        if problems or cited or has_signal:
+        if problems or cited or has_signal or is_dispute:
             stats["claims"] += 1
 
         if problems:
             stats["unverified"] += 1
             out.append(_append_marker(line, f"`[UNVERIFIED: {'; '.join(dict.fromkeys(problems))}]`"))
+        elif is_dispute:
+            stats["disputes"] += 1
+            out.append(line)
         elif cited:
             stats["cited_ok"] += 1
             out.append(line)
@@ -905,9 +986,16 @@ def claim_summary(stats: Dict[str, int]) -> str:
     """One-line banner for report headers."""
     if not stats.get("claims"):
         return "Enforced by code - no checkable claims found in the narrative."
+    disputes = stats.get("disputes", 0)
+    dispute_str = (
+        f"{disputes} receipt-backed DISPUTE{'s' if disputes != 1 else ''} of computed facts (review the harness); "
+        if disputes
+        else ""
+    )
     return (
         f"Enforced by code - {stats['cited_ok']} claim lines cite a successful step; "
         f"{stats.get('inference', 0)} labeled as inference; "
+        f"{dispute_str}"
         f"{stats['unverified']} marked UNVERIFIED; {stats['uncited']} marked UNCITED. "
         "A citation proves the step exists, not that it supports the sentence."
     )
