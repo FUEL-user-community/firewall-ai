@@ -196,3 +196,9 @@ def test_export_google_doc_endpoint():
     assert "markdown" in data
     assert "Why is DMZ down?" in data["markdown"]
     assert "Deny-All" in data["markdown"]
+
+    # 4. Fallback to latest trace
+    resp_latest = client.post("/api/export/google-doc", headers=headers, json={"trace_id": "latest"})
+    assert resp_latest.status_code == 200
+    assert resp_latest.json()["success"] is True
+

@@ -38,22 +38,30 @@ def scrub(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # 2. Sensitive XML configuration elements (phash, password, pre-shared-key, secret, passphrase)
+    # 2. Sensitive XML configuration elements (phash, password, pre-shared-key, secret, passphrase, bind-password)
     text = re.sub(
-        r'<(?P<tag>phash|password|pre-shared-key|secret|passphrase|private-key)>(?:(?!<\/(?P=tag)>)[\s\S])*?<\/(?P=tag)>',
+        r'<(?P<tag>phash|password|pre-shared-key|secret|passphrase|private-key|bind-password)>(?:(?!<\/(?P=tag)>)[\s\S])*?<\/(?P=tag)>',
         r'<\g<tag>>[REDACTED_\g<tag>]</\g<tag>>',
         text,
         flags=re.IGNORECASE
     )
 
-    # 3. PAN-OS API Keys (LUFRPT...)
+    # 3. Sensitive YAML / CLI configuration fields (phash, password, pre-shared-key, secret, etc.)
+    text = re.sub(
+        r'\b(?P<field>phash|password|pre-shared-key|secret|passphrase|bind-password)[:=\s]+[\'\"`]?([^\s\'\"`\n\[]+)[\'\"`]?',
+        r'\g<field>: [REDACTED]',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # 4. PAN-OS API Keys (LUFRPT...)
     text = re.sub(
         r'\bLUFRPT[a-zA-Z0-9+/=]{16,}',
         '[REDACTED_API_KEY]',
         text
     )
 
-    # 4. Bearer tokens and generic API key assignments
+    # 5. Bearer tokens and generic API key assignments
     text = re.sub(
         r'\bBearer\s+[a-zA-Z0-9_\-\.]{20,}\b',
         'Bearer [REDACTED_TOKEN]',
@@ -67,10 +75,18 @@ def scrub(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # 5. Serial numbers (skip already-masked {{SERIAL_*}} format)
+    # 6. Serial numbers in XML (<serial>123456789012</serial>)
     text = re.sub(
-        r'(?<!\{\{)(?:serial(?:[ -]?number)?[:\s]+)((?=[A-Z0-9]*\d)[A-Z0-9]{10,})\b',
-        lambda m: m.group(0).replace(m.group(1), _deterministic_token(m.group(1), "SN")),
+        r'<serial>(?![{\[])([A-Z0-9]{10,})<\/serial>',
+        lambda m: f"<serial>{_deterministic_token(m.group(1), 'SN')}</serial>",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # 7. Serial numbers in YAML / CLI / text (handles optional quotes and colons; skips already-masked {{SERIAL_*}})
+    text = re.sub(
+        r'(?<!\{\{)(?:serial(?:[ -]?number)?[:\s]+[\'\"`]?)(?![{\[])((?=[A-Z0-9]*\d)[A-Z0-9]{10,})[\'\"`]?',
+        lambda m: f"serial: {_deterministic_token(m.group(1), 'SN')}",
         text,
         flags=re.IGNORECASE
     )

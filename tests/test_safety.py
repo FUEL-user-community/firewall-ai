@@ -472,3 +472,33 @@ def test_context_manager_bounds_and_deduplicates_drive_files():
                 genai.get_file = original_get_file
 
 
+def test_scrubber_redacts_yaml_credentials_and_serials():
+    """Verify that YAML passwords/hashes, quoted serials, and XML serials are masked."""
+    sample = (
+        "serial: '001801000001'\n"
+        "<serial>001801000002</serial>\n"
+        "serial: \"{{SERIAL_already_masked}}\"\n"
+        "users:\n"
+        "  admin:\n"
+        "    password: 'supersecretpass'\n"
+        "    phash: '$1$abcdef123'\n"
+        "    pre-shared-key: 'vpnsecret'\n"
+        "    bind-password: 'ldapsecret'\n"
+    )
+    scrubbed = scrub(sample)
+    assert "001801000001" not in scrubbed
+    assert "[SN_" in scrubbed
+    assert "001801000002" not in scrubbed
+    assert "<serial>[SN_" in scrubbed
+    assert "{{SERIAL_already_masked}}" in scrubbed
+    assert "supersecretpass" not in scrubbed
+    assert "password: [REDACTED]" in scrubbed
+    assert "$1$abcdef123" not in scrubbed
+    assert "phash: [REDACTED]" in scrubbed
+    assert "vpnsecret" not in scrubbed
+    assert "pre-shared-key: [REDACTED]" in scrubbed
+    assert "ldapsecret" not in scrubbed
+    assert "bind-password: [REDACTED]" in scrubbed
+
+
+

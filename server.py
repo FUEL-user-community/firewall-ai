@@ -462,12 +462,14 @@ async def export_incident_to_doc(payload: ExportDocRequest):
     Exports a cached investigation trace and its CLI execution receipts to a Google Doc,
     or returns the structured Markdown report for 1-click download.
     """
-    trace_id = payload.trace_id.strip()
+    trace_id = (payload.trace_id or "").strip()
     with _CACHE_LOCK:
+        if (not trace_id or trace_id == "latest") and _RECENT_INVESTIGATIONS:
+            trace_id = next(reversed(_RECENT_INVESTIGATIONS))
         cached = _RECENT_INVESTIGATIONS.get(trace_id)
 
     if not cached:
-        return JSONResponse(status_code=404, content={"error": f"No investigation found for trace {trace_id}"})
+        return JSONResponse(status_code=404, content={"error": f"No investigation found for trace '{trace_id}'"})
 
     from core.integrations.google_export import export_to_google_doc
     result = export_to_google_doc(
