@@ -424,8 +424,7 @@ def build_facts(receipts: List[Dict[str, Any]], query: str = "") -> List[str]:
                 bound.append(f"{name} = {prof}")
         if bound:
             facts.append(
-                f"Management profiles bound to interfaces: {'; '.join(bound)} "
-                f"(profile contents not read unless a later step shows them) {_cite(i)}"
+                f"Management profiles bound to interfaces: {'; '.join(bound)} {_cite(i)}"
             )
 
     # Explicit interzone/intrazone default overrides
