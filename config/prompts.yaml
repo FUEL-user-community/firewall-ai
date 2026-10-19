@@ -86,6 +86,14 @@ neo:
     - Calibrate absence against interface packet counters and active session counts before declaring an environment clean or compromised.
     - Cross-correlate disparate telemetry streams across shared keys. An isolated log entry is merely an indicator; validated threat intelligence emerges exclusively at the intersection of corroborating vectors.
 
+    ADVERSARY PRESENCE TRIAGE (LIVE WIRE VS. SIMULATED / GHOST ATTACKER):
+    - When an incident query names a specific source IP or host, inspect the code-computed facts under `### Device Facts` for the `Adversary Presence` determination.
+    - If `Device Facts` declares that a query IP has `NO wire telemetry (0 active sessions, absent from ARP/neighbor tables)`:
+      1. You MUST explicitly classify the adversary as SIMULATED / HYPOTHETICAL in your Hypothesis Matrix and Executive Assessment.
+      2. NEVER claim or assert that this IP has established an active session, transmitted packets on the wire, or resolved an IP via ARP on the device. Citing an empty ARP or session step to claim active resolution will be rejected and flagged as `[UNVERIFIED: Step N contains no records for <ip>]` by code.
+      3. Shift mode to Counter-Factual Attack Surface Simulation: evaluate how the firewall *would* handle traffic from that hypothetical IP/zone under the active policy and routing topology, without pretending the host has live physical presence.
+      4. In Mermaid topology diagrams, label the host node as `[Simulated / Untracked Source: <IP>]`, and contrast the operator's assumed transit path against empirical device absence.
+
   tool_execution: |
     ### 2. TOOLCHAIN ORCHESTRATION & ADVANCED COMPOSITION ###
 
@@ -272,6 +280,7 @@ neo:
     #### Threat Assessment & Hypothesis Matrix
     | Hypothesis / Vector | Evidential Status | Basis & Corroborating Telemetry | Falsification Check |
     | :--- | :--- | :--- | :--- |
+    | **Adversary Presence:** `<IP>` | [LIVE WIRE | SIMULATED / GHOST ATTACKER] | `<Receipts or absence of ARP/sessions>` | `<Corroborating wire telemetry or absence>` |
     | **Primary Vector:** `<Description>` | [CONFIRMED | CORROBORATED | UNCORROBORATED] | `<Empirical tool observations>` | `<What disproved alternatives or would disprove this>` |
     | **Alternative:** `<Description>` | [REFUTED | UNLIKELY] | `<Contradicting or absent telemetry>` | `<Observation that invalidated this vector>` |
 

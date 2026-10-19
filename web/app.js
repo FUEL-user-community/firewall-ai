@@ -337,6 +337,11 @@ function sanitizeMermaid(code) {
         return match;
     });
 
+    // Sanitize edge labels: convert parentheses inside |...| to hyphens
+    s = s.replace(/\|([^|\n]+)\|/g, (match, label) => {
+        return `|${label.replace(/\(/g, ' - ').replace(/\)/g, '').trim()}|`;
+    });
+
     return s;
 }
 

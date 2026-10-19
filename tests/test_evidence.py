@@ -677,5 +677,123 @@ def test_deterministic_policy_and_fib_verdicts_in_facts():
     assert "Routing FIB verdict for 8.8.8.8: egress interface ethernet1/1, next-hop 203.0.113.1 [Step 2]" in facts_str
 
 
+def test_adversary_presence_ghost_attacker_detected_in_facts():
+    """Verify that an unobserved IP in the query with empty ARP telemetry is classified as SIMULATED / GHOST ATTACKER."""
+    receipts = [
+        {"tool": "system_info", "status": "success", "raw_output": SYSTEM_INFO, "args": {}},
+        {"tool": "interface_all", "status": "success", "raw_output": INTERFACE_ALL, "args": {}},
+        {"tool": "execute_operational_command", "status": "success", "args": {"cmd": "show arp dynamic"}, "raw_output": "response:\n  result:\n    entries: {}\n"}
+    ]
+    query = "Host 192.168.1.100 is probing 192.168.1.254 and 192.168.1.1 on port 443"
+    facts = build_facts(receipts, query=query)
+    facts_str = "\n".join(facts)
+    assert "Adversary Presence: Query IP 192.168.1.100 has NO wire telemetry (0 active sessions, absent from ARP/neighbor tables; evaluate as SIMULATED / GHOST ATTACKER scenario) [Step 3]" in facts_str
+    # Verify local firewall IPs (192.168.1.254, 192.168.1.1) are NOT misclassified as adversaries
+    assert "Adversary Presence: Query IP 192.168.1.254" not in facts_str
+    assert "Adversary Presence: Query IP 192.168.1.1 " not in facts_str
+
+
+def test_adversary_presence_observed_live_on_wire():
+    """Verify that an IP in the query with corroborating device telemetry is classified as OBSERVED."""
+    receipts = [
+        {"tool": "admin_sessions", "status": "success", "raw_output": ADMIN_SESSIONS, "args": {}}
+    ]
+    query = "Investigate active host 192.168.1.20"
+    facts = build_facts(receipts, query=query)
+    facts_str = "\n".join(facts)
+    assert "Adversary Presence: Query IP 192.168.1.20 is OBSERVED on wire telemetry [Step 1]" in facts_str
+
+
+def test_claim_citing_empty_arp_step_for_ghost_ip_is_unverified():
+    """Verify that citing an empty ARP tool step to assert active wire resolution for a ghost IP is marked UNVERIFIED."""
+    receipts = [
+        {"tool": "system_info", "status": "success", "raw_output": SYSTEM_INFO, "args": {}},
+        {"tool": "execute_operational_command", "status": "success", "args": {"cmd": "show arp dynamic"}, "raw_output": "response:\n  result:\n    entries: {}\n"}
+    ]
+    query = "Host 192.168.1.100 is probing 192.168.1.254"
+    line = "- Host 192.168.1.100 resolves 192.168.1.254 via Layer 2 ARP [Step 2]."
+    annotated, stats = annotate_claims(line, receipts, query)
+    assert "`[UNVERIFIED: Step 2 contains no records for 192.168.1.100]`" in annotated
+    assert stats["unverified"] == 1
+    assert stats["cited_ok"] == 0
+
+
+def test_claim_asserting_absence_citing_empty_arp_passes():
+    """Verify that citing an empty ARP tool step to assert absence/unresolved state passes as cited_ok."""
+    receipts = [
+        {"tool": "execute_operational_command", "status": "success", "args": {"cmd": "show arp dynamic"}, "raw_output": "response:\n  result:\n    entries: {}\n"}
+    ]
+    query = "Host 192.168.1.100 is probing 192.168.1.254"
+    line = "- Host 192.168.1.100 is absent from active ARP telemetry [Step 1]."
+    annotated, stats = annotate_claims(line, receipts, query)
+    assert "UNVERIFIED" not in annotated
+    assert stats["cited_ok"] == 1
+    assert stats["unverified"] == 0
+
+
+def test_claim_citing_policy_test_with_tested_ip_passes():
+    """Verify that citing a policy simulation step whose args tested the IP passes without unverified warning."""
+    receipts = [
+        {
+            "tool": "test_security_policy",
+            "status": "success",
+            "args": {"source": "192.168.1.100", "destination": "192.168.1.1", "port": 443},
+            "raw_output": "response:\n  result:\n    rules:\n      entry:\n        rule: Allow-Inside-Out\n        action: allow\n"
+        }
+    ]
+    query = "Host 192.168.1.100 is probing 192.168.1.1"
+    line = "- Security policy verdict for 192.168.1.100 -> 192.168.1.1:443 allows traffic [Step 1]."
+    annotated, stats = annotate_claims(line, receipts, query)
+    assert "UNVERIFIED" not in annotated
+    assert stats["cited_ok"] == 1
+    assert stats["unverified"] == 0
+
+
+def test_cve_post_dating_content_produces_blindspot_fact():
+    """Verify that a queried CVE post-dating active threat content produces a Content Blindspot fact."""
+    receipts = [
+        {"tool": "system_info", "status": "success", "raw_output": SYSTEM_INFO, "args": {}}
+    ]
+    query = "Investigate whether device is vulnerable to CVE-2024-3400 and CVE-2020-2021"
+    facts = build_facts(receipts, query=query)
+    facts_str = "\n".join(facts)
+    # CVE-2024-3400 post-dates 2023 threat content and must be flagged
+    assert "Content Blindspot: Queried CVE-2024-3400 post-dates active App/threat content (released 2023-12-19); threat engine has NO signatures for this vulnerability [Step 1]" in facts_str
+    # CVE-2020-2021 pre-dates 2023 and must NOT be flagged
+    assert "Content Blindspot: Queried CVE-2020" not in facts_str
+
+
+def test_routing_fib_for_mgmt_ip_has_caution_note():
+    """Verify that Routing FIB lookup for the dedicated MGT IP includes a CAUTION note that FIB does not forward to MGT NIC."""
+    receipts = [
+        {"tool": "system_info", "status": "success", "raw_output": SYSTEM_INFO, "args": {}},
+        {
+            "tool": "test_routing_fib",
+            "status": "success",
+            "args": {"ip": "192.168.1.254"},
+            "raw_output": "response:\n  result:\n    fib:\n      entry:\n        interface: ethernet1/2\n        next-hop: 0.0.0.0\n"
+        }
+    ]
+    facts = build_facts(receipts)
+    facts_str = "\n".join(facts)
+    assert "Routing FIB verdict for 192.168.1.254: egress interface ethernet1/2, next-hop 0.0.0.0 (CAUTION: target is dedicated MGT interface; dataplane FIB does not forward to out-of-band management port) [Step 2]" in facts_str
+
+
+def test_security_policy_to_local_dataplane_interface_has_listener_note():
+    """Verify that a security policy verdict allowing management port to a local dataplane interface notes listener requirement."""
+    receipts = [
+        {"tool": "interface_all", "status": "success", "raw_output": INTERFACE_ALL, "args": {}},
+        {
+            "tool": "test_security_policy",
+            "status": "success",
+            "args": {"source": "192.168.1.100", "destination": "192.168.1.1", "port": "443"},
+            "raw_output": "response:\n  result:\n    rules:\n      entry:\n        rule: Allow-Inside-Out\n        action: allow\n"
+        }
+    ]
+    facts = build_facts(receipts)
+    facts_str = "\n".join(facts)
+    assert "Security policy verdict (192.168.1.100 -> 192.168.1.1:443): rule 'Allow-Inside-Out' -> action ALLOW (NOTE: destination is local dataplane interface ethernet1/2; requires Interface Management Profile with service enabled to accept management traffic) [Step 2]" in facts_str
+
+
 
 

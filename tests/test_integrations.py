@@ -229,6 +229,24 @@ def test_generate_incident_markdown_formatting():
     assert "Matched rule: Deny-All" in md
 
 
+def test_sanitize_mermaid_labels_removes_edge_parentheses():
+    """Verify that parentheses inside Mermaid edge pipe labels are sanitized to hyphens."""
+    from core.integrations.google_export import sanitize_mermaid_labels, generate_incident_markdown
+    raw_mermaid = "```mermaid\ngraph LR\n  A -.->|Logic: Attempted Transit (Allow-Inside-Out)| B\n```"
+    cleaned = sanitize_mermaid_labels(raw_mermaid)
+    assert "|Logic: Attempted Transit - Allow-Inside-Out|" in cleaned
+    assert "(" not in cleaned and ")" not in cleaned
+
+    # Also verify through generate_incident_markdown
+    md = generate_incident_markdown(
+        trace_id="test-mermaid",
+        query="Trace flow",
+        verdict=f"Flow breakdown:\n{raw_mermaid}",
+        receipts=[]
+    )
+    assert "|Logic: Attempted Transit - Allow-Inside-Out|" in md
+
+
 def test_export_to_google_doc_drive_success_and_fallback():
     """Verify export_to_google_doc handles Google Drive upload and local fallback."""
     from core.integrations.google_export import export_to_google_doc

@@ -50,6 +50,24 @@ def summarize_receipt_integrity(receipts: List[Dict[str, Any]]) -> Dict[str, Any
         "claim_line": "Not enforced - narrative findings are model-generated; confirm each against the receipts in Section 3.",
     }
 
+
+def sanitize_mermaid_labels(text: str) -> str:
+    """Sanitize Mermaid code blocks to prevent syntax crashes caused by parentheses in edge labels."""
+    if not text or "```mermaid" not in text:
+        return text or ""
+
+    def _clean_block(match: re.Match) -> str:
+        block = match.group(1)
+        cleaned = re.sub(
+            r"\|([^|\n]+)\|",
+            lambda m: f"|{re.sub(r'\s+', ' ', m.group(1).replace('(', ' - ').replace(')', '')).strip()}|",
+            block,
+        )
+        return f"```mermaid\n{cleaned}\n```"
+
+    return re.sub(r"```mermaid\s*\n([\s\S]*?)\n```", _clean_block, text)
+
+
 def generate_incident_markdown(
     trace_id: str,
     query: str,
@@ -108,7 +126,7 @@ def generate_incident_markdown(
     if not is_simulation:
         _, clean_verdict = split_facts_block(clean_verdict)
         clean_verdict, ev_stats = annotate_claims(clean_verdict, receipts, query)
-        facts_md = render_facts(receipts)
+        facts_md = render_facts(receipts, query=query)
 
     # Check for main structural heading to neatly tuck any preamble thoughts into Scratchpad
     split_pattern = r'(### (?:Compensating Policy Compilation Manifest|Incident Investigation Summary|Executive Health Summary)[\s\S]*)'
@@ -144,6 +162,10 @@ def generate_incident_markdown(
     if facts_md:
         clean_verdict = f"{facts_md}\n\n{clean_verdict}"
     
+    clean_verdict = sanitize_mermaid_labels(clean_verdict)
+    if mermaid_section:
+        mermaid_section = sanitize_mermaid_labels(mermaid_section)
+
     integrity = summarize_receipt_integrity(receipts)
     if ev_stats is not None:
         integrity["claim_line"] = claim_summary(ev_stats)

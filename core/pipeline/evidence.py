@@ -3,17 +3,18 @@ Evidence Engine - code owns the facts, the model owns judgment.
 
 Two deterministic layers applied to every investigation report:
 
-1. build_facts(receipts)
+1. build_facts(receipts, query="")
    Extracts device facts (versions, content age, licenses, management exposure,
-   admin sessions, failed/blocked steps) straight from SUCCESS receipts. The
-   model can neither invent these nor skip them.
+   admin sessions, policy verdicts, adversary presence triage, failed/blocked steps)
+   straight from SUCCESS receipts. The model can neither invent these nor skip them.
 
-2. annotate_claims(text, receipts, query)
+2. annotate_claims(text, receipts, query="")
    Checks every claim line in the model's report against the receipts:
      - cites a step that FAILED / was BLOCKED / does not exist -> UNVERIFIED
      - cites a document page that was never successfully read  -> UNVERIFIED
      - quotes text that appears in no successful receipt         -> UNVERIFIED
      - names an IP address found in no receipt and not the query -> UNVERIFIED
+     - asserts presence for an unobserved query IP citing a step lacking it -> UNVERIFIED
      - states a fact without any [Step N] citation              -> UNCITED
 
 Counter-logic: a citation to a SUCCESS step proves the step exists, not that
@@ -58,6 +59,30 @@ def _extract_all_ips(text: str) -> List[str]:
             except ValueError:
                 pass
     return list(dict.fromkeys(v4 + v6))
+
+
+def _extract_query_candidate_ips(query: str) -> List[str]:
+    """Extract IPv4/IPv6 host addresses from user query, excluding netmasks, broadcast, and loopback."""
+    candidates = _extract_all_ips(query or "")
+    valid_hosts: List[str] = []
+    for ip_str in candidates:
+        try:
+            ip_obj = ipaddress.ip_address(ip_str)
+            if ip_obj.is_loopback or ip_obj.is_multicast or ip_obj.is_unspecified:
+                continue
+            if isinstance(ip_obj, ipaddress.IPv4Address):
+                if ip_str in {"255.255.255.0", "255.255.0.0", "255.0.0.0", "255.255.255.255"}:
+                    continue
+            valid_hosts.append(ip_str)
+        except ValueError:
+            continue
+    return list(dict.fromkeys(valid_hosts))
+
+
+_ABSENCE_TERMS_RE = re.compile(
+    r"\b(?:absent|not found|no entry|no entries|not present|unresolved|untracked|zero sessions|0 sessions|no sessions|none found|never seen|not observed)\b",
+    re.IGNORECASE,
+)
 
 _QUOTE_RE = re.compile(r'"([^"\n]+)"|“([^”\n]+)”|\'([a-zA-Z0-9_\-\.]{2,50})\'|‘([a-zA-Z0-9_\-\.]{2,50})’')
 # Recommendations are judgment, not facts: a line that starts with an action verb
@@ -216,9 +241,10 @@ def _short_args(args: Any) -> str:
 # Layer 1: computed facts
 # =============================================================================
 
-def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
+def build_facts(receipts: List[Dict[str, Any]], query: str = "") -> List[str]:
     """Return fact lines (markdown bullets without the dash) derived from receipts."""
     facts: List[str] = []
+    local_ips: set = set()
     statuses = [effective_status(r) for r in receipts]
     ok = [(i, r) for i, (r, st) in enumerate(zip(receipts, statuses), 1) if st == "success"]
 
@@ -241,6 +267,7 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
         device_time = _parse_device_time(_find(system, "time"))
         if _find(system, "time"):
             facts.append(f"Device clock: {_find(system, 'time')} {_cite(s)}")
+        threat_rel_date = None
 
         for label, ver_key, date_key in (
             ("App/threat content", "threat-version", "threat-release-date"),
@@ -251,12 +278,24 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
             if ver is None:
                 continue
             rel = _parse_release(_find(system, date_key))
+            if label == "App/threat content" and rel:
+                threat_rel_date = rel
             if rel:
                 age = f", {(device_time - rel).days} days old at device time" if device_time else ""
                 stale = " (STALE: over 7 days)" if device_time and (device_time - rel).days > 7 else ""
                 facts.append(f"{label} {ver}, released {rel.date().isoformat()}{age}{stale} {_cite(s)}")
             else:
                 facts.append(f"{label} {ver}, release date unknown {_cite(s)}")
+
+        if query and threat_rel_date:
+            cve_matches = re.findall(r"\bCVE-((\d{4})-\d+)\b", query, re.IGNORECASE)
+            for full_suffix, cve_year_str in sorted(set(cve_matches)):
+                cve_year = int(cve_year_str)
+                if cve_year > threat_rel_date.year:
+                    facts.append(
+                        f"Content Blindspot: Queried CVE-{full_suffix.upper()} post-dates active App/threat content "
+                        f"(released {threat_rel_date.date().isoformat()}); threat engine has NO signatures for this vulnerability {_cite(s)}"
+                    )
 
         wf_rt = _find(system, "wildfire-rt")
         if wf_rt is not None:
@@ -275,6 +314,10 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
             try:
                 mgmt_net = ipaddress.ip_network(f"{ip}/{mask}", strict=False)
                 mgmt_ip = str(ip)
+                local_ips.add(mgmt_ip)
+                gw = _find(system, "default-gateway")
+                if gw:
+                    local_ips.add(str(gw))
                 facts.append(
                     f"Management interface {ip}/{mgmt_net.prefixlen}, gateway {_find(system, 'default-gateway')} {_cite(s)}"
                 )
@@ -282,6 +325,12 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
                 pass
     elif len(systems) > 1:
         for s, system, r in systems:
+            ip = _find(system, "ip-address")
+            if ip:
+                local_ips.add(str(ip))
+            gw = _find(system, "default-gateway")
+            if gw:
+                local_ips.add(str(gw))
             model = _find(system, "model") or "UNKNOWN"
             host = _find(system, "hostname") or _find(system, "devicename") or (r.get("args") or {}).get("target_device") or f"device-{s}"
             facts.append(f"Device [{host}]: PAN-OS {_find(system, 'sw-version')} on {model} {_cite(s)}")
@@ -326,6 +375,7 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
         break
 
     # Dataplane interfaces vs management subnet
+    dp_interface_ips: Dict[str, str] = {}
     for i, r in ok:
         data = _load(_raw(r))
         ifnet = _find(data, "ifnet") if data is not None else None
@@ -335,6 +385,16 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
             if not isinstance(e, dict):
                 continue
             addr = str(e.get("ip") or "")
+            name = str(e.get("name") or "")
+            if "/" in addr:
+                clean_ip = addr.split("/")[0]
+                local_ips.add(clean_ip)
+                if name:
+                    dp_interface_ips[clean_ip] = name
+            elif addr and addr != "N/A":
+                local_ips.add(addr)
+                if name:
+                    dp_interface_ips[addr] = name
             if mgmt_net is None or "/" not in addr:
                 continue
             try:
@@ -402,12 +462,21 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
                 idx = _find(data, "index") or _find(data, "rule-idx")
                 args = r.get("args") or {}
                 flow = ""
+                listener_note = ""
                 if args.get("source") and args.get("destination"):
                     flow = f" ({args['source']} -> {args['destination']}:{args.get('port', '*')})"
+                    dst_ip = str(args.get("destination"))
+                    port = str(args.get("port", "443"))
+                    if dst_ip in dp_interface_ips and port in ("443", "80", "22", "23"):
+                        iface_name = dp_interface_ips[dst_ip]
+                        listener_note = (
+                            f" (NOTE: destination is local dataplane interface {iface_name}; "
+                            "requires Interface Management Profile with service enabled to accept management traffic)"
+                        )
                 if rule and action:
                     idx_str = f" (index {idx})" if idx else ""
                     facts.append(
-                        f"Security policy verdict{flow}: rule '{rule}'{idx_str} -> action {str(action).upper()} {_cite(i)}"
+                        f"Security policy verdict{flow}: rule '{rule}'{idx_str} -> action {str(action).upper()}{listener_note} {_cite(i)}"
                     )
 
     # Core Diagnostic Verdicts: Routing FIB Lookups
@@ -422,8 +491,13 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
                 target_str = f" for {ip_arg}" if ip_arg else ""
                 if iface:
                     nh_str = f", next-hop {nh}" if nh else ""
+                    mgt_caveat = (
+                        " (CAUTION: target is dedicated MGT interface; dataplane FIB does not forward to out-of-band management port)"
+                        if mgmt_ip and ip_arg == mgmt_ip
+                        else ""
+                    )
                     facts.append(
-                        f"Routing FIB verdict{target_str}: egress interface {iface}{nh_str} {_cite(i)}"
+                        f"Routing FIB verdict{target_str}: egress interface {iface}{nh_str}{mgt_caveat} {_cite(i)}"
                     )
 
     # Core Diagnostic Verdicts: NAT Policy Matches
@@ -437,6 +511,42 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
                 if rule:
                     act_str = f" ({action})" if action else ""
                     facts.append(f"NAT policy match: rule '{rule}'{act_str} {_cite(i)}")
+
+    # Adversary Presence Triage (Queried external host vs wire telemetry)
+    if query:
+        cand_query_ips = _extract_query_candidate_ips(query)
+        external_query_ips = [ip for ip in cand_query_ips if ip not in local_ips]
+        for cand_ip in external_query_ips:
+            cand_observed_steps: List[int] = []
+            wire_check_steps: List[int] = []
+            for i, r in ok:
+                tool = str(r.get("tool") or "").lower()
+                raw = _raw(r)
+                args_str = str(r.get("args") or "").lower()
+                is_sim = tool in ("test_security_policy", "test_nat_policy", "test_routing_fib", "test_pbf_policy")
+                is_doc = tool == "query_knowledge_base"
+                is_wire = any(k in tool or k in args_str for k in ("arp", "session", "log", "neighbor", "client"))
+
+                if is_wire and not is_sim:
+                    wire_check_steps.append(i)
+                if not is_sim and not is_doc and cand_ip in raw:
+                    cand_observed_steps.append(i)
+
+            if cand_observed_steps:
+                facts.append(
+                    f"Adversary Presence: Query IP {cand_ip} is OBSERVED on wire telemetry {_cite(*cand_observed_steps)}"
+                )
+            elif wire_check_steps:
+                facts.append(
+                    f"Adversary Presence: Query IP {cand_ip} has NO wire telemetry "
+                    f"(0 active sessions, absent from ARP/neighbor tables; evaluate as SIMULATED / GHOST ATTACKER scenario) "
+                    f"{_cite(*wire_check_steps)}"
+                )
+            else:
+                facts.append(
+                    f"Adversary Presence: Query IP {cand_ip} has NO wire telemetry in receipts "
+                    "(evaluate as SIMULATED / HYPOTHETICAL adversary)"
+                )
 
     # Gaps
     for i, (r, st) in enumerate(zip(receipts, statuses), 1):
@@ -464,8 +574,8 @@ def build_facts(receipts: List[Dict[str, Any]]) -> List[str]:
     return facts
 
 
-def render_facts(receipts: List[Dict[str, Any]]) -> str:
-    facts = build_facts(receipts)
+def render_facts(receipts: List[Dict[str, Any]], query: str = "") -> str:
+    facts = build_facts(receipts, query=query)
     if not facts:
         return ""
     return FACTS_HEADING + "\n" + "\n".join(f"- {f}" for f in facts)
@@ -621,6 +731,9 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
         i: rngs for i, r in enumerate(receipts, 1)
         if statuses[i - 1] == "success" and (rngs := _read_pages_from_receipt(r))
     }
+    device_raw_ips = set(_extract_all_ips("\n".join(ok_raw.values())))
+    query_cand_ips = set(_extract_query_candidate_ips(query or ""))
+    unobserved_query_ips = query_cand_ips - device_raw_ips
     stats = {"claims": 0, "cited_ok": 0, "inference": 0, "unverified": 0, "uncited": 0}
 
     cleaned = _MARKER_RE.sub("", text or "")
@@ -740,6 +853,27 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
         if unknown_ips:
             problems.append(f"{', '.join(unknown_ips)} not found in any receipt or the query")
 
+        # Check citations for unobserved query IPs (Ghost attacker / hallucinated wire presence)
+        if cited and unobserved_query_ips:
+            line_ips = _extract_all_ips(stripped)
+            for cand_ip in line_ips:
+                if cand_ip in unobserved_query_ips:
+                    # If this is an absence assertion (e.g. "absent from ARP [Step 14]"), citation to an empty receipt is valid
+                    if _ABSENCE_TERMS_RE.search(stripped):
+                        continue
+                    # Check if any cited step actually contains this IP in raw output or args
+                    step_contains_ip = False
+                    for s in cited:
+                        if 1 <= s <= len(receipts):
+                            r_step = receipts[s - 1]
+                            r_text = _raw(r_step) + " " + str(r_step.get("args") or "")
+                            if cand_ip in r_text:
+                                step_contains_ip = True
+                                break
+                    if not step_contains_ip:
+                        label = f"Step {cited[0]}" if len(cited) == 1 else f"Steps {', '.join(str(s) for s in cited)}"
+                        problems.append(f"{label} contains no records for {cand_ip}")
+
         is_rec = bool(_RECOMMENDATION_RE.match(stripped))
         has_causal_claim = is_rec and bool(_CAUSAL_CONJUNCTIONS.search(stripped))
         has_signal = (not is_rec) or has_causal_claim
@@ -780,6 +914,6 @@ def apply_evidence(text: str, receipts: List[Dict[str, Any]], query: str = "") -
     """Facts block on top + annotated narrative. Safe to run repeatedly on its own output."""
     _, rest = split_facts_block(text or "")
     annotated, stats = annotate_claims(rest, receipts, query)
-    facts = render_facts(receipts)
+    facts = render_facts(receipts, query=query)
     combined = f"{facts}\n\n{annotated}" if facts else annotated
     return combined, stats

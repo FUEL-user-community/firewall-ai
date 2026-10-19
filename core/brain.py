@@ -723,7 +723,7 @@ class CoreBrain:
 
         # Code-owned facts: re-sent only when new receipts change them.
         if state.target_mode != "range":
-            facts = render_facts(state.receipts)
+            facts = render_facts(state.receipts, query=state.user_query)
             if facts and facts != state.last_facts:
                 state.last_facts = facts
                 message_payload.append(
