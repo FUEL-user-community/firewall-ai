@@ -43,7 +43,7 @@ _FILENAME_RE = re.compile(
     r"(?P<move>ANOMALY|WORKORDER|PATCH|SABOTAGE|VERDICT|AUTOPSY)__"
     r"(?P<thread>[A-Za-z0-9_-]{2,32})__"
     r"(?P<sha>[0-9a-fA-F]{7,12})__"
-    r"(?P<slug>[A-Za-z0-9_-]{1,48})\.md$"
+    r"(?P<slug>[A-Za-z0-9_-]{1,48})(?:\.md)?$"
 )
 
 # Control-sentinel patterns stripped from untrusted board prose before LLM exposure
@@ -385,30 +385,32 @@ class StigmergicBoard:
                 for f in files:
                     fname = f.get("name", "")
                     fid = f.get("id", "")
+                    fmime = f.get("mimeType", "")
                     if not _FILENAME_RE.match(fname):
                         continue
                     if only_unseen and self.store.is_artifact_seen(fid):
                         continue
+                    norm_fname = fname if fname.endswith(".md") else f"{fname}.md"
                     if self.spool_dir is not None:
-                        cache_copy = self.spool_dir / fname
+                        cache_copy = self.spool_dir / norm_fname
                         if cache_copy.is_file():
                             text = cache_copy.read_text(encoding="utf-8", errors="replace")
                         else:
-                            raw_bytes = client.download_bytes(fid)
+                            raw_bytes = client.download_bytes(fid, mime_type=fmime)
                             text = raw_bytes.decode("utf-8", errors="replace")
                             cache_copy.write_text(text, encoding="utf-8")
                     else:
                         with _MEMORY_SPOOL_LOCK:
-                            cached_text = _MEMORY_SPOOL.get(fname)
+                            cached_text = _MEMORY_SPOOL.get(norm_fname)
                         if cached_text is not None:
                             text = cached_text
                         else:
-                            raw_bytes = client.download_bytes(fid)
+                            raw_bytes = client.download_bytes(fid, mime_type=fmime)
                             text = raw_bytes.decode("utf-8", errors="replace")
                             with _MEMORY_SPOOL_LOCK:
-                                _MEMORY_SPOOL[fname] = text
-                    raw_entries.append((fid, fname, text))
-                    seen_filenames.add(fname)
+                                _MEMORY_SPOOL[norm_fname] = text
+                    raw_entries.append((fid, norm_fname, text))
+                    seen_filenames.add(norm_fname)
             except Exception as e:
                 logger.warning(f"[BOARD] Drive sync fallback to spool: {e}")
 

@@ -105,7 +105,7 @@ from core.pipeline.prompt_assembler import (
 from core.pipeline.model_config import (
     GEMINI_MODEL, PRICE_PER_M_INPUT, PRICE_PER_M_OUTPUT,
     MAX_TURNS,
-    classify_mode, get_thinking_level, get_generation_config,
+    classify_mode, get_gemini_model, get_thinking_level, get_generation_config, validate_model_id,
 )
 from core.pipeline.tool_executor import ToolExecutor
 from core.pipeline.context_manager import ContextManager
@@ -226,8 +226,14 @@ class CoreBrain:
             else:
                 safety_settings = None
 
+            active_model_name = get_gemini_model()
+            ok_mid, mid_err = validate_model_id(active_model_name)
+            if not ok_mid:
+                logger.error(f"[BRAIN] Invalid GEMINI_MODEL: {mid_err}")
+            self.model_name = active_model_name
+
             model_kwargs = {
-                "model_name": GEMINI_MODEL,
+                "model_name": active_model_name,
                 "tools": self.tools,
                 "system_instruction": str(SYSTEM_PROMPT),
             }
@@ -235,7 +241,7 @@ class CoreBrain:
                 model_kwargs["safety_settings"] = safety_settings
 
             self.model = genai.GenerativeModel(**model_kwargs)
-            logger.info(f"[BRAIN] Model initialized: {GEMINI_MODEL} ({len(self.tools)} tools, safety={safety_level})")
+            logger.info(f"[BRAIN] Model initialized: {active_model_name} ({len(self.tools)} tools, safety={safety_level})")
 
         # License Awareness Context
         self.license_context = (
@@ -245,7 +251,7 @@ class CoreBrain:
 
         # Usage tracking
         self.usage_tracker = UsageTracker(
-            model_name=GEMINI_MODEL,
+            model_name=get_gemini_model(),
             price_input=PRICE_PER_M_INPUT,
             price_output=PRICE_PER_M_OUTPUT
         )
@@ -456,7 +462,7 @@ class CoreBrain:
 
     def _build_reality_prompt(self, user_query: str, state: InvestigationState) -> str:
         """Builds grounded reality anchor string including fleet inventory and diagnostic parameters."""
-        mode = classify_mode(user_query)
+        mode = classify_mode(user_query, target_mode=state.target_mode)
         thinking_level = get_thinking_level(mode)
         return build_reality_prompt(
             user_query=user_query,
@@ -487,7 +493,7 @@ class CoreBrain:
                 wait = (2 ** attempt) + random.uniform(0, 1)
                 reason = "rate-limited" if is_quota else "deadline/timeout (504)"
                 logger.warning(
-                    f"[RETRY] {GEMINI_MODEL} {reason} during {operation_name} "
+                    f"[RETRY] {get_gemini_model()} {reason} during {operation_name} "
                     f"(attempt {attempt + 1}/{max_retries}). Retrying in {wait:.1f}s..."
                 )
                 time.sleep(wait)
@@ -547,8 +553,16 @@ class CoreBrain:
                 logger.warning(f"[{state.trace_id}] [REFLECT] Reflection failed: {reflect_err}")
                 return None, "[HALTED] Investigation terminated by Safety Governor (Loop/Resource Guard)."
         except Exception as e:
+            err_txt = str(e)
+            if "404" in err_txt and ("models/" in err_txt or "not found" in err_txt.lower()):
+                bad_model = self.model_name if hasattr(self, "model_name") else get_gemini_model()
+                logger.debug(f"[{state.trace_id}] [ARCHITECT] Gemini model 404 ({bad_model}): {e}")
+                return None, (
+                    f"[MODEL NOT FOUND] GEMINI_MODEL='{bad_model}' returned HTTP 404 on v1beta. "
+                    "Fix GEMINI_MODEL in .env (e.g. 'gemini-3.1-pro-preview' or 'gemini-2.5-pro')."
+                )
             logger.exception(f"[{state.trace_id}] [ARCHITECT] Initial investigation turn failed: {e}")
-            return None, "An internal error occurred during initial investigation. Please check server logs."
+            return None, "An internal error occurred during initial investigation. Run with --verbose for details."
 
     def _track_turn_usage(self, response: Any, state: InvestigationState) -> None:
         """Records token usage and tool telemetry for the turn."""

@@ -69,7 +69,14 @@ def validate_startup():
             "  Set PANOS_HOSTNAME in .env (e.g., 192.168.1.254) or define firewalls in config/devices.yaml"
         )
 
-    # --- 4. Prompt Integrity ---
+    # --- 4. Model ID Sanity & Prompt Integrity ---
+    from core.pipeline.model_config import get_flash_model, get_gemini_model, validate_model_id
+
+    for env_var, raw_model in (("GEMINI_MODEL", get_gemini_model()), ("FLASH_MODEL", get_flash_model())):
+        ok_m, msg_m = validate_model_id(raw_model)
+        if not ok_m:
+            errors.append(f"{env_var} invalid: {msg_m}")
+
     if not os.getenv("PROMPTS_YAML_SHA"):
         logger.warning("[STARTUP] PROMPTS_YAML_SHA not set — prompt integrity check disabled.")
 

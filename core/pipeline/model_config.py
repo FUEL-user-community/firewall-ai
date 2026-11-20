@@ -20,10 +20,34 @@ with warnings.catch_warnings():
 # =============================================================================
 
 # Gemini 3.1 Pro — frontier reasoning with dynamic thinking.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview").strip()
 
 # Gemini Flash — lightweight fast tier.
-FLASH_MODEL = os.getenv("FLASH_MODEL", "gemini-2.5-flash")
+FLASH_MODEL = os.getenv("FLASH_MODEL", "gemini-2.5-flash").strip()
+
+_VALID_MODEL_ID_RE = re.compile(r"^(?:models/)?[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$")
+
+
+def validate_model_id(model_id: str) -> tuple[bool, str]:
+    """Reject empty, whitespace-contaminated, or double-dot ('..') typo model IDs."""
+    cleaned = (model_id or "").strip()
+    if not cleaned:
+        return False, "Model ID cannot be empty."
+    if ".." in cleaned or "--" in cleaned:
+        return False, f"Malformed model ID '{cleaned}' (contains consecutive '..' or '--' typo)."
+    if not _VALID_MODEL_ID_RE.match(cleaned):
+        return False, f"Malformed model ID '{cleaned}' (invalid characters or trailing punctuation)."
+    return True, cleaned
+
+
+def get_gemini_model() -> str:
+    """Resolve active GEMINI_MODEL after .env loading."""
+    return (os.getenv("GEMINI_MODEL") or GEMINI_MODEL or "gemini-3.1-pro-preview").strip()
+
+
+def get_flash_model() -> str:
+    """Resolve active FLASH_MODEL after .env loading."""
+    return (os.getenv("FLASH_MODEL") or FLASH_MODEL or "gemini-2.5-flash").strip()
 
 # =============================================================================
 # Financial Telemetry (Pricing per 1M tokens)

@@ -19,11 +19,17 @@ Execution Modes:
        python3 neo_cli.py --check
 """
 
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 import argparse
 from contextlib import contextmanager
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -64,6 +70,65 @@ _COMMIT_CMD_RE = re.compile(r"^commit(?:\s+.*)?$", re.IGNORECASE)
 
 def strip_ansi(text: str) -> str:
     return _ANSI_ESCAPE_RE.sub("", text or "")
+
+
+_VT100_TOKEN_RE = re.compile(r"\x1b\][^\x07]*\x07|\x1b\[([0-9;?]*)([a-zA-Z])")
+
+
+def fold_vt100_line_edits(raw_text: str) -> str:
+    """
+    Replay VT100 in-line cursor edits (`\\x08`/`\\x7f` backspaces, `\\r` carriage overwrites,
+    and `\\x1b[K` / `\\x1b[2K` / `\\x1b[P` erases) per line so `tail_buf` matches exact visual prompt text.
+    """
+    if not raw_text:
+        return ""
+    normalized = raw_text.replace("\r\n", "\n")
+    folded_lines: List[str] = []
+    for raw_line in normalized.split("\n"):
+        buf: List[str] = []
+        pos = 0
+        idx = 0
+        n_len = len(raw_line)
+        while idx < n_len:
+            ch = raw_line[idx]
+            if ch == "\x1b":
+                m = _VT100_TOKEN_RE.match(raw_line, idx)
+                if m:
+                    params, code = m.group(1), m.group(2)
+                    if code == "K":
+                        if params == "2":
+                            buf.clear()
+                            pos = 0
+                        elif params in ("", "0"):
+                            del buf[pos:]
+                    elif code == "D":
+                        step = int(params) if params and params.isdigit() else 1
+                        pos = max(0, pos - step)
+                    elif code == "C":
+                        step = int(params) if params and params.isdigit() else 1
+                        pos = min(len(buf), pos + step)
+                    elif code == "P":
+                        cnt = int(params) if params and params.isdigit() else 1
+                        del buf[pos : pos + cnt]
+                    idx = m.end()
+                    continue
+                idx += 1
+                continue
+            if ch == "\r":
+                pos = 0
+            elif ch in ("\x08", "\x7f"):
+                if pos > 0:
+                    pos -= 1
+                    del buf[pos : pos + 1]
+            elif ch >= " " or ch == "\t":
+                if pos < len(buf):
+                    buf[pos] = ch
+                else:
+                    buf.append(ch)
+                pos += 1
+            idx += 1
+        folded_lines.append("".join(buf))
+    return "\n".join(folded_lines)
 
 
 def normalize_panos_set_line(line: str) -> str:
@@ -186,7 +251,7 @@ def detect_panos_prompt_mode(pane_tail: str) -> Optional[str]:
     Inspect the last non-empty line of SSH output:
     Returns `'config'` if at `user@host#`, `'op'` if at `user@host>`, or `None` if not at PAN-OS CLI.
     """
-    clean = strip_ansi(pane_tail).replace("\r", "")
+    clean = strip_ansi(fold_vt100_line_edits(pane_tail))
     non_empty = [ln.rstrip() for ln in clean.splitlines() if ln.strip()]
     if not non_empty:
         return None
@@ -204,14 +269,126 @@ def detect_panos_prompt_mode(pane_tail: str) -> Optional[str]:
 def extract_echoed_command_after_prompt(line_buf: str) -> Tuple[Optional[str], str]:
     """
     Parse the active PAN-OS prompt line (e.g. `admin@firewall-a# commit force`) into
-    `('config'|'op'|None, 'commit force')`. Handles Tab-completed and history-recalled commands.
+    `('config'|'op'|None, 'commit force')`. Handles Tab-completed, history-recalled, and backspaced commands.
     """
-    clean = strip_ansi(line_buf).replace("\r", "").split("\n")[-1]
+    clean = strip_ansi(fold_vt100_line_edits(line_buf)).split("\n")[-1]
     m = re.match(r"^\s*[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+(?:\([^)]+\))?([>#])\s*(.*)$", clean)
     if not m:
         return None, ""
     mode = "config" if m.group(1) == "#" else "op"
     return mode, m.group(2).strip()
+
+
+def extract_raw_after_prompt(line_buf: str) -> Tuple[Optional[str], str]:
+    """Like extract_echoed_command_after_prompt, but preserves trailing spaces after '+' or '|'."""
+    clean = strip_ansi(fold_vt100_line_edits(line_buf)).split("\n")[-1]
+    m = re.match(r"^\s*[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+(?:\([^)]+\))?([>#])(.*)$", clean)
+    if not m:
+        return None, ""
+    mode = "config" if m.group(1) == "#" else "op"
+    after = m.group(2)
+    if after.startswith(" "):
+        after = after[1:]
+    return mode, after
+
+
+def normalize_dual_neo_query(raw_query: str) -> str:
+    """Normalize inline NEO query text (stripping optional '@question ' or '@ask ' lead-in)."""
+    q = (raw_query or "").strip()
+    q = re.sub(r"^(?:question|ask)\s+", "", q, flags=re.IGNORECASE).strip()
+    return q
+
+
+def parse_dual_plane_split(raw_after_prompt: str, in_bytes: bytes) -> Optional[Dict[str, Any]]:
+    """
+    Detect `<ssh_cmd> + @ <neo_query>` (parallel t=0ms) or `<ssh_cmd> | @ <neo_query>` (pipe SSH -> NEO):
+      1. Interactive keystroke: user typed `<ssh_cmd> + ` (already in `raw_after_prompt`) and just hit `@`.
+      2. Full-line paste: user pasted `<ssh_cmd> + @ <neo_query>` at an empty prompt (`raw_after_prompt == ""`).
+    Ignores `+`/`|` inside quotes and email addresses without whitespace before `+` (e.g. `ops+tag@corp.com`).
+    """
+    if not in_bytes:
+        return None
+
+    # Case 1: Interactive '@' typed right after `<ssh_cmd> +` or `<ssh_cmd> |`
+    if in_bytes.startswith(b"@") and raw_after_prompt.strip():
+        if raw_after_prompt.count('"') % 2 == 0 and raw_after_prompt.count("'") % 2 == 0:
+            m = re.match(r"^(.*\S)(\s+)([+|])(\s*)$", raw_after_prompt)
+            if m:
+                ssh_cmd, ws_pre, op_char, ws_post = m.group(1), m.group(2), m.group(3), m.group(4)
+                erase_count = len(ws_pre) + 1 + len(ws_post)
+                prefill = in_bytes[1:].decode("utf-8", errors="replace").strip("\r\n")
+                return {
+                    "kind": "interactive",
+                    "ssh_cmd": ssh_cmd,
+                    "op": op_char,
+                    "erase_count": erase_count,
+                    "prefill": prefill,
+                    "has_newline": in_bytes.endswith((b"\r", b"\n")),
+                }
+
+    # Case 2: Full-line paste `<ssh_cmd> + @ <neo_query>` at an idle prompt
+    if not raw_after_prompt.strip() and len(in_bytes) > 4:
+        in_text = in_bytes.decode("utf-8", errors="replace")
+        single = in_text.strip("\r\n")
+        if "\n" not in single and "\r" not in single:
+            m = re.match(r"^(.+?\S)\s+([+|])\s*@(.*)$", single)
+            if m and m.group(1).count('"') % 2 == 0 and m.group(1).count("'") % 2 == 0:
+                return {
+                    "kind": "pasted",
+                    "ssh_cmd": m.group(1).strip(),
+                    "op": m.group(2),
+                    "neo_query": normalize_dual_neo_query(m.group(3)),
+                    "has_newline": in_bytes.endswith((b"\r", b"\n")),
+                }
+
+    return None
+
+
+def drain_pty_ssh_command(
+    master_fd: int,
+    max_wait: float = 12.0,
+    max_pages: int = 25,
+    echo_stdout: bool = True,
+) -> str:
+    """
+    Execute the currently staged SSH CLI line on `master_fd`, auto-advancing PAN-OS `--more--`
+    pages up to `max_pages` and streaming clean output until the `>` or `#` prompt returns.
+    """
+    import select
+
+    os.write(master_fd, b"\r")
+    collected: List[str] = []
+    pages_seen = 0
+    deadline = time.time() + max_wait
+
+    while time.time() < deadline:
+        rlist, _, _ = select.select([master_fd], [], [], 0.08)
+        if not rlist:
+            tail_check = "".join(collected)[-512:]
+            if tail_check and detect_panos_prompt_mode(tail_check) is not None:
+                break
+            continue
+        try:
+            chunk = os.read(master_fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+
+        dec = chunk.decode("utf-8", errors="replace")
+        if "--more--" in strip_ansi(dec).lower():
+            dec = re.sub(r"(?:lines\s+\d+-\d+\s*)?--more--\s*", "", dec, flags=re.IGNORECASE)
+            pages_seen += 1
+            os.write(master_fd, b" " if pages_seen <= max_pages else b"q")
+
+        collected.append(dec)
+        if echo_stdout and dec:
+            os.write(sys.stdout.fileno(), dec.encode("utf-8", errors="replace"))
+
+        if detect_panos_prompt_mode("".join(collected)[-512:]) is not None:
+            break
+
+    return "".join(collected)
 
 
 def stage_lines_to_tmux_ssh(pane_id: str, commands: List[str], step_delay: float = 0.35) -> Tuple[bool, str]:
@@ -420,39 +597,116 @@ def _extract_compact_self_trap(reasoning_list: List[Dict[str, Any]]) -> str:
     return ""
 
 
+def render_markdown_ansi(text: str) -> str:
+    """Convert Markdown bold, inline code, headings, and fenced blocks into crisp ANSI terminal text."""
+    if not text:
+        return ""
+    norm = re.sub(r"\n{3,}", "\n\n", text.replace("\r\n", "\n")).strip()
+    lines_out: List[str] = []
+    in_fence = False
+    for raw_line in norm.split("\n"):
+        stripped = raw_line.strip()
+        if stripped.startswith("```"):
+            lang = stripped[3:].strip()
+            if not in_fence:
+                in_fence = True
+                hdr = f"── {lang} ──" if lang else "──────"
+                lines_out.append(f"{C_DIM}{hdr}{C_RESET}")
+            else:
+                in_fence = False
+                lines_out.append(f"{C_DIM}──────{C_RESET}")
+            continue
+        if in_fence:
+            lines_out.append(f"  {C_CYAN}{raw_line}{C_RESET}")
+            continue
+
+        heading_m = re.match(r"^(#{1,4})\s+(.*)$", raw_line)
+        if heading_m:
+            lines_out.append(f"{C_BOLD}{C_CYAN}{heading_m.group(2).strip()}{C_RESET}")
+            continue
+
+        fmt_line = re.sub(r"\*\*([^*\n]+)\*\*", rf"{C_BOLD}\1{C_RESET}", raw_line)
+        fmt_line = re.sub(r"`([^`\n]+)`", rf"{C_CYAN}\1{C_RESET}", fmt_line)
+        lines_out.append(fmt_line)
+    return "\n".join(lines_out)
+
+
+def _emit_or_page(block_text: str) -> None:
+    """Print inline when short; automatically pipe tall outputs through `less -RFX` for native scrolling."""
+    if not block_text:
+        return
+    text_out = block_text if block_text.endswith("\n") else block_text + "\n"
+    try:
+        term_rows = shutil.get_terminal_size((100, 28)).lines
+    except Exception:
+        term_rows = 28
+
+    use_pager = (
+        os.getenv("NEO_PAGER", "1").strip() != "0"
+        and sys.stdout.isatty()
+        and sys.stdin.isatty()
+        and text_out.count("\n") >= max(16, term_rows - 4)
+        and bool(shutil.which("less"))
+    )
+    if use_pager:
+        try:
+            subprocess.run(["less", "-RFX"], input=text_out, text=True, check=False)
+            return
+        except Exception:
+            pass
+    sys.stdout.write(text_out)
+    sys.stdout.flush()
+
+
 def _render_turn_output(result: Dict[str, Any], brain=None) -> None:
-    """Print compact reasoning + tool receipt tree + NEO's prose response + BudgetGuard footer."""
+    """Format compact reasoning + tool receipt tree + ANSI-rendered prose + BudgetGuard footer."""
     reasoning = result.get("reasoning") or []
     receipts = result.get("receipts") or []
     verdict = str(result.get("verdict") or "").strip()
     trace_id = str(result.get("trace_id") or "")
 
+    buf_lines: List[str] = []
     trap_line = _extract_compact_self_trap(reasoning)
     if trap_line or receipts:
         if trap_line:
-            print(f"{C_DIM}┌─ reasoning{C_RESET}")
-            print(f"{C_DIM}│ {trap_line}{C_RESET}")
+            buf_lines.append(f"{C_DIM}┌─ reasoning{C_RESET}")
+            buf_lines.append(f"{C_DIM}│ {trap_line}{C_RESET}")
+        total = len(receipts)
         for idx, rec in enumerate(receipts, 1):
-            branch = "└─" if idx == len(receipts) else "├─"
+            if trap_line:
+                branch = "└─" if idx == total else "├─"
+            elif total == 1:
+                branch = "──"
+            elif idx == 1:
+                branch = "┌─"
+            elif idx == total:
+                branch = "└─"
+            else:
+                branch = "├─"
             tname = rec.get("tool", "unknown")
             dur = float(rec.get("duration_ms") or 0.0)
             status = str(rec.get("status") or "ok").lower()
             s_col = C_GREEN if status == "success" else (C_YELLOW if status == "blocked" else C_RED)
             s_lbl = "ok" if status == "success" else status
             pad = "." * max(2, 38 - len(tname))
-            print(f"{C_DIM}{branch} #{idx} {C_RESET}{tname} {C_DIM}{pad} {dur:.1f}ms{C_RESET}  {s_col}{s_lbl}{C_RESET}")
-        print()
+            buf_lines.append(
+                f"{C_DIM}{branch} #{idx} {C_RESET}{tname} {C_DIM}{pad} {dur:.1f}ms{C_RESET}  {s_col}{s_lbl}{C_RESET}"
+            )
+        buf_lines.append("")
 
-    print(f"{C_GREEN}{C_BOLD}neo >{C_RESET} {verdict}")
+    rendered_verdict = render_markdown_ansi(verdict)
+    buf_lines.append(f"{C_GREEN}{C_BOLD}neo >{C_RESET} {rendered_verdict}")
     bg = getattr(brain, "budget_guard", None) if brain is not None else None
     if bg is not None and trace_id:
-        print(f"{C_DIM}      [{bg.get_status(trace_id)}]{C_RESET}")
-    print()
+        buf_lines.append(f"{C_DIM}      [{bg.get_status(trace_id)}]{C_RESET}")
+    buf_lines.append("")
+    _emit_or_page("\n".join(buf_lines))
 
 
 def _run_zero_token_walk(arg_str: str, target_device: Optional[str]) -> None:
     """Execute deterministic `$0.00` SP3 `test_packet_walk` directly without spending LLM tokens."""
     from core.panos.ops import test_packet_walk
+    from core.panos.sanctuary import get_pending_candidate_changes
 
     tokens = arg_str.split()
     if len(tokens) < 2:
@@ -462,9 +716,16 @@ def _run_zero_token_walk(arg_str: str, target_device: Optional[str]) -> None:
     port = tokens[2] if len(tokens) >= 3 else "443"
     proto = tokens[3] if len(tokens) >= 4 else "tcp"
     t0 = time.perf_counter()
+    pending = get_pending_candidate_changes(target_device=target_device)
     out = test_packet_walk(source=src, destination=dst, port=port, protocol=proto, target_device=target_device)
     ms = (time.perf_counter() - t0) * 1000
-    print(f"{C_BOLD}── SP3 PACKET WALK ({ms:.1f}ms · $0.00) ──{C_RESET}\n{out}")
+    cand_banner = (
+        f"{C_YELLOW}[NOTE: {len(pending)} uncommitted candidate edit(s) exist in [edit] — "
+        f"PAN-OS packet walk evaluates COMMITTED running policy only. Run '@diff' to audit candidate.]{C_RESET}\n"
+        if pending
+        else ""
+    )
+    _emit_or_page(f"{C_BOLD}── SP3 PACKET WALK ({ms:.1f}ms · $0.00) ──{C_RESET}\n{cand_banner}{out}\n")
 
 
 def _run_zero_token_macro(arg_str: str, brain, target_device: Optional[str]) -> None:
@@ -492,22 +753,26 @@ def _run_zero_token_macro(arg_str: str, brain, target_device: Optional[str]) -> 
     except TypeError:
         out = fn()
     ms = (time.perf_counter() - t0) * 1000
-    print(f"{C_BOLD}── {name} ({ms:.1f}ms · $0.00) ──{C_RESET}\n{out}\n")
+    _emit_or_page(f"{C_BOLD}── {name} ({ms:.1f}ms · $0.00) ──{C_RESET}\n{out}\n")
 
 
 def _print_help(symbiotic: bool = False) -> None:
     pfx = "@" if symbiotic else "/"
     extra = (
-        f"  {C_CYAN}@ <question>{C_RESET}     Ask NEO inline (auto-attaches recent scrubbed SSH output)\n"
+        f"  {C_CYAN}@ <question>{C_RESET}          Ask NEO inline (auto-attaches recent scrubbed SSH output)\n"
+        f"  {C_CYAN}<cmd> + @ <question>{C_RESET}  Run SSH <cmd> & NEO XML-API query simultaneously (t=0ms)\n"
+        f"  {C_CYAN}<cmd> | @ <question>{C_RESET}  Run SSH <cmd> first and pipe its fresh output into NEO\n"
         if symbiotic
-        else f"  {C_CYAN}/grab [lines]{C_RESET}    Capture & scrub last N lines from adjacent tmux SSH pane\n"
+        else f"  {C_CYAN}/grab [lines]{C_RESET}         Capture & scrub last N lines from adjacent tmux SSH pane\n"
     )
     print(
         f"\n{C_BOLD}NEO Commands ({'Symbiotic Single-Prompt SSH' if symbiotic else 'Resident REPL'}):{C_RESET}\n"
         f"{extra}"
         f"  {C_CYAN}{pfx}walk <s> <d> [p] [pr]{C_RESET} Run $0.00 deterministic SP3 packet walk (FIB->PBF->NAT->Policy)\n"
+        f"  {C_CYAN}{pfx}diff{C_RESET}                  Run $0.00 candidate XML audit (lockout, severance, uninspected rules)\n"
         f"  {C_CYAN}{pfx}macro [name|list]{C_RESET}     Run $0.00 commands.yaml composite macro (e.g. ha_deep_audit)\n"
         f"  {C_CYAN}{pfx}stage{C_RESET}                 Validate & inject last 'set/move/delete' lines into [edit] (no commit)\n"
+        f"  {C_CYAN}{pfx}write [on|off]{C_RESET}        Toggle PolicyEngine READ_WRITE / READ_ONLY in-session (HITL enforced)\n"
         f"  {C_CYAN}{pfx}why{C_RESET}                   Show full <REASONING> trace for the last exchange\n"
         f"  {C_CYAN}{pfx}raw <N>{C_RESET}               Show exact raw PAN-OS XML/YAML/CLI output for [Step N]\n"
         f"  {C_CYAN}{pfx}mem{C_RESET}                   Inspect rolling <resident_session_memory> (max 10 turns)\n"
@@ -517,6 +782,153 @@ def _print_help(symbiotic: bool = False) -> None:
         f"  {C_CYAN}{pfx}export [file.md]{C_RESET}      Compile CAB Markdown report (evidence.py + google_export.py)\n"
         f"  {C_CYAN}{pfx}reset{C_RESET}                 Clear rolling resident session memory\n"
     )
+
+
+def execute_dual_plane_turn(
+    ssh_cmd: str,
+    op_char: str,
+    neo_raw_cmd: str,
+    master_fd: int,
+    echo_mode: str,
+    brain,
+    state_box: Dict[str, Any],
+    target_device: Optional[str],
+    ssh_ring_snapshot: str,
+) -> str:
+    """
+    Execute `<ssh_cmd> + @ <neo_cmd>` (concurrent t=0ms SSH + XML-API) or
+    `<ssh_cmd> | @ <neo_cmd>` (pipe fresh SSH command output directly into NEO).
+    Returns the raw SSH output captured from `master_fd` so the caller can append to `ssh_ring`.
+    """
+    neo_cmd = normalize_dual_neo_query(neo_raw_cmd)
+    if not neo_cmd:
+        return drain_pty_ssh_command(master_fd, echo_stdout=True)
+
+    # Pipe mode (`| @`): drain SSH command first (~150ms), then feed its scrubbed output directly to NEO
+    if op_char == "|":
+        raw_ssh_out = drain_pty_ssh_command(master_fd, echo_stdout=True)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        piped_ctx = sanitize_ssh_capture(f"$ {ssh_cmd}\n{raw_ssh_out}"[-8192:])
+        handled = _dispatch_shared_meta_command(
+            neo_cmd,
+            brain=brain,
+            state_box=state_box,
+            target_device=target_device,
+            symbiotic=True,
+            pty_master_fd=master_fd,
+            pty_prompt_mode=echo_mode,
+            ssh_ring_getter=lambda: piped_ctx,
+        )
+        if not handled:
+            state_box["last_query"] = neo_cmd
+            state_box["last_result"] = _execute_brain_turn(
+                brain,
+                neo_cmd,
+                mode="diagnostic",
+                target_device=target_device,
+                ssh_context=piped_ctx,
+            )
+        return raw_ssh_out
+
+    # Parallel mode (`+ @`): check if `neo_cmd` is a shared meta-command vs. concurrent LLM turn
+    low = neo_cmd.lower()
+    is_llm_audit = low.startswith("audit ") and bool(neo_cmd[6:].strip())
+    is_meta_only = not is_llm_audit and (
+        low in ("help", "diff", "reset", "mem", "board", "forge", "why", "stage")
+        or low.startswith(("write", "raw", "walk", "macro", "export"))
+    )
+
+    if is_meta_only:
+        raw_ssh_out = drain_pty_ssh_command(master_fd, echo_stdout=True)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        _dispatch_shared_meta_command(
+            neo_cmd,
+            brain=brain,
+            state_box=state_box,
+            target_device=target_device,
+            symbiotic=True,
+            pty_master_fd=master_fd,
+            pty_prompt_mode=echo_mode,
+            ssh_ring_getter=lambda: ssh_ring_snapshot,
+        )
+        return raw_ssh_out
+
+    # True t=0ms Concurrent Dispatch: launch XML-API + Gemini worker thread BEFORE draining SSH PTY
+    eff_mode = "investigate" if is_llm_audit else "diagnostic"
+    eff_query = neo_cmd[6:].strip() if is_llm_audit else neo_cmd
+    full_query = (
+        f"{eff_query}\n\n<ssh_pane_capture>\n{ssh_ring_snapshot}\n</ssh_pane_capture>"
+        if ssh_ring_snapshot
+        else eff_query
+    )
+
+    abort_event = threading.Event()
+    ssh_draining = [True]
+    latest_status = [""]
+    res_holder: Dict[str, Any] = {}
+    err_holder: List[Exception] = []
+    prev_sigint = signal.getsignal(signal.SIGINT)
+
+    def _handle_dual_sigint(_sig, _frame):
+        abort_event.set()
+        if not ssh_draining[0]:
+            sys.stdout.write(f"\r\033[K{C_YELLOW}[aborting turn...]{C_RESET}\n")
+            sys.stdout.flush()
+
+    def _buffered_status(msg: str) -> None:
+        clean = str(msg or "").replace("\n", " ").strip()[:110]
+        latest_status[0] = clean
+        if not ssh_draining[0]:
+            sys.stdout.write(f"\r\033[K{C_DIM}  ⟳ {clean}{C_RESET}")
+            sys.stdout.flush()
+
+    def _bg_worker() -> None:
+        try:
+            res_holder["res"] = brain.investigate(
+                full_query,
+                user_id="ssh-operator",
+                status_callback=_buffered_status,
+                target_device=target_device,
+                target_mode=eff_mode,
+                abort_event=abort_event,
+                return_details=True,
+            )
+        except Exception as exc:
+            err_holder.append(exc)
+
+    signal.signal(signal.SIGINT, _handle_dual_sigint)
+    worker = threading.Thread(target=_bg_worker, name="neo-dual-plane", daemon=True)
+    try:
+        worker.start()
+        raw_ssh_out = drain_pty_ssh_command(master_fd, echo_stdout=True)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        ssh_draining[0] = False
+        if worker.is_alive() and latest_status[0]:
+            sys.stdout.write(f"\r\033[K{C_DIM}  ⟳ {latest_status[0]}{C_RESET}")
+            sys.stdout.flush()
+        while worker.is_alive():
+            worker.join(timeout=0.1)
+    finally:
+        signal.signal(signal.SIGINT, prev_sigint)
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+    if err_holder:
+        print(f"{C_RED}[error] Concurrent query failed: {err_holder[0]}{C_RESET}\n")
+        return raw_ssh_out
+
+    res = res_holder.get("res")
+    state_box["last_query"] = eff_query
+    if isinstance(res, dict):
+        state_box["last_result"] = res
+        _render_turn_output(res, brain=brain)
+    elif res is not None:
+        state_box["last_result"] = {"verdict": str(res), "receipts": [], "reasoning": [], "trace_id": ""}
+        print(f"{C_GREEN}{C_BOLD}neo >{C_RESET} {res}\n")
+    return raw_ssh_out
 
 
 def _execute_brain_turn(
@@ -587,6 +999,45 @@ def _dispatch_shared_meta_command(
     if low == "help":
         _print_help(symbiotic=symbiotic)
         return True
+    if low == "diff":
+        from core.panos.sanctuary import summarize_candidate_diff
+
+        t0 = time.perf_counter()
+        diff_out = summarize_candidate_diff(target_device=target_device)
+        ms = (time.perf_counter() - t0) * 1000
+        _emit_or_page(f"{C_BOLD}── CANDIDATE PRE-COMMIT DIFF ({ms:.1f}ms · $0.00) ──{C_RESET}\n{diff_out}\n")
+        return True
+    if low == "write" or low.startswith("write "):
+        sub = q[5:].strip().lower()
+        pol = getattr(brain, "policy", None)
+        if pol is None:
+            print(f"{C_RED}[write] PolicyEngine unavailable.{C_RESET}\n")
+            return True
+        if sub in ("", "status"):
+            print(
+                f"{C_BOLD}[write]{C_RESET} PolicyEngine mode is currently "
+                f"{C_YELLOW}{pol.mode}{C_RESET} (terminal [y/N] HITL + Sanctuary IP gates enforced).\n"
+            )
+            return True
+        if sub == "on":
+            pol.mode = "READ_WRITE"
+            os.environ["POLICY_MODE"] = "READ_WRITE"
+            if getattr(brain, "tool_executor", None) is not None and getattr(brain.tool_executor, "policy", None) is not None:
+                brain.tool_executor.policy.mode = "READ_WRITE"
+            print(
+                f"{C_YELLOW}[write] PolicyEngine elevated to READ_WRITE for this session "
+                f"(every write tool still requires your [y/N] terminal HITL approval + Sanctuary check).{C_RESET}\n"
+            )
+            return True
+        if sub == "off":
+            pol.mode = "READ_ONLY"
+            os.environ["POLICY_MODE"] = "READ_ONLY"
+            if getattr(brain, "tool_executor", None) is not None and getattr(brain.tool_executor, "policy", None) is not None:
+                brain.tool_executor.policy.mode = "READ_ONLY"
+            print(f"{C_GREEN}[write] PolicyEngine returned to READ_ONLY.{C_RESET}\n")
+            return True
+        print(f"{C_YELLOW}Usage: write [on|off|status]{C_RESET}\n")
+        return True
     if low == "reset":
         brain.reset_resident_session()
         state_box["last_result"] = {}
@@ -626,10 +1077,13 @@ def _dispatch_shared_meta_command(
         if not r_list:
             print(f"{C_DIM}[why] No <REASONING> trace recorded on the previous turn.{C_RESET}\n")
         else:
+            why_blocks = []
             for item in r_list:
                 t_num = int(item.get("turn", 0)) + 1
-                print(f"{C_BOLD}── REASONING (Turn {t_num}) ──{C_RESET}")
-                print(f"{item.get('raw_reasoning', '').strip()}\n")
+                why_blocks.append(
+                    f"{C_BOLD}── REASONING (Turn {t_num}) ──{C_RESET}\n{item.get('raw_reasoning', '').strip()}\n"
+                )
+            _emit_or_page("\n".join(why_blocks))
         return True
     if low.startswith("raw"):
         parts = q.split()
@@ -642,7 +1096,7 @@ def _dispatch_shared_meta_command(
             print(f"{C_YELLOW}Step #{parts[1]} out of range (1..{len(receipts)}).{C_RESET}\n")
             return True
         rec = receipts[step_idx]
-        print(
+        _emit_or_page(
             f"{C_BOLD}── RAW RECEIPT #{step_idx + 1}: {rec.get('tool')} "
             f"({rec.get('status')}, {rec.get('duration_ms')}ms) ──{C_RESET}\n"
             f"Args: {rec.get('args')}\n\n{rec.get('raw_output', '')}\n"
@@ -767,11 +1221,14 @@ def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verb
     brain, fw_label, purged_count = bootstrap_secure_runtime(quiet=False, tty_guard_factory=_cooked_guard)
     policy_mode = brain.policy.mode if getattr(brain, "policy", None) else "READ_ONLY"
     tool_count = len(getattr(brain, "tools", []) or [])
+    alias_badge = f" [{resolved_dev}]" if resolved_dev else (f" [{fw_label}]" if fw_label.startswith("offline") else "")
+    tls_unverified = os.getenv("PANOS_VERIFY_SSL", "true").strip().lower() in ("false", "0", "no")
+    tls_badge = f"  {C_DIM}│{C_RESET}  {C_YELLOW}tls:unverified{C_RESET}" if tls_unverified else ""
 
     print(
         f"{C_BOLD}{C_GREEN}NEO // SYMBIOTIC SSH{C_RESET}  {C_DIM}│{C_RESET}  "
-        f"{ssh_target} ({fw_label})  {C_DIM}│{C_RESET}  #core({tool_count})  {C_DIM}│{C_RESET}  "
-        f"{C_YELLOW}{policy_mode}{C_RESET}  {C_DIM}│{C_RESET}  keys-purged:{purged_count}  {C_DIM}│{C_RESET}  "
+        f"{ssh_target}{alias_badge}  {C_DIM}│{C_RESET}  #core({tool_count})  {C_DIM}│{C_RESET}  "
+        f"{C_YELLOW}{policy_mode}{C_RESET}  {C_DIM}│{C_RESET}  keys-purged:{purged_count}{tls_badge}  {C_DIM}│{C_RESET}  "
         f"{C_GREEN}Sanctuary Gate ARMED{C_RESET}"
     )
     print(f"{C_DIM}At any PAN-OS '>' or '#' prompt, type '@' as the first char to invoke NEO ('@help' for commands).{C_RESET}\n")
@@ -859,6 +1316,110 @@ def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verb
                     break
 
                 echo_mode, echoed_after_prompt = extract_echoed_command_after_prompt(tail_buf)
+                _, raw_after_prompt = extract_raw_after_prompt(tail_buf)
+
+                # 0. Dual-Plane Split (`<ssh_cmd> + @ <query>` parallel OR `<ssh_cmd> | @ <query>` piped)
+                dual_split = (
+                    parse_dual_plane_split(raw_after_prompt, in_bytes)
+                    if authenticated and echo_mode is not None
+                    else None
+                )
+                if dual_split is not None:
+                    ssh_cmd = dual_split["ssh_cmd"]
+                    op_char = dual_split["op"]
+                    cancelled = False
+                    neo_part = ""
+
+                    if dual_split["kind"] == "interactive":
+                        # Erase trailing ` +` / ` | ` from mgmtsrvr's remote buffer so only `ssh_cmd` stays staged
+                        os.write(master_fd, b"\x7f" * int(dual_split["erase_count"]))
+                        erase_deadline = time.time() + 0.08
+                        while time.time() < erase_deadline:
+                            er_ready, _, _ = select.select([master_fd], [], [], 0.02)
+                            if not er_ready:
+                                break
+                            try:
+                                er_chunk = os.read(master_fd, 1024)
+                            except OSError:
+                                break
+                            if not er_chunk:
+                                break
+                            os.write(sys.stdout.fileno(), er_chunk)
+                            tail_buf = (tail_buf + er_chunk.decode("utf-8", errors="replace"))[-512:]
+
+                        prefill = dual_split["prefill"]
+                        with _cooked_guard():
+                            sys.stdout.write(f" {C_CYAN}{op_char} @{C_RESET} ")
+                            sys.stdout.flush()
+                            try:
+                                rest = read_coalesced_input("") if not prefill or not dual_split["has_newline"] else ""
+                                neo_part = (prefill + rest).strip()
+                            except (EOFError, KeyboardInterrupt):
+                                cancelled = True
+                                print(f"\n{C_DIM}[dual-plane cancelled]{C_RESET}")
+                    else:
+                        # Pasted full line `<ssh_cmd> + @ <neo_query>` at an empty prompt
+                        os.write(master_fd, ssh_cmd.encode("utf-8"))
+                        paste_deadline = time.time() + 0.08
+                        while time.time() < paste_deadline:
+                            pr_ready, _, _ = select.select([master_fd], [], [], 0.02)
+                            if not pr_ready:
+                                break
+                            try:
+                                pr_chunk = os.read(master_fd, 1024)
+                            except OSError:
+                                break
+                            if not pr_chunk:
+                                break
+                            os.write(sys.stdout.fileno(), pr_chunk)
+                            tail_buf = (tail_buf + pr_chunk.decode("utf-8", errors="replace"))[-512:]
+
+                        with _cooked_guard():
+                            pre_q = dual_split["neo_query"]
+                            sys.stdout.write(f" {C_CYAN}{op_char} @{C_RESET} {pre_q}")
+                            sys.stdout.flush()
+                            if dual_split["has_newline"]:
+                                sys.stdout.write("\n")
+                                sys.stdout.flush()
+                                neo_part = pre_q
+                            else:
+                                try:
+                                    neo_part = (pre_q + read_coalesced_input("")).strip()
+                                except (EOFError, KeyboardInterrupt):
+                                    cancelled = True
+                                    print(f"\n{C_DIM}[dual-plane cancelled]{C_RESET}")
+
+                    if cancelled:
+                        os.write(master_fd, b"\x03")
+                        continue
+
+                    if echo_mode == "config" and _COMMIT_CMD_RE.match(ssh_cmd.strip()):
+                        if not _intercept_commit_gate():
+                            with _cooked_guard():
+                                print(f"{C_GREEN}[sanctuary] Cancelled commit (candidate config preserved).{C_RESET}")
+                            os.write(master_fd, b"\x03")
+                            continue
+
+                    with _cooked_guard():
+                        ring_before = _get_scrubbed_ring()
+                        captured_ssh = execute_dual_plane_turn(
+                            ssh_cmd=ssh_cmd,
+                            op_char=op_char,
+                            neo_raw_cmd=neo_part,
+                            master_fd=master_fd,
+                            echo_mode=echo_mode,
+                            brain=brain,
+                            state_box=state_box,
+                            target_device=resolved_dev,
+                            ssh_ring_snapshot=ring_before,
+                        )
+                        if captured_ssh:
+                            ssh_ring = (ssh_ring + captured_ssh)[-12288:]
+                            tail_buf = (tail_buf + captured_ssh)[-512:]
+                            if "configuration committed successfully" in captured_ssh.lower():
+                                brain.record_operator_event("Configuration committed in symbiotic SSH session.")
+                    os.write(master_fd, b"\r")
+                    continue
 
                 # 1. Column-0 '@' Escape at an idle PAN-OS '>' or '#' prompt
                 if authenticated and echo_mode is not None and echoed_after_prompt == "" and in_bytes.startswith(b"@"):
@@ -1059,7 +1620,7 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING,
+        level=logging.INFO if args.verbose else logging.ERROR,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )

@@ -53,22 +53,29 @@ class GoogleDriveClient:
             cls._instances.clear()
 
     def get_service(self) -> Tuple[Optional[Any], Optional[str]]:
-        """Lazy-load and return `(service, error_msg)`."""
+        """Lazy-load and return `(service, error_msg)` supporting User OAuth (Ultra Drive), Service Account, and ADC."""
         with self._io_lock:
             if self._service is not None:
                 return self._service, None
+            oauth_file = os.getenv("GOOGLE_OAUTH_TOKEN_FILE", "").strip()
             creds_file = os.getenv("GCP_SERVICE_ACCOUNT_FILE", "").strip()
-            if not creds_file:
-                try:
-                    from core.integrations.secrets import get_secret
+            try:
+                from core.integrations.secrets import get_secret
+                if not oauth_file:
+                    oauth_file = get_secret("google_oauth_token_file").strip()
+                if not creds_file:
                     creds_file = get_secret("gcp_service_account_file").strip()
-                except Exception:
-                    creds_file = ""
+            except Exception:
+                pass
             try:
                 from googleapiclient.discovery import build
                 from google.oauth2 import service_account
 
-                if creds_file and os.path.exists(creds_file):
+                if oauth_file and os.path.exists(oauth_file):
+                    from google.oauth2.credentials import Credentials as UserCredentials
+
+                    creds = UserCredentials.from_authorized_user_file(oauth_file, scopes=self.scopes)
+                elif creds_file and os.path.exists(creds_file):
                     creds = service_account.Credentials.from_service_account_file(
                         creds_file, scopes=self.scopes
                     )
@@ -114,12 +121,27 @@ class GoogleDriveClient:
             )
             return list(res.get("files", []))
 
-    def download_bytes(self, file_id: str) -> bytes:
-        """Thread-safe binary/text media download from Google Drive."""
+    def download_bytes(self, file_id: str, mime_type: Optional[str] = None) -> bytes:
+        """
+        Thread-safe binary/text download from Google Drive.
+        Automatically exports native Google Docs (`application/vnd.google-apps.document`)
+        created by Gemini Sparks/Tasks via `files().export` to avoid `403 fileNotDownloadable`.
+        """
         with self._io_lock:
             service, err = self.get_service()
             if not service:
                 raise RuntimeError(f"Google Drive unavailable: {err}")
+
+            if mime_type == "application/vnd.google-apps.document":
+                for exp_mime in ("text/markdown", "text/plain"):
+                    try:
+                        exported = service.files().export(fileId=file_id, mimeType=exp_mime).execute()
+                        if isinstance(exported, bytes):
+                            return exported
+                        return str(exported or "").encode("utf-8")
+                    except Exception:
+                        continue
+
             from googleapiclient.http import MediaIoBaseDownload
 
             request = service.files().get_media(fileId=file_id)

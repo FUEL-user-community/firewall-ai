@@ -1,21 +1,18 @@
-# Core Engine & AI SDKs
-google-generativeai>=0.8.6
-pan-os-python>=1.13.0
-python-dotenv>=1.2.2
-PyYAML>=6.0.3
-requests>=2.34.2
-xmltodict>=1.0.4
-rich>=15.0.0
+# Core Engine & PAN-OS XML-API SDKs
+google-generativeai>=0.8.3
+pan-os-python>=1.11.0
+python-dotenv>=1.0.0
+PyYAML>=6.0.1
+requests>=2.31.0
+xmltodict>=0.13.0
 
-# RAG & Knowledge Base
-google-api-python-client>=2.198.0
-google-auth>=2.55.2
-pypdf>=6.14.2
+# Google Drive Commons & Reference Airlock
+google-api-python-client>=2.100.0
+google-auth>=2.23.0
+pypdf>=4.0.0
 
-# Schema Validation
+# Schema Validation & Test Suite
 pydantic>=2.0.0
-
-# Testing & Verification
 pytest>=8.0.0
 
 # Optional Enterprise Secrets Backends

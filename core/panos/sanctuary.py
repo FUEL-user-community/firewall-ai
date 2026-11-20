@@ -222,3 +222,95 @@ def evaluate_precommit_sanctuary(
         "warnings": warnings,
         "summary": "Candidate changes passed Sanctuary checks." if is_safe else f"{len(warnings)} Sanctuary risk(s) detected.",
     }
+
+
+def get_pending_candidate_changes(target_device: Optional[str] = None) -> List[str]:
+    """Return non-empty list of uncommitted candidate change descriptions, or [] if candidate == running."""
+    try:
+        client = PanOSClientPool.get_instance().get_client(target_device)
+        st_chg, chg_xml = client.execute_op("<show><config><list><changes/></list></config></show>")
+        if st_chg != 200 or not chg_xml:
+            return []
+        root_chg = ET.fromstring(chg_xml)
+        items: List[str] = []
+        for entry in root_chg.findall(".//entry"):
+            parts = [
+                (entry.findtext(tag) or "").strip()
+                for tag in ("xpath", "cmd", "admin", "action")
+                if (entry.findtext(tag) or "").strip()
+            ]
+            label = " | ".join(parts) if parts else ("".join(entry.itertext()).strip())
+            if label:
+                items.append(label[:160])
+        if not items:
+            raw_res = (root_chg.findtext(".//result") or "").strip()
+            if raw_res:
+                items.extend([ln.strip()[:160] for ln in raw_res.splitlines() if ln.strip()])
+        return items
+    except Exception:
+        return []
+
+
+def summarize_candidate_diff(target_device: Optional[str] = None) -> str:
+    """
+    Deterministic `$0.00` pre-commit candidate audit (`@diff` / `/diff`):
+    1. Lists pending uncommitted candidate changes from `mgmtsrvr`.
+    2. Runs Sanctuary lockout / drift / active-flow-severance checks.
+    3. Audits candidate security rules for broad `application: any`, `service: any`, or missing security profiles.
+    """
+    changes = get_pending_candidate_changes(target_device=target_device)
+    sanctuary = evaluate_precommit_sanctuary(target_device=target_device)
+    if not changes and not sanctuary.get("changed"):
+        return "No uncommitted candidate changes in [edit] (candidate == running)."
+
+    lines: List[str] = [f"Pending Candidate Edits: {len(changes) or 1} uncommitted change(s) in [edit]"]
+    for idx, ch in enumerate(changes[:15], 1):
+        lines.append(f"  {idx:02d}. {ch}")
+    if len(changes) > 15:
+        lines.append(f"  ... (+{len(changes) - 15} more)")
+
+    # Inspect candidate security rule posture
+    posture_notes: List[str] = []
+    try:
+        client = PanOSClientPool.get_instance().get_client(target_device)
+        st_sec, sec_xml = client.execute_get("/config/devices/entry/vsys/entry/rulebase/security")
+        if st_sec == 200 and sec_xml:
+            root = ET.fromstring(sec_xml)
+            for entry in root.findall(".//security/rules/entry"):
+                rname = entry.get("name") or "unnamed"
+                if (entry.findtext("disabled") or "no").strip().lower() == "yes":
+                    continue
+                if (entry.findtext("action") or "").strip().lower() != "allow":
+                    continue
+                apps = [m.text.strip() for m in entry.findall("./application/member") if m.text]
+                svcs = [m.text.strip() for m in entry.findall("./service/member") if m.text]
+                prof = entry.find("profile-setting")
+                has_prof = prof is not None and (
+                    bool(prof.findall(".//group/member")) or bool(prof.findall(".//profiles/*"))
+                )
+                flags = []
+                if "any" in apps:
+                    flags.append("application:any")
+                if "any" in svcs:
+                    flags.append("service:any (prefer application-default)")
+                if not has_prof:
+                    flags.append("no-security-profile")
+                if flags:
+                    posture_notes.append(f"Rule '{rname}': {', '.join(flags)}")
+    except Exception:
+        pass
+
+    if sanctuary.get("warnings"):
+        lines.append("\nSanctuary Pre-Commit Warnings:")
+        for w in sanctuary["warnings"]:
+            lines.append(f"  ! {w}")
+    else:
+        lines.append("\nSanctuary Gate: PASS (no MGT lockout or uncovered interzone severance detected).")
+
+    if posture_notes:
+        lines.append("\nCandidate Allow-Rule Posture Notes:")
+        for pn in posture_notes[:10]:
+            lines.append(f"  - {pn}")
+
+    lines.append("\nReminder: '@walk' evaluates COMMITTED running config until you run 'commit'.")
+    return "\n".join(lines)

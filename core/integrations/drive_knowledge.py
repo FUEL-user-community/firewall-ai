@@ -50,7 +50,7 @@ def _is_sensitive_drive_item(name: str) -> bool:
         return True
     if base.startswith(".env") or base in ("devices.yaml", "devices.yml"):
         return True
-    if "service_account" in base or "running_config" in base:
+    if "service_account" in base or "gdrive_token" in base or "oauth_token" in base or "running_config" in base:
         return True
     if base.endswith((".pem", ".key", ".pfx", ".p12")):
         return True

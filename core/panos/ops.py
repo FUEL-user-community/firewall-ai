@@ -755,6 +755,19 @@ def test_packet_walk(
             },
         }
     }
+    try:
+        from core.panos.client import PanOSClient
+        live_client = _get_pool().get_client(target_device)
+        if isinstance(live_client, PanOSClient):
+            from core.panos.sanctuary import get_pending_candidate_changes
+            pending_edits = get_pending_candidate_changes(target_device=target_device)
+            if pending_edits:
+                walk_summary["sp3_packet_walk"]["candidate_config_warning"] = (
+                    f"UNCOMMITTED CANDIDATE EDITS ({len(pending_edits)}) IN [edit] — "
+                    "PAN-OS test_packet_walk evaluates COMMITTED running policy only."
+                )
+    except Exception:
+        pass
     return yaml.safe_dump(walk_summary, sort_keys=False)
 
 

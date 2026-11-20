@@ -26,10 +26,14 @@ if p.is_file():
 print(ip or "192.168.1.254")
 ')"
     tmux new-session -d -s "$SESSION_NAME" -c "$REPO_DIR" "python3 neo_cli.py"
+    tmux set-option -t "$SESSION_NAME" mouse on >/dev/null 2>&1 || true
+    tmux set-option -t "$SESSION_NAME" history-limit 50000 >/dev/null 2>&1 || true
     tmux split-window -h -p 38 -t "${SESSION_NAME}:0.0" "ssh ${PANOS_USER}@${FW_IP}"
     tmux select-pane -t "${SESSION_NAME}:0.0"
 else
     tmux new-session -d -s "$SESSION_NAME" -c "$REPO_DIR" "python3 neo_cli.py --ssh ${PANOS_Target}"
+    tmux set-option -t "$SESSION_NAME" mouse on >/dev/null 2>&1 || true
+    tmux set-option -t "$SESSION_NAME" history-limit 50000 >/dev/null 2>&1 || true
 fi
 
 exec tmux attach-session -t "$SESSION_NAME"
