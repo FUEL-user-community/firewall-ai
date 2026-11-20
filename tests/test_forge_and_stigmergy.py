@@ -7,7 +7,6 @@ Comprehensive Counter-Logic Test Suite for:
 - Plane 5: Macro/outcome failure honesty, `PanOSClient` `RLock`, prose-safe `scrubber`, CVSS `10.0` isolation, URI scoping
 """
 
-import asyncio
 import os
 import threading
 import time
@@ -15,7 +14,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from starlette.testclient import TestClient
 
 from core.forge.laws import (
     ConstitutionalError,
@@ -43,8 +41,6 @@ from core.safety.command_filter import CommandFilter
 from core.safety.policy_engine import PolicyEngine
 from core.safety.scrubber import scrub
 from core.utils.xml_to_yaml import ToxicXmlSanitizer
-from server import app
-from stem import StemSpliceProxy
 
 
 # =============================================================================
@@ -438,88 +434,6 @@ def test_slot_mutator_stages_in_inactive_rolls_back_bad_code_and_promotes_clean_
 
 
 # =============================================================================
-# Plane 1: StemSpliceProxy & Server Internal Drain Security Tests
-# =============================================================================
-
-def test_stem_splice_proxy_atomic_cutover_and_internal_route_block():
-    async def _scenario():
-        async def make_backend(label: str):
-            async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-                await reader.read(1024)
-                body = f'{{"slot":"{label}"}}'.encode("utf-8")
-                resp = (
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                    + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode("ascii")
-                    + body
-                )
-                writer.write(resp)
-                await writer.drain()
-                writer.close()
-
-            srv = await asyncio.start_server(handle, "127.0.0.1", 0)
-            port = srv.sockets[0].getsockname()[1]
-            return srv, port
-
-        srv_a, port_a = await make_backend("NEO_A")
-        srv_b, port_b = await make_backend("NEO_B")
-        proxy = StemSpliceProxy("127.0.0.1", 0, initial_upstream_port=port_a)
-        await proxy.start()
-
-        async def http_get(path: str) -> bytes:
-            r, w = await asyncio.open_connection("127.0.0.1", proxy.bind_port)
-            w.write(f"GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".encode("ascii"))
-            await w.drain()
-            data = await r.read()
-            w.close()
-            return data
-
-        try:
-            # 1. Routes to Slot A initially
-            res1 = await http_get("/healthz")
-            assert b'"slot":"NEO_A"' in res1
-
-            # 2. Blocks external callers from hitting /internal/drain through :8888
-            res_blocked = await http_get("/internal/drain")
-            assert b"403 Forbidden" in res_blocked
-
-            # 3. Atomic <1ms cutover to Slot B
-            proxy.set_upstream_port(port_b)
-            res2 = await http_get("/healthz")
-            assert b'"slot":"NEO_B"' in res2
-        finally:
-            await proxy.stop()
-            srv_a.close()
-            srv_b.close()
-
-    asyncio.run(_scenario())
-
-
-def test_server_internal_drain_requires_stem_token_and_updates_readyz(monkeypatch):
-    import server as srv_mod
-
-    monkeypatch.setenv("NEO_STEM_TOKEN", "super-secret-stem-token")
-    old_draining = srv_mod._DRAINING
-    srv_mod._DRAINING = False
-    client = TestClient(app)
-
-    try:
-        # Unauthorized without X-Stem-Token -> 403
-        assert client.get("/internal/status").status_code == 403
-        assert client.post("/internal/drain", headers={"X-Stem-Token": "wrong"}).status_code == 403
-
-        # Authorized with valid X-Stem-Token -> transitions slot to draining (readyz -> 503)
-        r_drain = client.post("/internal/drain", headers={"X-Stem-Token": "super-secret-stem-token"})
-        assert r_drain.status_code == 200
-        assert r_drain.json()["draining"] is True
-
-        r_ready = client.get("/readyz")
-        assert r_ready.status_code == 503
-        assert r_ready.json()["status"] == "draining"
-    finally:
-        srv_mod._DRAINING = old_draining
-
-
-# =============================================================================
 # Step 6: Self-Guided "Agent at Home" & Earned-Trust Invariant Tests
 # =============================================================================
 
@@ -660,19 +574,6 @@ def test_drive_knowledge_recursive_python_files_credential_block_and_sentinel_sc
     assert "[SYSTEM:" not in sliced
     assert "[Step 1" not in sliced
     assert "GEMINI_FILE_URI:" not in sliced
-
-
-def test_server_internal_promote_lifts_probation_shadow_in_place(monkeypatch):
-    monkeypatch.setenv("NEO_STEM_TOKEN", "stem-promote-token")
-    monkeypatch.setenv("NEO_PROBATION_SHADOW", "1")
-    client = TestClient(app)
-
-    assert client.post("/internal/promote", headers={"X-Stem-Token": "invalid"}).status_code == 403
-
-    r_prom = client.post("/internal/promote", headers={"X-Stem-Token": "stem-promote-token"})
-    assert r_prom.status_code == 200
-    assert r_prom.json()["promoted"] is True
-    assert os.environ.get("NEO_PROBATION_SHADOW") == "0"
 
 
 def test_core_tray_mounts_board_ops_and_slot_forge_with_zero_sqlite_disk_writes(tmp_path, monkeypatch):
@@ -848,3 +749,48 @@ def test_board_ops_post_degrades_gracefully_when_drive_readonly(monkeypatch):
     assert "BOARD ARTIFACT PUBLISHED:" in out
     assert "drive_readonly_fallback" in out
     assert classify_outcome(out) == "success"
+
+
+def test_synthesizer_strips_reasoning_tags_and_catches_reasoning_only_turns():
+    from core.pipeline.synthesizer import ResponseSynthesizer, strip_prompt_echo
+
+    leaked = (
+        "<REASONING>\nINITIATIVE: Check zone protections.\nFALSIFY: XPath check.\n</REASONING>\n\n"
+        "Based on [Step 1], permitted-ip is missing on MGT."
+    )
+    cleaned = strip_prompt_echo(leaked)
+    assert "<REASONING>" not in cleaned
+    assert "INITIATIVE:" not in cleaned
+    assert cleaned == "Based on [Step 1], permitted-ip is missing on MGT."
+
+    # A turn that emitted ONLY <REASONING> with zero visible prose must NOT pass check_terminal_synthesis_guard
+    synth = ResponseSynthesizer()
+    reasoning_only_resp = MagicMock()
+    reasoning_only_resp.text = "<REASONING>\nINITIATIVE: Thinking only without prose output.\n</REASONING>"
+    mock_chat = MagicMock()
+    retried_resp = MagicMock()
+    mock_chat.send_message.return_value = retried_resp
+
+    res = synth.check_terminal_synthesis_guard(
+        turn=1,
+        tool_parts=[],
+        response=reasoning_only_resp,
+        chat=mock_chat,
+        base_config={},
+        history=[],
+        trace_id="t-reas",
+        receipts=[{"tool": "system_info", "status": "success"}],
+        target_mode="diagnostic",
+    )
+    assert res is retried_resp
+    assert mock_chat.send_message.called
+
+
+def test_prompt_integrity_falls_back_to_env_example_when_env_missing(monkeypatch):
+    import core.pipeline.prompt_assembler as pa
+
+    monkeypatch.delenv("PROMPTS_YAML_SHA", raising=False)
+    monkeypatch.setattr(pa, "_PROMPTS_EXPECTED_SHA", "")
+    # Should verify cleanly against tracked .env.example without raising or skipping
+    assert pa._resolve_expected_sha(pa._PROMPTS_PATH) != ""
+    pa.verify_prompt_integrity()

@@ -84,6 +84,19 @@ except ImportError:
     get_hitl_provider = None
     logger.warning("[HITL] hitl module not available -- write operations ungated.")
 
+# Active CoreBrain reference for zero-server in-place slot_forge hot-reloading
+_ACTIVE_BRAIN_REF = None
+
+
+def register_active_brain(brain_instance) -> None:
+    global _ACTIVE_BRAIN_REF
+    _ACTIVE_BRAIN_REF = brain_instance
+
+
+def get_active_brain():
+    return _ACTIVE_BRAIN_REF
+
+
 # =============================================================================
 # Core Pipeline Modules
 # =============================================================================
@@ -280,12 +293,32 @@ class CoreBrain:
         # Continuous Cybersec Resident rolling session memory (RAM-only, bounded to 10 turns)
         self._resident_memory: List[Dict[str, Any]] = []
         self._memory_lock = threading.Lock()
+        register_active_brain(self)
 
     def reset_resident_session(self) -> None:
         """Clear in-memory resident conversation continuity."""
         with self._memory_lock:
             self._resident_memory.clear()
         logger.info("[RESIDENT] Session memory cleared.")
+
+    def get_resident_memory_snapshot(self) -> List[Dict[str, Any]]:
+        """Return a thread-safe copy of the rolling resident session memory."""
+        with self._memory_lock:
+            return [dict(item) for item in self._resident_memory]
+
+    def record_operator_event(self, event_note: str) -> None:
+        """Record an out-of-band SSH stage/commit event so resident memory stays synchronized."""
+        clean_note = (event_note or "").strip()
+        if not clean_note:
+            return
+        with self._memory_lock:
+            self._resident_memory.append({
+                "operator": f"[SSH_OPERATOR_EVENT] {clean_note[:350]}",
+                "tools": ["ssh_pane_sync"],
+                "reply": "Acknowledged out-of-band SSH state transition; will re-verify live XPaths before asserting state.",
+            })
+            if len(self._resident_memory) > 10:
+                self._resident_memory = self._resident_memory[-10:]
 
     def _format_resident_memory(self) -> str:
         """Render bounded rolling resident memory without raw multi-KB tool blobs."""
@@ -841,13 +874,13 @@ class CoreBrain:
             self.reset_resident_session()
             msg = "Resident session memory cleared."
             if return_details:
-                return {"verdict": msg, "receipts": [], "trace_id": "reset"}
+                return {"verdict": msg, "receipts": [], "reasoning": [], "trace_id": "reset"}
             return msg
 
         if not self.api_key and not self.model:
             err = "Error: Offline Mode (No API Key or Model configured)."
             if return_details:
-                return {"verdict": err, "receipts": [], "trace_id": "offline"}
+                return {"verdict": err, "receipts": [], "reasoning": [], "trace_id": "offline"}
             return err
 
         # 1. State & Governor Initialization (Thread-safe request-scoped instances)
@@ -862,6 +895,7 @@ class CoreBrain:
                 return {
                     "verdict": verdict_val,
                     "receipts": list(state.receipts),
+                    "reasoning": list(state.investigation_trace),
                     "trace_id": state.trace_id,
                 }
             return verdict_val

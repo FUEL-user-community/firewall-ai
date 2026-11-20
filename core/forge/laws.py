@@ -16,6 +16,9 @@ import yaml
 
 # Files that no autonomous slot mutation or Spark patch may ever create, modify, or delete.
 PROTECTED_EXACT_PATHS: Set[str] = {
+    "neo_cli.py",
+    "neo_tmux.sh",
+    "server.py",
     "stem.py",
     ".env",
     ".env.example",
@@ -29,6 +32,7 @@ PROTECTED_EXACT_PATHS: Set[str] = {
     "core/forge/slot_mutator.py",
     "core/pipeline/outcomes.py",
     "core/pipeline/evidence.py",
+    "core/pipeline/tool_executor.py",
     "core/safety/policy_engine.py",
     "core/safety/auth.py",
     "core/safety/hitl.py",
@@ -38,6 +42,8 @@ PROTECTED_EXACT_PATHS: Set[str] = {
     "core/panos/client.py",
     "core/panos/research.py",
     "core/integrations/gdrive_client.py",
+    "core/integrations/secrets.py",
+    "core/utils/startup_validator.py",
 }
 
 PROTECTED_PREFIXES = (
@@ -46,19 +52,20 @@ PROTECTED_PREFIXES = (
     ".slots/",
     ".state/",
     "_legacy/",
+    "web/",
 )
 
 ALLOWED_MUTATION_ROOTS = (
     "core/",
     "config/",
-    "web/",
 )
 
-ALLOWED_EXTENSIONS = frozenset({".py", ".yaml", ".yml", ".js", ".css", ".html"})
+ALLOWED_EXTENSIONS = frozenset({".py", ".yaml", ".yml"})
 
-FORBIDDEN_AST_CALLS = frozenset({"eval", "exec", "compile", "__import__"})
+FORBIDDEN_AST_CALLS = frozenset({"eval", "exec", "compile", "__import__", "getattr"})
 FORBIDDEN_AST_MODULES = frozenset({
     "ctypes",
+    "dotenv",
     "pty",
     "winreg",
     "subprocess",
@@ -76,6 +83,33 @@ FORBIDDEN_AST_MODULES = frozenset({
     "telnetlib",
     "paramiko",
 })
+
+_ALLOWED_SECRETS_IMPORTERS = frozenset({
+    "core/brain.py",
+    "core/panos/client.py",
+    "core/utils/startup_validator.py",
+})
+
+_FORBIDDEN_VAULT_IDENTIFIERS = frozenset({
+    "_SEALED_VAULT",
+    "_REGISTERED_SECRET_VARIANTS",
+    "_SCRUB_KEY",
+    "_HITL_SECRET",
+})
+
+_SENSITIVE_TARGET_SUBSTRINGS = (
+    ".env",
+    "/proc/",
+    "service-account",
+    "service_account",
+    "api_key",
+    "secret",
+    "token",
+    "password",
+    "phash",
+    "private_key",
+    "credential",
+)
 
 # Narrow grandfathered stdlib imports for non-egress internal utilities
 PER_FILE_ALLOWED_AST_MODULES = {
@@ -119,7 +153,12 @@ def validate_mutation_paths(paths: Iterable[str]) -> List[str]:
                     f"Constitutional violation: '{rel}' lies inside protected zone '{prefix}'."
                 )
 
-        if "service_account" in low or "running_config" in low or Path(rel).name.startswith(".env"):
+        if (
+            "service_account" in low
+            or "service-account" in low
+            or "running_config" in low
+            or Path(rel).name.startswith(".env")
+        ):
             raise ConstitutionalError(
                 f"Constitutional violation: '{rel}' is a protected credential/config artifact."
             )
@@ -177,6 +216,34 @@ def validate_python_ast(source_code: str, filename: str = "<candidate>") -> None
     allowed_for_file = PER_FILE_ALLOWED_AST_MODULES.get(norm_file, frozenset())
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _FORBIDDEN_VAULT_IDENTIFIERS:
+            raise ConstitutionalError(
+                f"Forbidden internal vault/key identifier '{node.id}' in '{filename}'."
+            )
+        if isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_VAULT_IDENTIFIERS:
+            raise ConstitutionalError(
+                f"Forbidden internal vault/key attribute '{node.attr}' in '{filename}'."
+            )
+        # Block bulk os.environ dumping (os.environ.items/values/copy, dict(os.environ))
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute):
+            if (
+                isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "os"
+                and node.value.attr == "environ"
+                and node.attr in ("items", "values", "copy", "keys")
+            ):
+                raise ConstitutionalError(
+                    f"Forbidden bulk environment inspection 'os.environ.{node.attr}' in '{filename}'."
+                )
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute):
+            if isinstance(node.value.value, ast.Name) and node.value.value.id == "os" and node.value.attr == "environ":
+                if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+                    low_k = node.slice.value.lower()
+                    if any(s in low_k for s in _SENSITIVE_TARGET_SUBSTRINGS):
+                        raise ConstitutionalError(
+                            f"Forbidden secret environment subscript 'os.environ[{node.slice.value!r}]' in '{filename}'."
+                        )
+
         if isinstance(node, ast.Import):
             for alias in node.names:
                 top_mod = alias.name.split(".")[0]
@@ -184,24 +251,56 @@ def validate_python_ast(source_code: str, filename: str = "<candidate>") -> None
                     raise ConstitutionalError(
                         f"Forbidden module import '{alias.name}' in '{filename}'."
                     )
+                if alias.name == "core.integrations.secrets" and norm_file not in _ALLOWED_SECRETS_IMPORTERS:
+                    raise ConstitutionalError(
+                        f"Forbidden credential module import '{alias.name}' in '{filename}'."
+                    )
         elif isinstance(node, ast.ImportFrom) and node.module:
             top_mod = node.module.split(".")[0]
             if top_mod in FORBIDDEN_AST_MODULES and top_mod not in allowed_for_file:
                 raise ConstitutionalError(
                     f"Forbidden module import '{node.module}' in '{filename}'."
                 )
-        elif isinstance(node, ast.Call):
-            # Block eval/exec/compile/__import__
-            if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_AST_CALLS:
+            if node.module.startswith("core.integrations.secrets") and norm_file not in _ALLOWED_SECRETS_IMPORTERS:
                 raise ConstitutionalError(
-                    f"Forbidden dynamic execution call '{node.func.id}()' in '{filename}'."
+                    f"Forbidden credential module import '{node.module}' in '{filename}'."
                 )
+        elif isinstance(node, ast.Call):
+            # Note: core/brain.py legitimately uses getattr; forbid getattr in newly mutated tool/config modules
+            if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_AST_CALLS:
+                if not (node.func.id == "getattr" and norm_file in ("core/brain.py", "core/pipeline/synthesizer.py", "core/pipeline/tool_keeper.py")):
+                    raise ConstitutionalError(
+                        f"Forbidden dynamic execution call '{node.func.id}()' in '{filename}'."
+                    )
             # Block os.system / os.popen
             if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
                 if node.func.value.id == "os" and node.func.attr in ("system", "popen", "execl", "execvp"):
                     raise ConstitutionalError(
                         f"Forbidden shell call 'os.{node.func.attr}()' in '{filename}'."
                     )
+            # Block open/Path/getenv/environ.get targeting .env, /proc/, or secret key names
+            is_file_or_env_read = False
+            if isinstance(node.func, ast.Name) and node.func.id in ("open", "Path"):
+                is_file_or_env_read = True
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr in ("getenv", "read_text", "read_bytes", "open"):
+                    is_file_or_env_read = True
+                elif (
+                    node.func.attr == "get"
+                    and isinstance(node.func.value, ast.Attribute)
+                    and isinstance(node.func.value.value, ast.Name)
+                    and node.func.value.value.id == "os"
+                    and node.func.value.attr == "environ"
+                ):
+                    is_file_or_env_read = True
+            if is_file_or_env_read and norm_file not in _ALLOWED_SECRETS_IMPORTERS:
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        low_arg = arg.value.lower()
+                        if any(s in low_arg for s in _SENSITIVE_TARGET_SUBSTRINGS):
+                            raise ConstitutionalError(
+                                f"Forbidden credential/secret read target '{arg.value}' in '{filename}'."
+                            )
             # Block shell=True in subprocess calls
             for kw in node.keywords:
                 if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True:

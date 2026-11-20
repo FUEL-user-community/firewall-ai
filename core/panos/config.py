@@ -5,11 +5,12 @@ Extracted from pan_tools.py — uses PanOSClientPool for multi-firewall support.
 Contains: get_live_config, audit_user_id, fetch_running_config_xml
 """
 
+import ipaddress
 import re
 import logging
 import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element, SubElement, tostring
-from typing import Tuple
+from typing import Optional, Tuple
 
 from core.panos.client import PanOSClientPool
 from core.utils.xml_to_yaml import ToxicXmlSanitizer
@@ -126,6 +127,127 @@ def _redact_sensitive_xml(xml_content: str) -> str:
     return re.sub(pattern, r"\1[REDACTED]\3", xml_content, flags=re.DOTALL | re.IGNORECASE)
 
 
+def _fetch_branch_xml(client, xpath: str) -> Tuple[int, str]:
+    """Fetch raw XML for an XPath from either PanOSClient or legacy xapi wrapper."""
+    from core.panos.client import PanOSClient
+    if isinstance(client, PanOSClient):
+        return client.execute_get(xpath)
+    client.fw.xapi.get(xpath=xpath)
+    return 200, (client.fw.xapi.xml_result() or "")
+
+
+def _build_sibling_config_context(
+    client,
+    clean_xpath: str,
+    primary_xml: str,
+    sanitizer: ToxicXmlSanitizer,
+) -> str:
+    """
+    Deterministically attach critical PAN-OS sibling branches that split across XPaths:
+    1. `/rulebase/security` -> append `/rulebase/default-security-rules` so `interzone-default: allow`
+       overrides can never hide outside custom rule queries.
+    2. `/deviceconfig/system` -> append L3 dataplane interface subnets and flag any shared-L2
+       collision with the MGT IP so `/24` `permitted-ip` traps are caught immediately.
+    """
+    norm = clean_xpath.rstrip("/")
+
+    if norm in (
+        "/config/devices/entry/vsys/entry/rulebase/security",
+        "/config/shared/rulebase/security",
+    ):
+        sibling_xpath = norm.rsplit("/", 1)[0] + "/default-security-rules"
+        try:
+            st, sib_xml = _fetch_branch_xml(client, sibling_xpath)
+            if st != 200 or not sib_xml or sib_xml == primary_xml:
+                return ""
+            sib_sanitized = _redact_sensitive_xml(sib_xml)
+            sib_yaml = sanitizer.convert_string(sib_sanitized)
+            header = f"\n# --- SIBLING BRANCH: {sibling_xpath} ---\n"
+            if not sib_yaml or sib_yaml.strip() in (
+                "response:\n  result: ''",
+                "response:\n  result: null",
+                "result: ''",
+            ):
+                return (
+                    header
+                    + "# No overrides configured (native PAN-OS defaults: intrazone-default=allow, interzone-default=deny)\n"
+                )
+            return header + sib_yaml
+        except Exception as e:
+            logger.debug(f"[Config] Optional sibling fetch skipped for {sibling_xpath}: {e}")
+            return ""
+
+    if norm == "/config/devices/entry/deviceconfig/system":
+        eth_xpath = "/config/devices/entry/network/interface/ethernet"
+        try:
+            mgt_ip: Optional[ipaddress.IPv4Address] = None
+            mgt_net: Optional[ipaddress.IPv4Network] = None
+            sys_root = ET.fromstring(primary_xml)
+            ip_el = sys_root.find(".//system/ip-address")
+            mask_el = sys_root.find(".//system/netmask")
+            if ip_el is not None and ip_el.text:
+                mgt_ip = ipaddress.IPv4Address(ip_el.text.strip())
+                mask_txt = mask_el.text.strip() if (mask_el is not None and mask_el.text) else "255.255.255.0"
+                mgt_net = ipaddress.IPv4Network(f"{mgt_ip}/{mask_txt}", strict=False)
+
+            st, eth_xml = _fetch_branch_xml(client, eth_xpath)
+            if st != 200 or not eth_xml or eth_xml == primary_xml:
+                return ""
+            eth_root = ET.fromstring(eth_xml)
+            dp_lines = []
+            for entry in eth_root.findall(".//ethernet/entry"):
+                ifname = entry.attrib.get("name", "")
+                if not ifname:
+                    continue
+                for ip_node in entry.findall("./layer3/ip/entry"):
+                    cidr = ip_node.attrib.get("name", "").strip()
+                    if not cidr:
+                        continue
+                    overlap_note = ""
+                    try:
+                        iface_obj = ipaddress.IPv4Interface(cidr)
+                        if (mgt_net and iface_obj.ip in mgt_net) or (mgt_ip and mgt_ip in iface_obj.network):
+                            overlap_note = (
+                                f"  [WARNING: SHARES L2 SUBNET {iface_obj.network} WITH MGT {mgt_ip} — "
+                                f"a subnet-wide permitted-ip ({iface_obj.network}) WILL NOT isolate MGT from dataplane hosts; "
+                                f"use explicit /32 admin host IPs]"
+                            )
+                    except ValueError:
+                        pass
+                    dp_lines.append(f"#   {ifname}: {cidr}{overlap_note}")
+
+                for sub_entry in entry.findall("./layer3/units/entry"):
+                    subname = sub_entry.attrib.get("name", "")
+                    for ip_node in sub_entry.findall("./ip/entry"):
+                        cidr = ip_node.attrib.get("name", "").strip()
+                        if not cidr:
+                            continue
+                        overlap_note = ""
+                        try:
+                            iface_obj = ipaddress.IPv4Interface(cidr)
+                            if (mgt_net and iface_obj.ip in mgt_net) or (mgt_ip and mgt_ip in iface_obj.network):
+                                overlap_note = (
+                                    f"  [WARNING: SHARES L2 SUBNET {iface_obj.network} WITH MGT {mgt_ip} — "
+                                    f"use explicit /32 admin host IPs in permitted-ip]"
+                                )
+                        except ValueError:
+                            pass
+                        dp_lines.append(f"#   {subname}: {cidr}{overlap_note}")
+
+            if not dp_lines:
+                return ""
+            return (
+                f"\n# --- SIBLING CONTEXT: L3 Dataplane Subnets ({eth_xpath}) ---\n"
+                + "\n".join(dp_lines)
+                + "\n"
+            )
+        except Exception as e:
+            logger.debug(f"[Config] Optional MGT/dataplane overlap check skipped: {e}")
+            return ""
+
+    return ""
+
+
 def get_live_config(xpath: str, target_device: str = None) -> str:
     """
     Fetches a section of the firewall's running configuration using an XPath expression.
@@ -137,6 +259,7 @@ def get_live_config(xpath: str, target_device: str = None) -> str:
 
     Common XPath expressions:
         Security Rules:  /config/devices/entry/vsys/entry/rulebase/security
+        Default Rules:   /config/devices/entry/vsys/entry/rulebase/default-security-rules
         NAT Rules:       /config/devices/entry/vsys/entry/rulebase/nat
         Address Objects: /config/devices/entry/vsys/entry/address
         Service Objects: /config/devices/entry/vsys/entry/service
@@ -162,15 +285,10 @@ def get_live_config(xpath: str, target_device: str = None) -> str:
     try:
         client = _get_pool().get_client(target_device)
         logger.info(f"Fetching config for xpath: {clean_xpath} on {target_device or 'default'}")
-        
-        from core.panos.client import PanOSClient
-        if isinstance(client, PanOSClient):
-            status_code, result = client.execute_get(clean_xpath)
-            if status_code != 200:
-                return f"ERROR: [get_live_config] Failed to retrieve configuration at '{clean_xpath}'"
-        else:
-            client.fw.xapi.get(xpath=clean_xpath)
-            result = client.fw.xapi.xml_result()
+
+        status_code, result = _fetch_branch_xml(client, clean_xpath)
+        if status_code != 200:
+            return f"ERROR: [get_live_config] Failed to retrieve configuration at '{clean_xpath}'"
         if not result:
             return f"# Configuration branch '{clean_xpath}' is empty (not configured on device).\nabsent: true"
 
@@ -179,9 +297,11 @@ def get_live_config(xpath: str, target_device: str = None) -> str:
 
         sanitizer = ToxicXmlSanitizer()
         converted = sanitizer.convert_string(sanitized_xml)
+        sibling_ctx = _build_sibling_config_context(client, clean_xpath, result, sanitizer)
         if not converted or converted.strip() in ("response:\n  result: ''", "response:\n  result: null", "result: ''"):
-            return f"# Configuration branch '{clean_xpath}' is empty (not configured on device).\nabsent: true"
-        return converted
+            base_empty = f"# Configuration branch '{clean_xpath}' is empty (not configured on device).\nabsent: true"
+            return base_empty + sibling_ctx
+        return converted + sibling_ctx
 
     except Exception as e:
         logger.error(f"Error fetching config for '{clean_xpath}': {e}", exc_info=True)

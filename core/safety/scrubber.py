@@ -2,16 +2,24 @@
 PII Scrubbing Layer
 Masks hardware serial numbers while preserving real IP addresses for accurate diagnostics.
 """
+import base64
 import os
 import re
 import hmac
 import hashlib
 import logging
 import secrets
+import threading
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["scrub"]
+__all__ = [
+    "scrub",
+    "register_runtime_secret",
+    "scrub_registered_secrets",
+    "clear_registered_secrets",
+]
 
 SCRUB_PII = os.getenv("SCRUB_PII", "true").lower() == "true"
 
@@ -47,16 +55,79 @@ def _deterministic_token(value: str, prefix: str = "ENTITY") -> str:
     return f"[{prefix}_{short_hash}]"
 
 
+_SECRET_LOCK = threading.Lock()
+_REGISTERED_SECRET_VARIANTS: list[str] = []
+
+
+def register_runtime_secret(secret_value: str) -> None:
+    """
+    Register an active runtime credential (raw + base64 + hex + URL-encoded + reversed)
+    so it can NEVER leave in any tool output, receipt, or Drive artifact—even if
+    encoded by mutated code. Ignores strings shorter than 8 chars to avoid prose collisions.
+    """
+    if not secret_value or not isinstance(secret_value, str):
+        return
+    clean = secret_value.strip()
+    if len(clean) < 8:
+        return
+
+    raw_bytes = clean.encode("utf-8", errors="ignore")
+    b64_full = base64.b64encode(raw_bytes).decode("ascii")
+    b64_nopad = b64_full.rstrip("=")
+    hex_low = raw_bytes.hex()
+    url_enc = urllib.parse.quote(clean, safe="")
+    rev = clean[::-1]
+
+    candidates = [clean, rev, b64_full, b64_nopad, hex_low, hex_low.upper(), url_enc]
+    for line in clean.splitlines():
+        ln = line.strip()
+        if len(ln) >= 16 and not ln.startswith("-----"):
+            candidates.append(ln)
+            candidates.append(ln[::-1])
+
+    with _SECRET_LOCK:
+        existing = set(_REGISTERED_SECRET_VARIANTS)
+        for cand in candidates:
+            if len(cand) >= 8 and cand not in existing:
+                _REGISTERED_SECRET_VARIANTS.append(cand)
+                existing.add(cand)
+        _REGISTERED_SECRET_VARIANTS.sort(key=len, reverse=True)
+
+
+def clear_registered_secrets() -> None:
+    """Clear registered runtime secret variants (used in unit test teardown)."""
+    with _SECRET_LOCK:
+        _REGISTERED_SECRET_VARIANTS.clear()
+
+
+def scrub_registered_secrets(text: str) -> str:
+    """Exact substring redaction of registered runtime credentials (safe on code/diffs/SHAs)."""
+    if not text:
+        return ""
+    out = text if isinstance(text, str) else str(text)
+    with _SECRET_LOCK:
+        variants = list(_REGISTERED_SECRET_VARIANTS)
+    for variant in variants:
+        if variant in out:
+            out = out.replace(variant, "[REDACTED_RUNTIME_SECRET]")
+    out = re.sub(r"\bAIza[0-9A-Za-z_\-]{35}\b", "[REDACTED_GEMINI_KEY]", out)
+    out = re.sub(r"\bLUFRPT[a-zA-Z0-9+/=]{16,}", "[REDACTED_API_KEY]", out)
+    return out
+
+
 def scrub(text: str) -> str:
     """
-    Masks hardware serial numbers, private keys, API keys, password hashes,
-    and pre-shared keys in tool output while preserving real IP addresses.
+    Masks registered runtime credentials, hardware serial numbers, private keys,
+    API keys, password hashes, and pre-shared keys while preserving real IP addresses.
     """
-    if not SCRUB_PII:
-        return text
-
     if not isinstance(text, str):
         text = str(text)
+
+    # Always strip registered runtime secrets even if SCRUB_PII is toggled off
+    text = scrub_registered_secrets(text)
+
+    if not SCRUB_PII:
+        return text
 
     # 1. Private cryptographic keys
     text = re.sub(

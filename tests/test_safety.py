@@ -8,11 +8,8 @@ import time
 import threading
 import pytest
 from unittest.mock import MagicMock
-from starlette.requests import Request
-from starlette.responses import Response
 
 from core.safety.command_filter import CommandFilter
-from core.safety.auth import AuthMiddleware
 from core.safety.policy_engine import PolicyEngine, PolicyViolationError
 from core.safety.budget_guard import BudgetGuard, BudgetExceededError
 from core.safety.circuit_breaker import CircuitBreaker, CircuitBreakerError
@@ -22,6 +19,7 @@ from core.safety.hitl import (
     AutoApproveProvider,
     SimulatedInteractiveProvider,
     InteractiveHITLProvider,
+    TerminalHITLProvider,
     get_hitl_provider,
     get_pending_approvals,
     submit_approval_decision,
@@ -59,30 +57,25 @@ def test_command_filter_blocks_xml_injection():
     assert CommandFilter.is_allowed(None)[0] is False
 
 
-# ─── 2. Auth Middleware Tests ─────────────────────────────────────────
+# ─── 2. Terminal HITL Provider Tests ──────────────────────────────────
 
-def test_auth_middleware_handles_none_client():
-    """Verify H3: None client IP does not raise AttributeError."""
-    import asyncio
-    app_mock = MagicMock()
-    middleware = AuthMiddleware(app_mock)
+def test_terminal_hitl_provider_fail_closed_and_callback():
+    """Verify TerminalHITLProvider fails closed without TTY and signs approved callbacks."""
+    req = ApprovalRequest(
+        tool_name="capture_pcap",
+        tool_args={"filter_ip": "192.168.1.20"},
+        user_id="ssh-operator",
+        trace_id="tr-term-1",
+    )
+    provider_denied = TerminalHITLProvider(prompt_fn=lambda _: False)
+    res_no = provider_denied.request_approval(req)
+    assert res_no.approved is False
+    assert res_no.signature == ""
 
-    # Construct request with client=None
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": "/api/chat",
-        "headers": [],
-        "query_string": b"",
-        "client": None,
-    }
-    req = Request(scope)
-
-    async def call_next(r):
-        return Response("ok")
-
-    resp = asyncio.run(middleware.dispatch(req, call_next))
-    assert resp.status_code == 401
+    provider_ok = get_hitl_provider("terminal", prompt_fn=lambda _: True)
+    res_yes = provider_ok.request_approval(req)
+    assert res_yes.approved is True
+    assert len(res_yes.signature) == 16
 
 
 # ─── 3. Policy Engine Tests ──────────────────────────────────────────

@@ -17,14 +17,125 @@ Usage:
     panos_key = get_secret("panos_api_key_fw_hq")
 """
 
+import json
 import os
+import stat
 import logging
+import threading
 from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
-# Module-level singleton
+# Module-level singleton & private sealed secret vault (purged from os.environ at runtime)
 _provider = None
+_SEALED_LOCK = threading.Lock()
+_SEALED_VAULT: Dict[str, str] = {}
+
+_PUBLIC_ENV_ALLOWLIST = frozenset({
+    "PROMPTS_YAML_SHA",
+    "SECRETS_BACKEND",
+    "POLICY_MODE",
+    "HITL_MODE",
+    "HITL_TIMEOUT_SECONDS",
+    "PANOS_HOSTNAME",
+    "PAN_IP",
+    "PANOS_VERIFY_SSL",
+    "GEMINI_MODEL",
+    "GEMINI_REQUEST_TIMEOUT",
+    "GEMINI_SAFETY_LEVEL",
+    "BUDGET_PER_INVESTIGATION",
+    "BUDGET_PER_DAY",
+    "KNOWLEDGE_BASE_FOLDER_ID",
+    "GOOGLE_DRIVE_FOLDER_ID",
+    "DRIVE_BOARD_FOLDER_ID",
+    "INCIDENT_REPORTS_FOLDER_ID",
+    "SCRUB_PII",
+    "NEO_SLOT_ID",
+})
+
+_SECRET_NAME_TOKENS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "PHASH", "CREDENTIAL")
+
+
+def _is_secret_env_name(env_name: str) -> bool:
+    up = env_name.upper()
+    if up in _PUBLIC_ENV_ALLOWLIST:
+        return False
+    if up in ("GCP_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS", "VAULT_ROLE_ID"):
+        return True
+    return any(tok in up for tok in _SECRET_NAME_TOKENS)
+
+
+def enforce_secret_file_permissions(*paths: Path) -> list[str]:
+    """
+    On POSIX (Linux/macOS), tighten any world/group-readable credential file (.env,
+    service-account JSON) to 0600 (-rw-------). Returns status notes for startup log.
+    """
+    notes: list[str] = []
+    if os.name != "posix":
+        return notes
+    for p in paths:
+        if not p or not p.is_file():
+            continue
+        try:
+            mode = stat.S_IMODE(p.stat().st_mode)
+            if mode & (stat.S_IRWXG | stat.S_IRWXO):
+                os.chmod(p, 0o600)
+                notes.append(f"Tightened permissions on '{p.name}' from {oct(mode)} -> 0o600")
+        except Exception as exc:
+            logger.warning(f"[SECRETS] Could not tighten permissions on '{p}': {exc}")
+    return notes
+
+
+def seal_runtime_secrets(extra_files: tuple[Path, ...] = ()) -> int:
+    """
+    Consume all secret variables from os.environ into _SEALED_VAULT, register their
+    fingerprints (plus any GCP service-account private_key) with core.safety.scrubber,
+    and purge them from os.environ so child processes and mutable modules cannot read them.
+    """
+    from core.safety.scrubber import register_runtime_secret
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    sa_path_str = (
+        os.getenv("GCP_SERVICE_ACCOUNT_FILE", "").strip()
+        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    )
+    sa_path = Path(sa_path_str).expanduser() if sa_path_str else None
+    if sa_path and not sa_path.is_absolute():
+        sa_path = (repo_root / sa_path).resolve()
+
+    enforce_secret_file_permissions(repo_root / ".env", *([sa_path] if sa_path else []), *extra_files)
+
+    if sa_path and sa_path.is_file():
+        try:
+            sa_data = json.loads(sa_path.read_text(encoding="utf-8", errors="ignore"))
+            if isinstance(sa_data, dict):
+                for fld in ("private_key", "private_key_id"):
+                    if sa_data.get(fld):
+                        register_runtime_secret(str(sa_data[fld]))
+        except Exception:
+            pass
+
+    purged = 0
+    with _SEALED_LOCK:
+        for k in list(os.environ.keys()):
+            if _is_secret_env_name(k):
+                val = os.environ.pop(k, "")
+                if val:
+                    _SEALED_VAULT[k] = val
+                    _SEALED_VAULT[k.upper()] = val
+                    _SEALED_VAULT[k.upper().replace("-", "_")] = val
+                    register_runtime_secret(val)
+                    purged += 1
+    logger.info(f"[SECRETS] Sealed and purged {purged} secret variable(s) from os.environ.")
+    return purged
+
+
+def clear_sealed_secrets() -> None:
+    """Clear sealed runtime vault (used in unit test teardown)."""
+    with _SEALED_LOCK:
+        _SEALED_VAULT.clear()
 
 
 # =============================================================================
@@ -336,8 +447,16 @@ class DotenvSecretsProvider(SecretsProvider):
     """
 
     def get(self, key: str) -> str:
-        # Try exact key first, then uppercase version, then underscore normalized (H1)
+        # Check sealed in-RAM vault first (populated after os.environ purge), then live env (H1)
         normalized_key = key.upper().replace("-", "_")
+        with _SEALED_LOCK:
+            sealed = (
+                _SEALED_VAULT.get(key)
+                or _SEALED_VAULT.get(key.upper())
+                or _SEALED_VAULT.get(normalized_key)
+            )
+        if sealed:
+            return sealed
         value = os.getenv(key) or os.getenv(key.upper()) or os.getenv(normalized_key)
         if not value:
             raise ValueError(

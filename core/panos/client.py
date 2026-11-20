@@ -523,9 +523,12 @@ class PanOSClientPool:
             except Exception as e:
                 logger.debug(f"[Pool] Secret lookup '{secret_key}' failed: {e}")
 
-            # Fallback to PANOS_API_KEY environment variable for default device
+            # Fallback to generic panos_api_key secret or PANOS_API_KEY env var for default device
             if not api_key and (device_name == self._default_device or len(self._registry) == 1):
-                api_key = os.getenv("PANOS_API_KEY")
+                try:
+                    api_key = get_secret("panos_api_key")
+                except Exception:
+                    api_key = os.getenv("PANOS_API_KEY")
 
             if not api_key:
                 raise ValueError(

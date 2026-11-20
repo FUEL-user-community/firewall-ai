@@ -10,6 +10,7 @@ Manages `.slots/a` and `.slots/b` candidate staging:
   cutover request to `SharedStateStore` for `stem.py` zero-drop promotion.
 """
 
+import difflib
 import importlib
 import logging
 import os
@@ -18,7 +19,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.forge.crucible import CrucibleReport, seal_slot_prompts_sha, verify_candidate_slot
 from core.forge.laws import (
@@ -33,6 +34,24 @@ logger = logging.getLogger(__name__)
 _LIVE_PATCH_LOCK = threading.RLock()
 _ZERO_DISK_STAGED_FILES: Dict[str, str] = {}
 _ZERO_DISK_STAGED_DIFFS: List[str] = []
+_FORGE_APPROVAL_HOOK: Optional[Callable[[List[str], str], bool]] = None
+
+
+def register_forge_approval_hook(fn: Optional[Callable[[List[str], str], bool]]) -> None:
+    """Register an interactive terminal approval hook called before promoting in-place patches."""
+    global _FORGE_APPROVAL_HOOK
+    _FORGE_APPROVAL_HOOK = fn
+
+
+def get_zero_disk_forge_status() -> Dict[str, Any]:
+    """Return a clean summary of staged RAM edits for CLI inspection (`/forge`)."""
+    with _LIVE_PATCH_LOCK:
+        diff_paths = [p for d in _ZERO_DISK_STAGED_DIFFS for p in extract_diff_paths(d)]
+        return {
+            "staged_files": sorted(_ZERO_DISK_STAGED_FILES.keys()),
+            "staged_diff_count": len(_ZERO_DISK_STAGED_DIFFS),
+            "staged_diff_paths": sorted(set(diff_paths)),
+        }
 
 _SYNC_EXCLUDE_DIRS = frozenset(
     {
@@ -531,6 +550,27 @@ def slot_forge(
                     all_touched = sorted(set(_ZERO_DISK_STAGED_FILES.keys()) | set(diff_paths))
                     validate_mutation_paths(all_touched)
 
+                    if callable(_FORGE_APPROVAL_HOOK):
+                        preview_chunks: List[str] = []
+                        for rel, new_txt in sorted(_ZERO_DISK_STAGED_FILES.items()):
+                            fp = (repo_root / rel).resolve()
+                            old_lines = fp.read_text(encoding="utf-8", errors="replace").splitlines() if fp.is_file() else []
+                            new_lines = new_txt.splitlines()
+                            ud = difflib.unified_diff(
+                                old_lines,
+                                new_lines,
+                                fromfile=f"a/{rel}",
+                                tofile=f"b/{rel}",
+                                lineterm="",
+                            )
+                            preview_chunks.append("\n".join(ud))
+                        preview_chunks.extend(_ZERO_DISK_STAGED_DIFFS)
+                        if not _FORGE_APPROVAL_HOOK(all_touched, "\n".join(c for c in preview_chunks if c)):
+                            return (
+                                f"REJECTED BY OPERATOR: In-place promotion of {all_touched} was declined at terminal review. "
+                                "Zero files modified on disk."
+                            )
+
                     # 1. Snapshot exact original file bytes in RAM for guaranteed <5ms rollback
                     backups: Dict[Path, Optional[bytes]] = {}
                     for rel in all_touched:
@@ -628,10 +668,11 @@ def slot_forge(
                     except Exception:
                         pass
                     try:
-                        import server as _srv
-                        if getattr(_srv, "_brain", None) is not None:
-                            _srv._brain.keeper = _srv._brain.keeper.__class__()
-                            _srv._brain.tools = _srv._brain.keeper.get_tools("#core")
+                        from core.brain import get_active_brain
+                        active_brain = get_active_brain()
+                        if active_brain is not None:
+                            active_brain.keeper = active_brain.keeper.__class__()
+                            active_brain.tools = active_brain.keeper.get_tools("#core")
                     except Exception:
                         pass
 

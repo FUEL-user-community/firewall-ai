@@ -209,3 +209,70 @@ def test_validate_xpath_allows_system_and_saml_profiles():
         assert valid is True
         assert res == xp
 
+
+def test_get_live_config_security_auto_appends_default_security_rules(mock_client_pool):
+    """Querying /rulebase/security deterministically appends /rulebase/default-security-rules overrides."""
+    from core.panos.client import PanOSClient
+
+    mock_pool, _ = mock_client_pool
+    pan_client = MagicMock(spec=PanOSClient)
+
+    def fake_get(xp):
+        if xp.endswith("/default-security-rules"):
+            return (
+                200,
+                "<response status='success'><result><default-security-rules><rules>"
+                "<entry name='interzone-default'><action>allow</action></entry>"
+                "</rules></default-security-rules></result></response>",
+            )
+        return (
+            200,
+            "<response status='success'><result><security><rules>"
+            "<entry name='egress-outside'><action>allow</action></entry>"
+            "</rules></security></result></response>",
+        )
+
+    pan_client.execute_get.side_effect = fake_get
+    mock_pool.get_client.return_value = pan_client
+
+    out = get_live_config("/config/devices/entry/vsys/entry/rulebase/security")
+    assert "egress-outside" in out
+    assert "SIBLING BRANCH: /config/devices/entry/vsys/entry/rulebase/default-security-rules" in out
+    assert "interzone-default" in out
+
+
+def test_get_live_config_system_flags_shared_l2_mgt_dataplane_overlap(mock_client_pool):
+    """Querying /deviceconfig/system appends L3 dataplane subnets and flags shared-L2 MGT collisions."""
+    from core.panos.client import PanOSClient
+
+    mock_pool, _ = mock_client_pool
+    pan_client = MagicMock(spec=PanOSClient)
+
+    def fake_get(xp):
+        if xp == "/config/devices/entry/deviceconfig/system":
+            return (
+                200,
+                "<response status='success'><result><system>"
+                "<ip-address>192.168.1.254</ip-address><netmask>255.255.255.0</netmask>"
+                "</system></result></response>",
+            )
+        if xp == "/config/devices/entry/network/interface/ethernet":
+            return (
+                200,
+                "<response status='success'><result><ethernet>"
+                "<entry name='ethernet1/2'><layer3><ip><entry name='192.168.1.1/24'/></ip></layer3></entry>"
+                "<entry name='ethernet1/3'><layer3><ip><entry name='192.168.50.1/24'/></ip></layer3></entry>"
+                "</ethernet></result></response>",
+            )
+        return 404, ""
+
+    pan_client.execute_get.side_effect = fake_get
+    mock_pool.get_client.return_value = pan_client
+
+    out = get_live_config("/config/devices/entry/deviceconfig/system")
+    assert "192.168.1.254" in out
+    assert "ethernet1/2: 192.168.1.1/24" in out
+    assert "SHARES L2 SUBNET 192.168.1.0/24 WITH MGT 192.168.1.254" in out
+    assert "/32" in out
+
+

@@ -49,9 +49,9 @@ def test_inspect_own_harness_manifest_tree():
     """Verify inspect_own_harness in tree mode lists scoped files without leaking credentials or tests."""
     manifest = inspect_own_harness("tree")
     assert "--- HARNESS SOURCE TREE ---" in manifest
-    assert "server.py" in manifest
     assert "config/commands.yaml" in manifest
     assert "core/brain.py" in manifest
+    assert "core/integrations/secrets.py" not in manifest
     assert ".env" not in manifest
     assert "tests/" not in manifest
 

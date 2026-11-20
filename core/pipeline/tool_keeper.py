@@ -29,9 +29,6 @@ def inspect_own_harness(target_paths: str = "tree", start_line: int = 1, end_lin
     # 1. Manifest / Tree Mode
     if cmd.lower() in ("tree", "list", "all"):
         entries = []
-        server_py = _REPO_ROOT / "server.py"
-        if server_py.is_file():
-            entries.append(("server.py", server_py.stat().st_size))
 
         for base_dir in ("config", "core"):
             dp = _REPO_ROOT / base_dir
@@ -46,9 +43,15 @@ def inspect_own_harness(target_paths: str = "tree", start_line: int = 1, end_lin
                     if p_file.suffix.lower() not in (".py", ".yaml", ".yml"):
                         continue
                     low = f.lower()
-                    if "service_account" in low or "running_config" in low or low.startswith(".env"):
-                        continue
                     rel = p_file.relative_to(_REPO_ROOT).as_posix()
+                    if (
+                        "service_account" in low
+                        or "service-account" in low
+                        or "running_config" in low
+                        or low.startswith(".env")
+                        or rel == "core/integrations/secrets.py"
+                    ):
+                        continue
                     entries.append((rel, p_file.stat().st_size))
 
         lines = ["--- HARNESS SOURCE TREE ---"]
@@ -84,9 +87,9 @@ def inspect_own_harness(target_paths: str = "tree", start_line: int = 1, end_lin
             results.append(f"Error: Access to '{p}' is forbidden (path resolution error).")
             continue
 
-        is_allowed_scope = rel == "server.py" or rel.startswith("config/") or rel.startswith("core/")
+        is_allowed_scope = rel.startswith("config/") or rel.startswith("core/")
         if not is_allowed_scope:
-            results.append(f"Error: Access to '{p}' is forbidden (strictly scoped to config/, core/, and server.py).")
+            results.append(f"Error: Access to '{p}' is forbidden (strictly scoped to config/ and core/).")
             continue
 
         parts = rel.split("/")
@@ -95,7 +98,13 @@ def inspect_own_harness(target_paths: str = "tree", start_line: int = 1, end_lin
             continue
 
         low_name = cand.name.lower()
-        if low_name.startswith(".env") or "service_account" in low_name or "running_config" in low_name:
+        if (
+            low_name.startswith(".env")
+            or "service_account" in low_name
+            or "service-account" in low_name
+            or "running_config" in low_name
+            or rel == "core/integrations/secrets.py"
+        ):
             results.append(f"Error: Access to '{p}' is forbidden (credential files are protected).")
             continue
 

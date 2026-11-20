@@ -91,10 +91,12 @@ def _has_prompt_echo(text: str) -> bool:
 
 
 def strip_prompt_echo(text: str) -> str:
-    """Strip any residual echoed prompt/Cartographer blocks from final synthesis text."""
+    """Strip internal <REASONING> traces and any residual echoed prompt/Cartographer blocks from final synthesis text."""
     if not text:
         return ""
     out = text
+    out = re.sub(r"<REASONING>.*?</REASONING>", "", out, flags=re.DOTALL | re.IGNORECASE)
+    out = re.sub(r"</?REASONING>", "", out, flags=re.IGNORECASE)
     out = re.sub(r"<cartographer_state>.*?</cartographer_state>", "", out, flags=re.DOTALL | re.IGNORECASE)
     out = re.sub(r"<resident_session_memory>.*?</resident_session_memory>", "", out, flags=re.DOTALL | re.IGNORECASE)
     out = re.sub(r"<computed_facts>.*?</computed_facts>", "", out, flags=re.DOTALL | re.IGNORECASE)
@@ -148,7 +150,7 @@ class ResponseSynthesizer:
                     txt = (response.text or "").strip() if isinstance(getattr(response, "text", None), str) else ""
                 except (ValueError, AttributeError):
                     txt = ""
-                if len(txt) >= 15 and not _has_prompt_echo(txt):
+                if len(strip_prompt_echo(txt)) >= 15 and not _has_prompt_echo(txt):
                     return None
 
         logger.warning(f"[{trace_id}] [GUARD] Agent returned text without tool calls on Turn 1. Initiating retry...")
@@ -279,13 +281,14 @@ class ResponseSynthesizer:
             is_deep_investigation = True
 
         has_echo = _has_prompt_echo(clean_text)
+        visible_text = strip_prompt_echo(clean_text)
 
         # Cybersec Resident modes ('default', 'diagnostic', 'resident'):
-        # Never force SOC compliance report headers—pass any clean non-echo output >= 15 chars.
+        # Never force SOC compliance report headers—pass any clean non-echo visible output >= 15 chars.
         if target_mode != "investigate":
-            if len(clean_text) >= 15 and not has_echo:
+            if len(visible_text) >= 15 and not has_echo:
                 return None
-            reason_tag = "prompt/context echo detected" if has_echo else f"empty/silent resident turn ({len(clean_text)} chars)"
+            reason_tag = "prompt/context echo detected" if has_echo else f"empty/reasoning-only resident turn ({len(visible_text)} visible chars)"
             logger.warning(
                 f"[{trace_id}] [GUARD] Tool execution concluded ({len(receipt_list)} steps), {reason_tag}. Requesting clean resident synthesis..."
             )

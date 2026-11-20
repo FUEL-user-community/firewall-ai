@@ -4,6 +4,7 @@ Manages write operation authorization signatures with persistent HMAC secrets (L
 Supports autopilot auto-approval, simulated interactive review, and true interactive approval queue.
 """
 import os
+import sys
 import hmac
 import time
 import hashlib
@@ -14,7 +15,7 @@ import secrets
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ __all__ = [
     "AutoApproveProvider",
     "SimulatedInteractiveProvider",
     "InteractiveHITLProvider",
+    "TerminalHITLProvider",
     "get_hitl_provider",
     "get_pending_approvals",
     "submit_approval_decision",
@@ -269,11 +271,61 @@ class InteractiveHITLProvider:
         return "interactive"
 
 
+class TerminalHITLProvider:
+    """
+    Direct stdin [y/N] approval gate for in-process `neo_cli.py`.
+    Fail-closed when stdin is non-interactive (e.g. automated tests or background pipes).
+    """
+
+    def __init__(self, prompt_fn: Optional[Callable[[ApprovalRequest], bool]] = None, **kwargs):
+        self._prompt_fn = prompt_fn
+
+    def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
+        t0 = time.time()
+        approved = False
+        reason = "Operator rejected at terminal prompt"
+        try:
+            if callable(self._prompt_fn):
+                approved = bool(self._prompt_fn(request))
+            elif sys.stdin is not None and sys.stdin.isatty():
+                ans = input(f"\n[HITL] Approve WRITE tool '{request.summary}'? [y/N]: ").strip().lower()
+                approved = ans in ("y", "yes")
+            else:
+                reason = "Non-interactive stdin (fail-closed)"
+        except (EOFError, KeyboardInterrupt):
+            approved = False
+            reason = "Interrupted at terminal prompt (fail-closed)"
+
+        latency_ms = int((time.time() - t0) * 1000)
+        if approved:
+            sig_payload = f"approved:{request.request_id}:terminal-operator"
+            sig = hmac.new(_HITL_SECRET, sig_payload.encode(), hashlib.sha256).hexdigest()[:16]
+            return ApprovalResult(
+                approved=True,
+                approver_id="terminal-operator",
+                reason="Approved in terminal",
+                signature=sig,
+                latency_ms=latency_ms,
+            )
+        return ApprovalResult(
+            approved=False,
+            approver_id="terminal-operator",
+            reason=reason,
+            signature="",
+            latency_ms=latency_ms,
+        )
+
+    def get_mode(self) -> str:
+        return "terminal"
+
+
 def get_hitl_provider(mode: Optional[str] = None, **kwargs):
     target = mode or os.getenv("HITL_MODE", "simulated")
     target = str(target).strip().lower()
     if target == "autopilot":
         return AutoApproveProvider()
+    if target == "terminal":
+        return TerminalHITLProvider(**kwargs)
     if target in ("interactive", "queue", "operator"):
         return InteractiveHITLProvider(**kwargs)
     return SimulatedInteractiveProvider(**kwargs)

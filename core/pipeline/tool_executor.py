@@ -206,16 +206,21 @@ class ToolExecutor:
             duration_ms = round((time.perf_counter() - t0) * 1000, 1)
             blocked_by = ""
 
-        # --- 6. PII SCRUB + RESPONSE BUILDING ---
+        # --- 6. PII & RUNTIME SECRET SCRUB + RESPONSE BUILDING ---
+        from core.safety.scrubber import scrub_registered_secrets
+
         if result is None:
+            safe_raw = ""
             scrubbed = ""
         elif fname in self._RAW_CODE_TOOLS:
-            scrubbed = str(result)
+            safe_raw = scrub_registered_secrets(str(result))
+            scrubbed = safe_raw
         else:
-            scrubbed = scrub(str(result))
+            safe_raw = scrub(str(result))
+            scrubbed = safe_raw
         if step_number is not None:
             # Same numbering as the report's receipt table, so the model can cite [Step N].
-            status = classify_outcome(str(result) if result is not None else "", blocked_by if result else "")
+            status = classify_outcome(safe_raw, blocked_by if result else "")
             scrubbed = f"{step_header(step_number, status)}\n{scrubbed}"
         response_part = genai.protos.Part(
             function_response=genai.protos.FunctionResponse(
@@ -238,7 +243,7 @@ class ToolExecutor:
             drive_slice_info=drive_slice_info,
             blocked_by=blocked_by if result else "",
             tool_args=fargs,
-            raw_output=str(result) if result is not None else "",
+            raw_output=safe_raw,
             duration_ms=duration_ms,
         )
 

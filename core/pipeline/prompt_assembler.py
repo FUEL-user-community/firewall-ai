@@ -18,28 +18,59 @@ logger = logging.getLogger(__name__)
 
 # Module-level constant: resolved once, visible in tracebacks.
 _PROMPTS_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "prompts.yaml"
+_ENV_EXAMPLE_PATH = Path(__file__).resolve().parent.parent.parent / ".env.example"
 # _CARD_PROMPTS_PATH retired
 
-# SHA-256 integrity pin. Set via .env to guard against prompt tampering.
+# SHA-256 integrity pin. Set via .env (with tracked .env.example fallback) to guard against prompt tampering.
 _PROMPTS_EXPECTED_SHA = os.getenv("PROMPTS_YAML_SHA", "")
+
+
+def _read_env_example_sha() -> str:
+    """Read tracked PROMPTS_YAML_SHA fallback from .env.example when .env lacks the pin after git pull."""
+    try:
+        if not _ENV_EXAMPLE_PATH.is_file():
+            return ""
+        for raw_line in _ENV_EXAMPLE_PATH.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if line.startswith("PROMPTS_YAML_SHA="):
+                return line.split("=", 1)[1].strip().strip("'\"")
+    except Exception:
+        pass
+    return ""
+
+
+def _resolve_expected_sha(target_path: Path) -> str:
+    """Resolve expected SHA dynamically from runtime env, patched module constant, or .env.example."""
+    env_val = os.getenv("PROMPTS_YAML_SHA", "").strip()
+    if env_val:
+        return env_val
+    if _PROMPTS_EXPECTED_SHA:
+        return _PROMPTS_EXPECTED_SHA.strip()
+    try:
+        if target_path.resolve() == _PROMPTS_PATH.resolve():
+            return _read_env_example_sha()
+    except Exception:
+        pass
+    return ""
 
 
 def verify_prompt_integrity(path: Path = None) -> None:
     """
     Fail-fast if prompts.yaml has been modified without updating the SHA pin.
-    If PROMPTS_YAML_SHA is not set in .env, logs a warning and skips.
+    Falls back to tracked .env.example pin when .env omits PROMPTS_YAML_SHA.
     """
     path = path or _PROMPTS_PATH
-    if not _PROMPTS_EXPECTED_SHA:
+    expected_sha = _resolve_expected_sha(path)
+    if not expected_sha:
         logger.warning("[INTEGRITY] PROMPTS_YAML_SHA not set in .env — skipping checksum verification.")
         return
     raw_bytes = path.read_bytes()
     actual_sha = hashlib.sha256(raw_bytes.replace(b"\r\n", b"\n")).hexdigest()
     raw_sha = hashlib.sha256(raw_bytes).hexdigest()
-    if actual_sha != _PROMPTS_EXPECTED_SHA and raw_sha != _PROMPTS_EXPECTED_SHA:
+    if actual_sha != expected_sha and raw_sha != expected_sha:
         raise RuntimeError(
             f"CRITICAL: prompts.yaml checksum mismatch. "
-            f"Expected: {_PROMPTS_EXPECTED_SHA[:16]}... Got: {actual_sha[:16]}... "
+            f"Expected: {expected_sha[:16]}... Got: {actual_sha[:16]}... "
             "File may have been tampered with. Update PROMPTS_YAML_SHA in .env after intentional changes."
         )
 

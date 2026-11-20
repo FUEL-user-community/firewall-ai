@@ -45,7 +45,7 @@ def compute_file_sha256(path: Path) -> str:
 
 
 def seal_slot_prompts_sha(slot_dir: Path) -> Optional[str]:
-    """Recompute `PROMPTS_YAML_SHA` and write it into the candidate slot's local `.env`."""
+    """Recompute `PROMPTS_YAML_SHA` and write it into the candidate slot's `.env` (and `.env.example` if present)."""
     prompts_file = slot_dir / "config" / "prompts.yaml"
     if not prompts_file.is_file():
         return None
@@ -54,6 +54,9 @@ def seal_slot_prompts_sha(slot_dir: Path) -> Optional[str]:
     if not slot_env.exists():
         slot_env.touch(exist_ok=True)
     set_key(str(slot_env), "PROMPTS_YAML_SHA", sha, quote_mode="never")
+    slot_env_example = slot_dir / ".env.example"
+    if slot_env_example.is_file():
+        set_key(str(slot_env_example), "PROMPTS_YAML_SHA", sha, quote_mode="never")
     return sha
 
 
