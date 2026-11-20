@@ -1,7 +1,10 @@
 import os
 import yaml
+import string
+import inspect
 import logging
 from pathlib import Path
+from typing import Optional
 from core.panos.ops import execute_operational_command
 
 logger = logging.getLogger(__name__)
@@ -126,12 +129,15 @@ def inspect_own_harness(target_paths: str = "tree", start_line: int = 1, end_lin
 
 def summon_toolkit(tray: str):
     """
-    Pivot the investigation to a specific tool tray.
-    
+    Mount a specialized tool tray into the active investigation manifest.
+
     Args:
-        tray (str): The ID of the tray to summon (e.g., '#net', '#sec', '#sys', '#vpn').
+        tray (str): Tray ID to mount: '#sys', '#net', '#sec', '#vpn', '#ops',
+                    '#troubleshoot', '#ha', '#routing', '#l2', '#user-id', or
+                    '#forge' (unlocks board_ops stigmergic memory and slot_forge Slot B evolution).
     """
     return f"System: Pivoting to {tray} Toolkit..."
+
 
 class ToolKeeper:
     """
@@ -166,8 +172,52 @@ class ToolKeeper:
             logger.error(f"[TOOLS] YAML Load Error: {e}")
             return {}
 
+    @staticmethod
+    def _extract_template_params(templates) -> list[str]:
+        """Extracts unique format placeholder names in order from CLI command templates."""
+        seen = []
+        formatter = string.Formatter()
+        for tmpl in templates:
+            if not isinstance(tmpl, str):
+                continue
+            try:
+                for _, field_name, _, _ in formatter.parse(tmpl):
+                    if field_name and field_name not in seen and field_name != "target_device":
+                        seen.append(field_name)
+            except Exception:
+                continue
+        return seen
+
+    @staticmethod
+    def _bind_explicit_signature(fn, tool_id: str, param_names: list[str], doc_text: str):
+        """
+        Binds an explicit Python inspect.Signature and __annotations__ without **kwargs.
+        Ensures Gemini FunctionDeclaration exposes exact required parameters and enables
+        ToolExecutor.unsupported_args() to detect hallucinated kwargs on YAML tools.
+        """
+        params = [
+            inspect.Parameter(p, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=str)
+            for p in param_names
+        ]
+        params.append(
+            inspect.Parameter(
+                "target_device",
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=None,
+                annotation=Optional[str],
+            )
+        )
+        fn.__name__ = str(tool_id)
+        fn.__doc__ = str(doc_text)
+        fn.__signature__ = inspect.Signature(params, return_annotation=str)
+        annotations = {p: str for p in param_names}
+        annotations["target_device"] = Optional[str]
+        annotations["return"] = str
+        fn.__annotations__ = annotations
+        return fn
+
     def _create_function(self, tool_id, details):
-        """Factory that converts YAML definition to a Python Closure."""
+        """Factory that converts YAML definition to a Python Closure with explicit schema."""
         cmd = details.get('cmd')
         cmd_list = details.get('commands')
         desc = details.get('description')
@@ -184,6 +234,8 @@ class ToolKeeper:
 
         # MACRO (List of Commands)
         if cmd_list and isinstance(cmd_list, list):
+            param_names = self._extract_template_params(cmd_list)
+
             def macro_func(target_device=None, frozen_list=cmd_list, **kwargs):
                 results = []
                 try:
@@ -200,12 +252,13 @@ class ToolKeeper:
                         results.append(f"--- CMD: {c} (FAILED) ---\nError: {e}")
                 return "\n".join(results)
             
-            macro_func.__name__ = tool_id
-            macro_func.__doc__ = desc
-            return macro_func
+            doc_str = str(desc or f"Execute PAN-OS macro: {', '.join(cmd_list)}")
+            return self._bind_explicit_signature(macro_func, tool_id, param_names, doc_str)
 
         # SINGLE COMMAND
         elif cmd:
+            param_names = self._extract_template_params([cmd])
+
             def tool_func(target_device=None, **kwargs):
                 try:
                     safe_kwargs = _sanitize_kwargs(kwargs)
@@ -216,9 +269,10 @@ class ToolKeeper:
                 except Exception as e:
                     return f"Error: {e}"
 
-            tool_func.__name__ = str(tool_id)
-            tool_func.__doc__ = str(desc or f"Execute PAN-OS command: {cmd}")
-            return tool_func
+            base_doc = str(desc or f"Execute PAN-OS command: {cmd}").strip()
+            if cmd and cmd not in base_doc:
+                base_doc = f"{base_doc} (CLI: {cmd})"
+            return self._bind_explicit_signature(tool_func, tool_id, param_names, base_doc)
 
         return None
 
@@ -250,11 +304,18 @@ class ToolKeeper:
         
         # Rule 3: Security Policy & Forwarding Math
         try:
-            from core.panos.ops import test_security_policy, test_nat_policy, test_routing_fib, test_pbf_policy
+            from core.panos.ops import (
+                test_security_policy,
+                test_nat_policy,
+                test_routing_fib,
+                test_pbf_policy,
+                test_packet_walk,
+            )
             tools.append(test_security_policy)
             tools.append(test_nat_policy)
             tools.append(test_routing_fib)
             tools.append(test_pbf_policy)
+            tools.append(test_packet_walk)
         except Exception as e:
             logger.warning(f"[TOOLS] Policy/Routing Math Init Error: {e}")
 
@@ -283,6 +344,16 @@ class ToolKeeper:
             logger.info("[TOOLS] Google Drive Knowledge Base tool registered.")
         except Exception as e:
             logger.warning(f"[TOOLS] Drive Knowledge Base Init Error: {e}")
+
+        # Rule 6.5: Stigmergic Board & Dual-Slot Forge (loaded when '#forge' tray is summoned)
+        if active_tray == "#forge":
+            try:
+                from core.integrations.board_sync import board_ops
+                from core.forge.slot_mutator import slot_forge
+                tools.append(board_ops)
+                tools.append(slot_forge)
+            except Exception as e:
+                logger.warning(f"[TOOLS] Forge/Board Tools Init Error: {e}")
 
 
         # Rule 7: Scan YAML Registry
@@ -319,11 +390,18 @@ class ToolKeeper:
             logger.debug(f"[TOOLS] Live research not available: {e}")
 
         try:
-            from core.panos.ops import test_security_policy, test_nat_policy, test_routing_fib, test_pbf_policy
+            from core.panos.ops import (
+                test_security_policy,
+                test_nat_policy,
+                test_routing_fib,
+                test_pbf_policy,
+                test_packet_walk,
+            )
             tools.append(test_security_policy)
             tools.append(test_nat_policy)
             tools.append(test_routing_fib)
             tools.append(test_pbf_policy)
+            tools.append(test_packet_walk)
         except Exception as e:
             logger.warning(f"[TOOLS] Policy/Routing Math Init Error: {e}")
 
@@ -349,6 +427,14 @@ class ToolKeeper:
         except Exception as e:
             logger.warning(f"[TOOLS] Drive Knowledge Base Init Error: {e}")
 
+        try:
+            from core.integrations.board_sync import board_ops
+            from core.forge.slot_mutator import slot_forge
+            tools.append(board_ops)
+            tools.append(slot_forge)
+        except Exception as e:
+            logger.warning(f"[TOOLS] Forge/Board Tools Init Error: {e}")
+
         # Scan full YAML Registry (unfiltered)
         for tool_id, details in self.commands.items():
             if not isinstance(details, dict): continue
@@ -358,4 +444,3 @@ class ToolKeeper:
 
         logger.info(f"[TOOLS] Loaded full tool catalog: {len(tools)} tools.")
         return tools
-

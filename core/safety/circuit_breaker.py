@@ -73,24 +73,46 @@ class CircuitBreaker:
                 f"LOOP DETECTED: Agent called '{tool_name}' with identical arguments {consecutive_count} times in a row."
             )
 
-        # 2. Alternating 2-cycle loop detection: A -> B -> A -> B (M1)
-        required_history = 2 * self.max_loops
-        if len(self.tool_history) >= required_history:
-            recent = self.tool_history[-required_history:]
-            pattern_a = recent[-2]
-            pattern_b = recent[-1]
-            if pattern_a != pattern_b:
-                is_alternating = True
-                for idx, item in enumerate(recent):
-                    expected = pattern_b if (idx % 2 == 1) else pattern_a
-                    if item != expected:
-                        is_alternating = False
-                        break
-                if is_alternating:
-                    logger.error(f"[BREAKER] ALTERNATING LOOP DETECTED between '{pattern_a[0]}' and '{pattern_b[0]}'.")
-                    raise CircuitBreakerError(
-                        f"ALTERNATING LOOP DETECTED: Agent oscillating between '{pattern_a[0]}' and '{pattern_b[0]}' repeatedly."
-                    )
+        # 2. Periodic cycle detection for period p in [2, MAX_CYCLE_PERIOD]:
+        #    trip when the last p*max_loops calls are one block of length p repeated
+        #    max_loops times. p=2 is the A->B->A->B case (M1); p=3 catches A->B->C and
+        #    A->A->B, which previously ran until the step cap. Cost: O(P * p * k) per call.
+        period = self._detect_cycle_period()
+        if period == 2:
+            pattern_a, pattern_b = self.tool_history[-2], self.tool_history[-1]
+            logger.error(f"[BREAKER] ALTERNATING LOOP DETECTED between '{pattern_a[0]}' and '{pattern_b[0]}'.")
+            raise CircuitBreakerError(
+                f"ALTERNATING LOOP DETECTED: Agent oscillating between '{pattern_a[0]}' and '{pattern_b[0]}' repeatedly."
+            )
+        if period:
+            names = " -> ".join(n for n, _ in self.tool_history[-period:])
+            logger.error(f"[BREAKER] CYCLIC LOOP DETECTED (period {period}): {names}.")
+            raise CircuitBreakerError(
+                f"CYCLIC LOOP DETECTED: Agent repeated the cycle [{names}] {self.max_loops} times with identical arguments."
+            )
+
+    MAX_CYCLE_PERIOD = 4
+
+    def _detect_cycle_period(self) -> int:
+        """
+        Return the smallest period p in [2, MAX_CYCLE_PERIOD] such that the tail of
+        tool_history is the same length-p block repeated max_loops times, else 0.
+        Blocks that are a single repeated call (period 1) are left to the
+        consecutive-call check above.
+        """
+        h = self.tool_history
+        k = self.max_loops
+        for p in range(2, self.MAX_CYCLE_PERIOD + 1):
+            span = p * k
+            if len(h) < span:
+                break
+            tail = h[-span:]
+            block = tail[:p]
+            if len(set(block)) == 1:
+                continue
+            if all(tail[i] == block[i % p] for i in range(span)):
+                return p
+        return 0
 
     def status(self) -> Dict[str, Any]:
         return {

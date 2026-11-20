@@ -195,13 +195,21 @@ class ResponseSynthesizer:
                 return None
 
         # Standard / Investigate mode: Check if report has substance and structure
+        # Strip injected Cartographer JSON / REALITY_CHECK / INVESTIGATE: prefix so system wrappers
+        # do not falsely force deep incident essays on narrow lookups or self-directed equilibrium checks.
         is_deep_investigation = False
-        user_q_str = str(history[0]) if history else ""
+        raw_h0 = str(history[0]) if history else ""
+        user_q_str = raw_h0.split("CARTOGRAPHER", 1)[0].split("\n{", 1)[0]
+        if "INVESTIGATE:" in user_q_str:
+            user_q_str = user_q_str.rsplit("INVESTIGATE:", 1)[-1]
         if any(w in user_q_str.lower() for w in ["investigate", "incident", "compromise", "exploit", "cve", "threat", "logic vs", "counter-logic", "falsif"]):
             is_deep_investigation = True
 
-        # Permit concise answers for direct operational queries (e.g. FIB lookups, IP checks)
+        # Permit concise answers for direct operational queries or verified ZERO_DRIFT / #forge turns backed by receipts
+        has_receipt_anchor = bool(re.search(r"\[Steps?\s+\d+", clean_text, re.IGNORECASE))
         if not is_deep_investigation and len(clean_text) >= 30:
+            return None
+        if len(clean_text) >= 60 and has_receipt_anchor:
             return None
 
         has_substance = len(clean_text) >= 150
@@ -225,33 +233,13 @@ class ResponseSynthesizer:
 
         terminal_prompt = (
             f"[SYSTEM: TOOL EXECUTION COMPLETED ({len(receipt_list)} steps recorded).\n"
-            "Tool calling is now DISABLED. You have gathered the empirical firewall telemetry.\n"
-            "You must now synthesize all evidence into your final structured report following FORMAT 3:\n\n"
-            "### Incident Investigation Summary\n"
-            "[CRITICAL | CAUTION | NORMAL] <Clear Assessment Title>\n"
-            "**Scope:** <Source Zone/IP -> Destination Zone/IP> | **Telemetry Sources:** <Tools queried>\n\n"
-            "#### Architectural Logic vs. Counter-Logic Analysis\n"
-            "- **Logic (Attack Vector & Operator Premise):** <Contrast what the operator or adversary assumed>\n"
-            "- **Counter-Logic (Empirical Telemetry & Physical Reality):** <State what the firewall architecture, routing FIB, and interface bindings empirically prove>\n\n"
-            "#### Threat Assessment & Hypothesis Matrix\n"
-            "| Hypothesis / Vector | Evidential Status | Basis & Corroborating Telemetry | Falsification Check |\n"
-            "| :--- | :--- | :--- | :--- |\n\n"
-            "#### Chronological Event Progression\n"
-            "- <Timestamp/Step> - <Observed telemetry and causal significance>\n\n"
-            "#### Traversal Path Analysis (Mermaid Architecture Overlay)\n"
-            "```mermaid\n"
-            "graph LR\n"
-            "  Attacker[\"Source / Attacker<br>[<Source_IP>]\"]\n"
-            "  ...\n"
-            "  Attacker -.->|Logic: Attempted Transit| DataplaneInterface[\"Dataplane: <interface>\"]\n"
-            "  DataplaneInterface -.->|Counter-Logic: Dropped / No Mgmt Profile| Drop[\"Boundary Drop\"]\n"
-            "  Attacker ==>|Counter-Logic: L2 Switch Direct ARP| Target[\"MGT Port: <Target_IP>\"]\n"
-            "```\n\n"
-            "#### Governed Remediation Actions\n"
-            "```panos\n"
-            "<Exact PAN-OS CLI commands or configuration changes needed>\n"
-            "```\n\n"
-            "Deliver the complete executive report in markdown NOW.]"
+            "Tool calling is now DISABLED. Synthesize the gathered firewall/harness receipts without filler:\n"
+            "- Cite every factual statement with its [Step N] SUCCESS receipt.\n"
+            "- For concise or ZERO_DRIFT checks, state the verified state directly with [Step N] proof.\n"
+            "- For deep incident/boundary/health audits, open with `### Incident Investigation Summary` (or "
+            "`### Executive Health Summary` / `### Compensating Policy Compilation Manifest`) and include "
+            "`#### Architectural Logic vs. Counter-Logic Analysis` contrasting surface Logic against live SP3/wire Counter-Logic.\n"
+            "Deliver the report in markdown NOW.]"
         )
 
         return chat.send_message(

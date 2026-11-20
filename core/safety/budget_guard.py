@@ -35,13 +35,23 @@ class BudgetGuard:
     ))
     price_input: float = PRICE_PER_M_INPUT
     price_output: float = PRICE_PER_M_OUTPUT
+    persist_shared: bool = field(default_factory=lambda: os.getenv("NEO_PERSIST_BUDGET", "0").strip() in ("1", "true", "yes"))
 
-    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    # RLock: public methods call each other while holding the lock (e.g. get_status).
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _investigation_costs: Dict[str, float] = field(default_factory=dict, init=False, repr=False)
     _default_cost: float = field(default=0.0, init=False)
     _daily_cost: float = field(default=0.0, init=False)
     _daily_reset_time: float = field(default_factory=time.time, init=False)
     _SECONDS_PER_DAY: float = field(default=86400.0, init=False, repr=False)
+
+    def __post_init__(self):
+        if self.persist_shared:
+            try:
+                from core.forge.state_store import get_shared_store
+                self._daily_cost = get_shared_store().get_daily_spend()
+            except Exception as e:
+                logger.debug(f"[BUDGET] Shared state load skipped: {e}")
 
     def reset_investigation(self, trace_id: Optional[str] = None):
         """Reset expenditure counter for a specific trace_id without wiping other sessions (H4)."""
@@ -61,37 +71,67 @@ class BudgetGuard:
             self._daily_cost = 0.0
             self._daily_reset_time = now
 
-    def _compute_cost(self, prompt_tokens: int, response_tokens: int) -> float:
-        """Calculate cost from token counts using model pricing."""
-        safe_p = max(0, int(prompt_tokens))
-        safe_r = max(0, int(response_tokens))
+    @staticmethod
+    def _safe_tokens(value) -> int:
+        """Coerce a token count to a non-negative int (None/garbage -> 0)."""
+        try:
+            return max(0, int(value or 0))
+        except (ValueError, TypeError):
+            return 0
+
+    def _compute_cost(self, prompt_tokens: int, response_tokens: int, thoughts_tokens: int = 0) -> float:
+        """
+        Calculate cost from token counts using model pricing.
+
+        cost = p/1e6 * price_in + (r + t)/1e6 * price_out
+        Thinking tokens (t) are billed at the output rate but reported separately
+        by Gemini (usage_metadata.thoughts_token_count), so they must be added explicitly.
+        """
+        safe_p = self._safe_tokens(prompt_tokens)
+        safe_out = self._safe_tokens(response_tokens) + self._safe_tokens(thoughts_tokens)
         input_cost = (safe_p / 1_000_000) * self.price_input
-        output_cost = (safe_r / 1_000_000) * self.price_output
+        output_cost = (safe_out / 1_000_000) * self.price_output
         return input_cost + output_cost
+
+    # Bounded trace map: prune to _TRACE_PRUNE_TO when _TRACE_MAX is reached.
+    _TRACE_MAX: int = field(default=1000, init=False, repr=False)
+    _TRACE_PRUNE_TO: int = field(default=800, init=False, repr=False)
 
     def record_usage(
         self,
         prompt_tokens: int,
         response_tokens: int,
-        trace_id: Optional[str] = None
+        trace_id: Optional[str] = None,
+        thoughts_tokens: int = 0,
     ) -> float:
         """Record token usage and check against limits with thread synchronization."""
         with self._lock:
             self._maybe_reset_daily()
-            cost = self._compute_cost(prompt_tokens, response_tokens)
+            cost = self._compute_cost(prompt_tokens, response_tokens, thoughts_tokens)
 
             if trace_id:
-                if len(self._investigation_costs) >= 1000 and trace_id not in self._investigation_costs:
-                    excess = len(self._investigation_costs) - 800
+                # LRU order: pop + reinsert moves the active trace to the end,
+                # so pruning evicts least-recently-updated traces, never the live one.
+                prev = self._investigation_costs.pop(trace_id, 0.0)
+                if len(self._investigation_costs) >= self._TRACE_MAX:
+                    excess = len(self._investigation_costs) - self._TRACE_PRUNE_TO
                     for k in list(self._investigation_costs.keys())[:excess]:
                         del self._investigation_costs[k]
-                current_inv = self._investigation_costs.get(trace_id, 0.0) + cost
+                current_inv = prev + cost
                 self._investigation_costs[trace_id] = current_inv
             else:
                 self._default_cost += cost
                 current_inv = self._default_cost
 
-            self._daily_cost += cost
+            if self.persist_shared:
+                try:
+                    from core.forge.state_store import get_shared_store
+                    self._daily_cost = get_shared_store().add_daily_spend(cost)
+                except Exception as e:
+                    logger.debug(f"[BUDGET] Shared state persist fallback: {e}")
+                    self._daily_cost += cost
+            else:
+                self._daily_cost += cost
 
             # Check per-investigation limit
             if current_inv > self.max_per_investigation:
@@ -125,7 +165,9 @@ class BudgetGuard:
 
     def get_status(self, trace_id: Optional[str] = None) -> str:
         with self._lock:
-            inv_cost = self.get_investigation_cost(trace_id)
+            inv_cost = (
+                self._investigation_costs.get(trace_id, 0.0) if trace_id else self._default_cost
+            )
             return (
                 f"Investigation: ${inv_cost:.4f}/${self.max_per_investigation:.2f} | "
                 f"Daily: ${self._daily_cost:.4f}/${self.max_per_day:.2f}"

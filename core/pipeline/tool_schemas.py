@@ -11,6 +11,42 @@ import re
 import ipaddress
 
 
+_FQDN_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9\.\-]+$')
+_PREFIX_RE = re.compile(r'^[^/]+/\d{1,3}$')
+
+
+def _validate_address(v: str, *, allow_cidr: bool, allow_any: bool = True) -> str:
+    """
+    Single source of truth for address arguments.
+
+    - Host: must parse with ipaddress.ip_address (exactly one address).
+    - CIDR (only if allow_cidr): prefix-length form only (a.b.c.d/nn). Dotted masks are
+      rejected: ipaddress reads /255.255.255.0 as a netmask but /0.0.0.255 as a hostmask,
+      so the same-looking input silently means different networks.
+    - FQDN and 'any' remain accepted for backward compatibility.
+    """
+    if allow_any and v in ("any", ""):
+        return v
+    try:
+        ipaddress.ip_address(v)
+        return v
+    except ValueError:
+        pass
+    if allow_cidr and _PREFIX_RE.match(v):
+        try:
+            ipaddress.ip_network(v, strict=False)
+            return v
+        except ValueError:
+            pass
+    # All-numeric dotted strings that failed ip_address (e.g. 10.0.0.256, 999.1.1.1) are
+    # malformed IPs, not hostnames; previously they slipped through the FQDN fallback.
+    if "/" not in v and _FQDN_RE.match(v) and not re.fullmatch(r'[\d.]+', v):
+        return v
+    kind = "IP address, CIDR (a.b.c.d/nn), FQDN" if allow_cidr else "single IP address, FQDN"
+    suffix = " or 'any'" if allow_any else ""
+    raise ValueError(f"'{v}' is not a valid {kind}{suffix}")
+
+
 class TestSecurityPolicyArgs(BaseModel):
     __test__ = False
     source: str
@@ -25,19 +61,8 @@ class TestSecurityPolicyArgs(BaseModel):
     @field_validator('source', 'destination')
     @classmethod
     def validate_ip_or_any(cls, v):
-        if v in ("any", ""):
-            return v
-        # Delegate IP/CIDR validation to the standard library
-        try:
-            ipaddress.ip_network(v, strict=False)
-            return v
-        except ValueError:
-            pass
-        # Allow FQDN (letters, digits, dots, hyphens)
-        fqdn_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9\.\-]+$'
-        if re.match(fqdn_pattern, v):
-            return v
-        raise ValueError(f"'{v}' is not a valid IP address, CIDR, FQDN, or 'any'")
+        # Policy match tests a single flow: host address required.
+        return _validate_address(v, allow_cidr=False)
 
 
 class TestNatPolicyArgs(BaseModel):
@@ -52,18 +77,25 @@ class TestNatPolicyArgs(BaseModel):
     @field_validator('source', 'destination')
     @classmethod
     def validate_ip_or_any(cls, v):
-        if v in ("any", ""):
-            return v
-        # Delegate IP/CIDR validation to the standard library
-        try:
-            ipaddress.ip_network(v, strict=False)
-            return v
-        except ValueError:
-            pass
-        fqdn_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9\.\-]+$'
-        if re.match(fqdn_pattern, v):
-            return v
-        raise ValueError(f"'{v}' is not a valid IP address, CIDR, FQDN, or 'any'")
+        return _validate_address(v, allow_cidr=False)
+
+
+class TestPacketWalkArgs(BaseModel):
+    __test__ = False
+    source: str
+    destination: str
+    port: str = "443"
+    protocol: str = "6"
+    from_zone: Optional[str] = None
+    to_zone: Optional[str] = None
+    application: Optional[str] = None
+    virtual_router: Optional[str] = "default"
+    target_device: Optional[str] = None
+
+    @field_validator('source', 'destination')
+    @classmethod
+    def validate_ip_or_any(cls, v):
+        return _validate_address(v, allow_cidr=False)
 
 
 class GetLiveConfigArgs(BaseModel):
@@ -122,15 +154,8 @@ class TestRoutingFibArgs(BaseModel):
         clean = v.strip() if v else ""
         if not clean:
             raise ValueError("IP address cannot be empty.")
-        try:
-            ipaddress.ip_network(clean, strict=False)
-            return clean
-        except ValueError:
-            pass
-        fqdn_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9\.\-]+$'
-        if re.match(fqdn_pattern, clean):
-            return clean
-        raise ValueError(f"'{v}' is not a valid IP address, CIDR, or FQDN")
+        # FIB lookup keeps CIDR support (prefix-length form only).
+        return _validate_address(clean, allow_cidr=True, allow_any=False)
 
 
 class TestPbfPolicyArgs(BaseModel):
@@ -145,21 +170,50 @@ class TestPbfPolicyArgs(BaseModel):
     @field_validator('source', 'destination')
     @classmethod
     def validate_ip_or_any(cls, v):
-        if v in ("any", ""):
-            return v
-        try:
-            ipaddress.ip_network(v, strict=False)
-            return v
-        except ValueError:
-            pass
-        fqdn_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9\.\-]+$'
-        if re.match(fqdn_pattern, v):
-            return v
-        raise ValueError(f"'{v}' is not a valid IP address, CIDR, FQDN, or 'any'")
+        return _validate_address(v, allow_cidr=False)
 
 
 class GetTelemetrySnapshotArgs(BaseModel):
     target_device: Optional[str] = None
+
+
+class BoardOpsArgs(BaseModel):
+    action: str
+    thread_id: str = "MAIN"
+    move_type: str = "ANOMALY"
+    slug: str = "note"
+    summary: str = ""
+    target_files: str = ""
+    unified_diff: str = ""
+    limit: int = 15
+    target_device: Optional[str] = None
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, v):
+        valid = {"sync", "post", "dispatch_spark"}
+        clean = (v or "").strip().lower()
+        if clean not in valid:
+            raise ValueError(f"'{v}' not in valid board_ops actions: {sorted(valid)}")
+        return clean
+
+
+class SlotForgeArgs(BaseModel):
+    action: str
+    target_path: str = ""
+    content: str = ""
+    unified_diff: str = ""
+    reason: str = "Autonomous slot hardening"
+    target_device: Optional[str] = None
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, v):
+        valid = {"status", "init", "stage_diff", "stage_file", "verify_and_promote", "reset_inactive"}
+        clean = (v or "").strip().lower()
+        if clean not in valid:
+            raise ValueError(f"'{v}' not in valid slot_forge actions: {sorted(valid)}")
+        return clean
 
 
 # Registry: tool function name → schema class
@@ -167,12 +221,13 @@ class GetTelemetrySnapshotArgs(BaseModel):
 TOOL_SCHEMAS = {
     "test_security_policy": TestSecurityPolicyArgs,
     "test_nat_policy": TestNatPolicyArgs,
+    "test_packet_walk": TestPacketWalkArgs,
     "test_routing_fib": TestRoutingFibArgs,
     "test_pbf_policy": TestPbfPolicyArgs,
     "get_telemetry_snapshot": GetTelemetrySnapshotArgs,
     "get_live_config": GetLiveConfigArgs,
     "execute_log_query": ExecuteLogQueryArgs,
     "execute_operational_command": ExecuteOperationalCommandArgs,
+    "board_ops": BoardOpsArgs,
+    "slot_forge": SlotForgeArgs,
 }
-
-

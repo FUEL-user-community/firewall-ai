@@ -46,7 +46,10 @@ def execute_log_query(log_type: str, filter_query: str = None, target_device: st
 
     try:
         clean_log_type = (log_type or 'traffic').strip().lower()
-        status, result = client.execute_log(log_type=clean_log_type, query=filter_query or "", nlogs=20)
+        eff_filter = (filter_query or "").strip()
+        if eff_filter.lower() in ("direction equal backward", "direction equal forward"):
+            eff_filter = ""
+        status, result = client.execute_log(log_type=clean_log_type, query=eff_filter, nlogs=20)
 
         if status == 200:
             sanitizer = ToxicXmlSanitizer()

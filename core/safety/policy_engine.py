@@ -34,6 +34,8 @@ class PolicyEngine:
     READ_TOOLS: Set[str] = {
         "summon_toolkit",
         "inspect_own_harness",
+        "board_ops",
+        "slot_forge",
         "search_live_docs",
         "query_forensic_matrix",
         "query_knowledge_base",
@@ -41,6 +43,7 @@ class PolicyEngine:
         "test_routing_fib",
         "test_nat_policy",
         "test_pbf_policy",
+        "test_packet_walk",
         "get_live_config",
         "execute_log_query",
         "audit_user_id",
@@ -209,6 +212,11 @@ class PolicyEngine:
             )
 
         if is_write:
+            if os.getenv("NEO_PROBATION_SHADOW", "").strip() == "1":
+                raise PolicyViolationError(
+                    f"Tool '{clean_name}' blocked under NEO_PROBATION_SHADOW=1. "
+                    "Unpromoted candidate slots cannot execute WRITE operations."
+                )
             if self.mode == "READ_ONLY":
                 raise PolicyViolationError(
                     f"Tool '{clean_name}' requires WRITE permission. "
@@ -238,12 +246,16 @@ class PolicyEngine:
     @contextmanager
     def elevated(self, mode: str = "READ_WRITE"):
         """Context manager for scoped elevation with guaranteed restoration."""
-        prev = self.mode
+        had_override = hasattr(self._local, "mode")
+        prev = getattr(self._local, "mode", None)
         self.elevate(mode)
         try:
             yield
         finally:
-            self.elevate(prev)
+            if had_override and prev is not None:
+                self.elevate(prev)
+            else:
+                self.reset()
 
     def check_device_access(self, user_context, target_device: str) -> bool:
         """Per-device RBAC: verify user authorization for target device."""

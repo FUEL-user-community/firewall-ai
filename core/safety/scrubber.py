@@ -4,8 +4,10 @@ Masks hardware serial numbers while preserving real IP addresses for accurate di
 """
 import os
 import re
+import hmac
 import hashlib
 import logging
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -13,9 +15,35 @@ __all__ = ["scrub"]
 
 SCRUB_PII = os.getenv("SCRUB_PII", "true").lower() == "true"
 
+# Token width: 12 hex = 48 bits. Birthday bound n50 = sqrt(2 * 2^48 * ln2) ~ 19.8M distinct
+# values (was 6 hex = 24 bits -> ~4.8k, i.e. ~3% collision odds at just 1k serials).
+_TOKEN_HEX = 12
+
+# Keyed HMAC so a masked token can't be checked against a guessed serial offline.
+# Set SCRUBBER_SEED (or the shared SANITIZER_SEED) for tokens stable across restarts;
+# otherwise share a persistent .state/shared seed or process-wide ephemeral seed with ToxicXmlSanitizer.
+def _load_shared_hmac_key() -> bytes:
+    explicit = os.getenv("SCRUBBER_SEED") or os.getenv("SANITIZER_SEED")
+    if explicit:
+        return explicit.encode("utf-8")
+    try:
+        from pathlib import Path
+        seed_file = Path(__file__).resolve().parent.parent.parent / ".state" / "shared" / ".hmac_seed"
+        if seed_file.is_file():
+            raw = seed_file.read_text(encoding="utf-8").strip()
+            if len(raw) >= 32:
+                return bytes.fromhex(raw)
+    except Exception:
+        pass
+    shared_hex = os.environ.setdefault("_NEO_EPHEMERAL_HMAC_SEED", secrets.token_hex(32))
+    return bytes.fromhex(shared_hex)
+
+
+_SCRUB_KEY = _load_shared_hmac_key()
+
 
 def _deterministic_token(value: str, prefix: str = "ENTITY") -> str:
-    short_hash = hashlib.sha256(value.encode()).hexdigest()[:6]
+    short_hash = hmac.new(_SCRUB_KEY, value.encode(), hashlib.sha256).hexdigest()[:_TOKEN_HEX]
     return f"[{prefix}_{short_hash}]"
 
 
@@ -46,9 +74,9 @@ def scrub(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # 3. Sensitive YAML / CLI configuration fields (phash, password, pre-shared-key, secret, etc.)
+    # 3. Sensitive YAML / CLI configuration fields (require explicit ':' or '=' so natural prose is preserved)
     text = re.sub(
-        r'\b(?P<field>phash|password|pre-shared-key|secret|passphrase|bind-password)[:=\s]+[\'\"`]?([^\s\'\"`\n\[]+)[\'\"`]?',
+        r'\b(?P<field>phash|password|pre-shared-key|secret|passphrase|bind-password)\s*[:=]\s*[\'\"`]?([^\s\'\"`\n\[]+)[\'\"`]?',
         r'\g<field>: [REDACTED]',
         text,
         flags=re.IGNORECASE
@@ -69,7 +97,7 @@ def scrub(text: str) -> str:
         flags=re.IGNORECASE
     )
     text = re.sub(
-        r'\b(api[_-]?key|secret[_-]?key)[:=\s]+[\'"]?[a-zA-Z0-9_\-]{16,}[\'"]?',
+        r'\b(api[_-]?key|secret[_-]?key)\s*[:=]\s*[\'"]?[a-zA-Z0-9_\-]{16,}[\'"]?',
         r'\1=[REDACTED_KEY]',
         text,
         flags=re.IGNORECASE

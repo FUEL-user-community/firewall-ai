@@ -71,9 +71,13 @@ def search_live_docs(query: str) -> str:
         if not items:
             return f"No live documentation found for: '{query}' on official Palo Alto domains."
 
-        results = [f"--- LIVE RESEARCH RESULTS FOR '{query}' ---"]
+        from core.integrations.board_sync import neutralize_board_prose
+
+        results = [f"--- LIVE RESEARCH RESULTS FOR '{neutralize_board_prose(query)}' ---"]
         for item in items:
-            results.append(f"TITLE: {item.get('title')}\nURL: {item.get('link')}\nSNIPPET: {item.get('snippet')}\n")
+            safe_title = neutralize_board_prose(str(item.get('title') or ''))
+            safe_snippet = neutralize_board_prose(str(item.get('snippet') or ''))
+            results.append(f"TITLE: {safe_title}\nURL: {item.get('link')}\nSNIPPET: {safe_snippet}\n")
 
         return "\n".join(results)
 

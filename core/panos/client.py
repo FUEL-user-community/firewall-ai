@@ -128,6 +128,7 @@ class PanOSClient:
         self.virtual_router = virtual_router
         self._cached_vr = virtual_router
         self.ssl_fingerprint = ssl_fingerprint
+        self._io_lock = threading.RLock()
 
         try:
             self.fw = Firewall(hostname=hostname, api_key=api_key)
@@ -182,6 +183,14 @@ class PanOSClient:
 
                 formatted_actual = ':'.join(actual_fp[i:i+2] for i in range(0, len(actual_fp), 2))
                 logger.info(f"[PanOSClient] Verified SSL fingerprint for '{self.device_name}': SHA256:{formatted_actual}")
+                if pem_cert:
+                    try:
+                        pinned_ctx = ssl.create_default_context(cadata=pem_cert)
+                        pinned_ctx.check_hostname = False
+                        self.fw.xapi.ssl_context = pinned_ctx
+                        return
+                    except Exception:
+                        pass
                 self.fw.xapi.ssl_context = ssl._create_unverified_context()
                 return
 
@@ -214,11 +223,12 @@ class PanOSClient:
 
     def close(self):
         """Cleanly release client resources and cached connections (M2)."""
-        try:
-            if hasattr(self, 'fw') and hasattr(self.fw, '_xapi_private'):
-                self.fw._xapi_private = None
-        except Exception as e:
-            logger.debug(f"[PanOSClient] Error during close: {e}")
+        with self._io_lock:
+            try:
+                if hasattr(self, 'fw') and hasattr(self.fw, '_xapi_private'):
+                    self.fw._xapi_private = None
+            except Exception as e:
+                logger.debug(f"[PanOSClient] Error during close: {e}")
 
     def execute_op(self, cli_cmd: str, timeout: int = 15) -> Tuple[int, str]:
         """
@@ -234,26 +244,27 @@ class PanOSClient:
         if not cli_cmd or not isinstance(cli_cmd, str):
             return 400, _format_error_xml("Empty or invalid CLI command provided")
 
-        self._apply_timeout(timeout)
+        with self._io_lock:
+            self._apply_timeout(timeout)
 
-        try:
-            if cli_cmd.strip().startswith("<"):
-                result_xml = self.fw.op(cli_cmd, cmd_xml=False, xml=True)
-                logger.debug(f"[{self.device_name}] Executed XML: {cli_cmd[:50]}...")
-            else:
-                result_xml = self.fw.op(cli_cmd, xml=True)
-                logger.debug(f"[{self.device_name}] Executed CLI: {cli_cmd}")
+            try:
+                if cli_cmd.strip().startswith("<"):
+                    result_xml = self.fw.op(cli_cmd, cmd_xml=False, xml=True)
+                    logger.debug(f"[{self.device_name}] Executed XML: {cli_cmd[:50]}...")
+                else:
+                    result_xml = self.fw.op(cli_cmd, xml=True)
+                    logger.debug(f"[{self.device_name}] Executed CLI: {cli_cmd}")
 
-            normalized = _normalize_xml_response(result_xml)
-            return 200, normalized
+                normalized = _normalize_xml_response(result_xml)
+                return 200, normalized
 
-        except PanDeviceError as e:
-            logger.error(f"[{self.device_name}] PAN-OS error: {e}")
-            return 400, _format_error_xml(e)
+            except PanDeviceError as e:
+                logger.error(f"[{self.device_name}] PAN-OS error: {e}")
+                return 400, _format_error_xml(e)
 
-        except Exception as e:
-            logger.error(f"[{self.device_name}] Request failed: {e}", exc_info=True)
-            return 500, _format_error_xml(e)
+            except Exception as e:
+                logger.error(f"[{self.device_name}] Request failed: {e}", exc_info=True)
+                return 500, _format_error_xml(e)
 
     def execute_log(self, log_type: str = 'traffic', query: str = "", nlogs: int = 50, timeout: int = 30) -> Tuple[int, str]:
         """
@@ -265,16 +276,17 @@ class PanOSClient:
             nlogs: Number of logs to retrieve
             timeout: Timeout in seconds for async job completion
         """
-        self._apply_timeout(timeout)
-        try:
-            clean_log_type = (log_type or 'traffic').strip().lower()
-            self.fw.xapi.log(log_type=clean_log_type, nlogs=nlogs, skip=0, filter=query or "", timeout=timeout)
-            result_xml = self.fw.xapi.xml_result()
-            normalized = _normalize_xml_response(result_xml)
-            return 200, normalized
-        except Exception as e:
-            logger.error(f"[{self.device_name}] Log query failed ({log_type}): {e}", exc_info=True)
-            return 500, _format_error_xml(e)
+        with self._io_lock:
+            self._apply_timeout(timeout)
+            try:
+                clean_log_type = (log_type or 'traffic').strip().lower()
+                self.fw.xapi.log(log_type=clean_log_type, nlogs=nlogs, skip=0, filter=query or "", timeout=timeout)
+                result_xml = self.fw.xapi.xml_result()
+                normalized = _normalize_xml_response(result_xml)
+                return 200, normalized
+            except Exception as e:
+                logger.error(f"[{self.device_name}] Log query failed ({log_type}): {e}", exc_info=True)
+                return 500, _format_error_xml(e)
 
     def execute_report(self, report_name: str, report_type: str = 'predefined', timeout: int = 20) -> Tuple[int, str]:
         """
@@ -288,38 +300,40 @@ class PanOSClient:
         if not report_name or not isinstance(report_name, str) or not report_name.strip():
             return 400, _format_error_xml("Invalid or empty report name provided")
 
-        self._apply_timeout(timeout)
-        try:
-            clean_name = report_name.strip()
-            clean_type = (report_type or 'predefined').strip().lower()
-            self.fw.xapi.report(reporttype=clean_type, reportname=clean_name, timeout=timeout)
-            result_xml = self.fw.xapi.xml_result()
-            normalized = _normalize_xml_response(result_xml)
-            return 200, normalized
-        except Exception as e:
-            logger.error(f"[{self.device_name}] Report query failed ({report_name}): {e}", exc_info=True)
-            return 500, _format_error_xml(e)
+        with self._io_lock:
+            self._apply_timeout(timeout)
+            try:
+                clean_name = report_name.strip()
+                clean_type = (report_type or 'predefined').strip().lower()
+                self.fw.xapi.report(reporttype=clean_type, reportname=clean_name, timeout=timeout)
+                result_xml = self.fw.xapi.xml_result()
+                normalized = _normalize_xml_response(result_xml)
+                return 200, normalized
+            except Exception as e:
+                logger.error(f"[{self.device_name}] Report query failed ({report_name}): {e}", exc_info=True)
+                return 500, _format_error_xml(e)
 
     def execute_user_id(self, cmd_xml: str, timeout: int = 15) -> Tuple[int, str]:
         """Execute User-ID API command to register/unregister dynamic tags."""
         if not cmd_xml or not isinstance(cmd_xml, str):
             return 400, _format_error_xml("Empty or invalid User-ID XML command provided")
 
-        self._apply_timeout(timeout)
+        with self._io_lock:
+            self._apply_timeout(timeout)
 
-        try:
-            self.fw.xapi.user_id(cmd=cmd_xml)
-            result_xml = self.fw.xapi.xml_result()
-            normalized = _normalize_xml_response(result_xml)
-            return 200, normalized
+            try:
+                self.fw.xapi.user_id(cmd=cmd_xml)
+                result_xml = self.fw.xapi.xml_result()
+                normalized = _normalize_xml_response(result_xml)
+                return 200, normalized
 
-        except PanDeviceError as e:
-            logger.error(f"[{self.device_name}] PAN-OS User-ID error: {e}")
-            return 400, _format_error_xml(e)
+            except PanDeviceError as e:
+                logger.error(f"[{self.device_name}] PAN-OS User-ID error: {e}")
+                return 400, _format_error_xml(e)
 
-        except Exception as e:
-            logger.error(f"[{self.device_name}] User-ID Request failed: {e}", exc_info=True)
-            return 500, _format_error_xml(e)
+            except Exception as e:
+                logger.error(f"[{self.device_name}] User-ID Request failed: {e}", exc_info=True)
+                return 500, _format_error_xml(e)
 
     def execute_get(self, xpath: str, timeout: int = 15) -> Tuple[int, str]:
         """
@@ -335,19 +349,20 @@ class PanOSClient:
         if not xpath or not isinstance(xpath, str):
             return 400, _format_error_xml("Invalid or empty XPath provided")
 
-        self._apply_timeout(timeout)
-        try:
-            clean_xpath = xpath.strip()
-            self.fw.xapi.get(xpath=clean_xpath)
-            result_xml = self.fw.xapi.xml_result()
-            normalized = _normalize_xml_response(result_xml)
-            return 200, normalized
-        except PanDeviceError as e:
-            logger.error(f"[{self.device_name}] PAN-OS get error: {e}")
-            return 400, _format_error_xml(e)
-        except Exception as e:
-            logger.error(f"[{self.device_name}] Get request failed ({xpath}): {e}", exc_info=True)
-            return 500, _format_error_xml(e)
+        with self._io_lock:
+            self._apply_timeout(timeout)
+            try:
+                clean_xpath = xpath.strip()
+                self.fw.xapi.get(xpath=clean_xpath)
+                result_xml = self.fw.xapi.xml_result()
+                normalized = _normalize_xml_response(result_xml)
+                return 200, normalized
+            except PanDeviceError as e:
+                logger.error(f"[{self.device_name}] PAN-OS get error: {e}")
+                return 400, _format_error_xml(e)
+            except Exception as e:
+                logger.error(f"[{self.device_name}] Get request failed ({xpath}): {e}", exc_info=True)
+                return 500, _format_error_xml(e)
 
     def execute_export(self, category: str = "configuration", timeout: int = 30, **kwargs) -> Tuple[int, Any]:
         """
@@ -364,21 +379,22 @@ class PanOSClient:
         if not category or not isinstance(category, str):
             return 400, _format_error_xml("Invalid export category")
 
-        self._apply_timeout(timeout)
-        try:
-            self.fw.xapi.export(category=category.strip(), **kwargs)
-            if category.strip().lower() == "pcap":
-                data = getattr(self.fw.xapi, "export_result", b"") or self.fw.xapi.xml_result()
-                return 200, data
-            result_xml = self.fw.xapi.xml_result()
-            normalized = _normalize_xml_response(result_xml)
-            return 200, normalized
-        except PanDeviceError as e:
-            logger.error(f"[{self.device_name}] PAN-OS export error: {e}")
-            return 400, _format_error_xml(e)
-        except Exception as e:
-            logger.error(f"[{self.device_name}] Export request failed ({category}): {e}", exc_info=True)
-            return 500, _format_error_xml(e)
+        with self._io_lock:
+            self._apply_timeout(timeout)
+            try:
+                self.fw.xapi.export(category=category.strip(), **kwargs)
+                if category.strip().lower() == "pcap":
+                    data = getattr(self.fw.xapi, "export_result", b"") or self.fw.xapi.xml_result()
+                    return 200, data
+                result_xml = self.fw.xapi.xml_result()
+                normalized = _normalize_xml_response(result_xml)
+                return 200, normalized
+            except PanDeviceError as e:
+                logger.error(f"[{self.device_name}] PAN-OS export error: {e}")
+                return 400, _format_error_xml(e)
+            except Exception as e:
+                logger.error(f"[{self.device_name}] Export request failed ({category}): {e}", exc_info=True)
+                return 500, _format_error_xml(e)
 
 
 class PanOSClientPool:

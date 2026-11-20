@@ -45,6 +45,16 @@ logger = logging.getLogger("core-defense")
 _RECENT_INVESTIGATIONS: "OrderedDict[str, dict]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 
+# Zero-drop dual-slot connection draining state
+_STREAM_LOCK = threading.Lock()
+_ACTIVE_STREAMS: int = 0
+_DRAINING: bool = False
+
+
+def _persist_traces_enabled() -> bool:
+    return os.getenv("NEO_PERSIST_TRACES", "0").strip() in ("1", "true", "yes")
+
+
 def _cache_investigation(trace_id: str, query: str, verdict: str, receipts: list) -> None:
     with _CACHE_LOCK:
         if len(_RECENT_INVESTIGATIONS) >= 50:
@@ -56,6 +66,74 @@ def _cache_investigation(trace_id: str, query: str, verdict: str, receipts: list
             "receipts": receipts,
             "timestamp": time.time(),
         }
+    if _persist_traces_enabled():
+        try:
+            from core.forge.state_store import get_shared_store
+            get_shared_store().save_investigation(trace_id, query, verdict, receipts)
+        except Exception as e:
+            logger.debug(f"[CACHE] SharedStateStore save skipped: {e}")
+
+
+def _lookup_investigation(trace_id: str) -> tuple[str, Optional[dict]]:
+    clean_id = (trace_id or "").strip()
+    with _CACHE_LOCK:
+        if (not clean_id or clean_id == "latest") and _RECENT_INVESTIGATIONS:
+            clean_id = next(reversed(_RECENT_INVESTIGATIONS))
+        cached = _RECENT_INVESTIGATIONS.get(clean_id)
+    if cached:
+        return clean_id, cached
+    if _persist_traces_enabled():
+        try:
+            from core.forge.state_store import get_shared_store
+            persisted = get_shared_store().get_investigation(clean_id or "latest")
+            if persisted:
+                return persisted["trace_id"], persisted
+        except Exception as e:
+            logger.debug(f"[CACHE] SharedStateStore lookup skipped: {e}")
+    return clean_id, None
+
+
+def _is_direct_loopback(request: Request) -> bool:
+    if request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip"):
+        return False
+    if not request.client or not request.client.host:
+        return False
+    raw_host = request.client.host
+    if raw_host in ("testclient", "localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(raw_host)
+        if ip.is_loopback:
+            return True
+        if hasattr(ip, "ipv4_mapped") and ip.ipv4_mapped and ip.ipv4_mapped.is_loopback:
+            return True
+    except ValueError:
+        pass
+    return False
+
+
+def _verify_stem_request(request: Request) -> bool:
+    import hmac as _hmac
+    if not _is_direct_loopback(request):
+        return False
+    expected = os.getenv("NEO_STEM_TOKEN", "").strip()
+    provided = (request.headers.get("X-Stem-Token") or "").strip()
+    if not expected or not provided:
+        return False
+    return _hmac.compare_digest(provided, expected)
+
+
+def _has_configured_fleet_devices() -> bool:
+    try:
+        import yaml
+        dev_path = Path(__file__).parent / "config" / "devices.yaml"
+        if dev_path.is_file():
+            data = yaml.safe_load(dev_path.read_text(encoding="utf-8")) or {}
+            firewalls = data.get("firewalls") or {}
+            return bool(firewalls)
+    except Exception:
+        pass
+    return False
 
 
 # =============================================================================
@@ -130,7 +208,23 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[SERVER] Pre-flight diagnostic non-fatal exception: {e}")
         app.state.diagnostic_matrix = {}
 
-    logger.info("[SERVER] Engine initialized in on-demand diagnostic mode.")
+    app.state.slot_id = os.getenv("NEO_SLOT_ID", "STANDALONE")
+    if app.state.slot_id != "STANDALONE":
+        # Eagerly validate CoreBrain & prompt integrity before /readyz reports 200 to Stem
+        get_brain()
+        try:
+            from core.forge.state_store import get_shared_store
+            pending_autopsy = get_shared_store().get_kv("pending_autopsy")
+            if pending_autopsy:
+                app.state.last_autopsy = pending_autopsy
+                logger.warning(
+                    f"[AWAKEN] Slot {app.state.slot_id} awakened after sibling rollback: "
+                    f"{str(pending_autopsy)[:240]}"
+                )
+        except Exception as ae:
+            logger.debug(f"[AWAKEN] Autopsy check skipped: {ae}")
+
+    logger.info(f"[SERVER] Engine initialized in on-demand diagnostic mode (slot={app.state.slot_id}).")
     yield
     logger.info("[SERVER] Engine shutdown complete.")
 
@@ -163,26 +257,77 @@ async def liveness_probe():
 
 @app.get("/readyz")
 async def readiness_probe():
-    """Kubernetes readiness probe: checks diagnostic engine and fleet connectivity."""
+    """Kubernetes & Stem supervisor readiness probe."""
     diag = getattr(app.state, "diagnostic_matrix", None)
     if not diag:
         from core.utils.startup_validator import get_diagnostic_matrix
         diag = get_diagnostic_matrix()
 
+    with _STREAM_LOCK:
+        is_draining = _DRAINING
+        active_streams = _ACTIVE_STREAMS
+
+    payload = {
+        "status": "draining" if is_draining else "ready",
+        "slot": os.getenv("NEO_SLOT_ID", "STANDALONE"),
+        "active_streams": active_streams,
+        "mode": diag.get("mode", "LIVE_CONNECTED"),
+        "gemini_authenticated": diag.get("gemini_authenticated", False),
+        "tools_loaded": diag.get("tool_count", 0),
+        "fleet": {
+            name: {
+                "ip": p.get("ip"),
+                "status": p.get("status"),
+                "latency_ms": p.get("latency_ms"),
+            }
+            for name, p in diag.get("fleet", {}).items()
+        },
+    }
+    return JSONResponse(status_code=503 if is_draining else 200, content=payload)
+
+
+@app.get("/internal/status")
+async def internal_slot_status(request: Request):
+    """Loopback + X-Stem-Token supervisor telemetry endpoint."""
+    if not _verify_stem_request(request):
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+    with _STREAM_LOCK:
+        return JSONResponse(
+            content={
+                "slot": os.getenv("NEO_SLOT_ID", "STANDALONE"),
+                "draining": _DRAINING,
+                "active_streams": _ACTIVE_STREAMS,
+                "probation_shadow": os.getenv("NEO_PROBATION_SHADOW", "0") == "1",
+            }
+        )
+
+
+@app.post("/internal/drain")
+async def internal_slot_drain(request: Request):
+    """Transition slot into graceful SSE drain mode prior to Stem termination."""
+    global _DRAINING
+    if not _verify_stem_request(request):
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+    with _STREAM_LOCK:
+        _DRAINING = True
+        remaining = _ACTIVE_STREAMS
+    logger.info(f"[DRAIN] Slot entering graceful drain ({remaining} active streams).")
+    return JSONResponse(content={"draining": True, "active_streams": remaining})
+
+
+@app.post("/internal/promote")
+async def internal_slot_promote(request: Request):
+    """Lift NEO_PROBATION_SHADOW in-place on a probation-verified slot without cold restart."""
+    if not _verify_stem_request(request):
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+    os.environ["NEO_PROBATION_SHADOW"] = "0"
+    slot_id = os.getenv("NEO_SLOT_ID", "STANDALONE")
+    logger.info(f"[PROMOTE] Slot {slot_id} promoted in-place from probation shadow to active sovereign.")
     return JSONResponse(
         content={
-            "status": "ready",
-            "mode": diag.get("mode", "LIVE_CONNECTED"),
-            "gemini_authenticated": diag.get("gemini_authenticated", False),
-            "tools_loaded": diag.get("tool_count", 0),
-            "fleet": {
-                name: {
-                    "ip": p.get("ip"),
-                    "status": p.get("status"),
-                    "latency_ms": p.get("latency_ms"),
-                }
-                for name, p in diag.get("fleet", {}).items()
-            },
+            "promoted": True,
+            "slot": slot_id,
+            "probation_shadow": False,
         }
     )
 
@@ -260,41 +405,39 @@ async def health_check(request: Request):
     return JSONResponse(content=status)
 
 
-@app.post("/api/chat")
-async def chat(payload: ChatRequest, request: Request):
-    """
-    Send a message to the Core Defense agent and get a response.
-    Streams the response via Server-Sent Events (SSE).
-    """
-    user_message = payload.message.strip()
-    if not user_message:
-        return JSONResponse(
-            content={"error": "Empty message"},
-            status_code=400
-        )
-    
-    target_device = (payload.device or "default").strip()
-    effective_device = None if target_device in ("all", "default", "") else target_device
-    target_mode = (payload.mode or "default").strip()
-
+def _create_sse_investigation_stream(
+    *,
+    request: Request,
+    user_message: str,
+    target_device: Optional[str],
+    target_mode: str,
+    log_tag: str,
+    error_message: str,
+    pre_status_messages: list[str],
+) -> StreamingResponse:
+    """Shared reference-counted SSE stream generator for /api/chat and /api/range/simulate."""
     async def generate():
-        """Stream the investigation response with granular status updates."""
+        global _ACTIVE_STREAMS
+        with _STREAM_LOCK:
+            _ACTIVE_STREAMS += 1
         try:
             brain = get_brain()
             status_queue = queue.Queue()
             abort_event = threading.Event()
-            
+
             def status_callback(msg: str):
                 status_queue.put(msg)
-            
+
+            for pre_msg in pre_status_messages:
+                yield f"data: {json.dumps({'type': 'status', 'content': pre_msg})}\n\n"
+
             if target_mode == "advisory":
                 base_graph_json = "{}"
             else:
-                yield f"data: {json.dumps({'type': 'status', 'content': 'Cartographer compiling nodal graph...'})}\n\n"
                 from core.panos.cartographer import Cartographer
-                cartographer = Cartographer(target_device=effective_device)
+                cartographer = Cartographer(target_device=target_device)
                 base_graph_json = cartographer.build_graph()
-            
+
             loop = asyncio.get_running_loop()
             result_future = loop.run_in_executor(
                 None,
@@ -302,20 +445,20 @@ async def chat(payload: ChatRequest, request: Request):
                     user_message,
                     user_id="web-user",
                     status_callback=status_callback,
-                    target_device=effective_device,
+                    target_device=target_device,
                     target_mode=target_mode,
                     base_graph_json=base_graph_json,
                     abort_event=abort_event,
-                    return_details=True
-                )
+                    return_details=True,
+                ),
             )
-            
+
             last_heartbeat = time.time()
             try:
                 while not result_future.done():
                     if await request.is_disconnected():
                         abort_event.set()
-                        logger.info("[CHAT] Client disconnected -- aborted investigation.")
+                        logger.info(f"[{log_tag}] Client disconnected -- aborted stream.")
                         break
 
                     await asyncio.sleep(0.3)
@@ -329,18 +472,17 @@ async def chat(payload: ChatRequest, request: Request):
                         except queue.Empty:
                             break
 
-                    # SSE Heartbeat: keep connection alive during model thinking pauses
                     if not sent_status and time.time() - last_heartbeat > 5.0:
                         yield ": heartbeat\n\n"
                         last_heartbeat = time.time()
-                
+
                 while not status_queue.empty():
                     try:
                         msg = status_queue.get_nowait()
                         yield f"data: {json.dumps({'type': 'status', 'content': msg})}\n\n"
                     except queue.Empty:
                         break
-                
+
                 if not abort_event.is_set():
                     result = await result_future
                     if isinstance(result, dict):
@@ -361,11 +503,13 @@ async def chat(payload: ChatRequest, request: Request):
                     yield f"data: {json.dumps({'type': 'done', 'trace_id': trace_id})}\n\n"
             finally:
                 abort_event.set()
-            
         except Exception as e:
-            logger.exception(f"[CHAT] Investigation error: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'content': 'Investigation failed. Please check server logs.'})}\n\n"
-    
+            logger.exception(f"[{log_tag}] Stream error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'content': error_message})}\n\n"
+        finally:
+            with _STREAM_LOCK:
+                _ACTIVE_STREAMS = max(0, _ACTIVE_STREAMS - 1)
+
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
@@ -373,7 +517,33 @@ async def chat(payload: ChatRequest, request: Request):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-        }
+        },
+    )
+
+
+@app.post("/api/chat")
+async def chat(payload: ChatRequest, request: Request):
+    """
+    Send a message to the Core Defense agent and get a response.
+    Streams the response via Server-Sent Events (SSE).
+    """
+    user_message = payload.message.strip()
+    if not user_message:
+        return JSONResponse(content={"error": "Empty message"}, status_code=400)
+
+    target_device = (payload.device or "default").strip()
+    effective_device = None if target_device in ("all", "default", "") else target_device
+    target_mode = (payload.mode or "default").strip()
+    pre_msgs = [] if target_mode == "advisory" else ["Cartographer compiling nodal graph..."]
+
+    return _create_sse_investigation_stream(
+        request=request,
+        user_message=user_message,
+        target_device=effective_device,
+        target_mode=target_mode,
+        log_tag="CHAT",
+        error_message="Investigation failed. Please check server logs.",
+        pre_status_messages=pre_msgs,
     )
 
 
@@ -427,8 +597,7 @@ async def get_cartographer_base_graph(device: Optional[str] = "default"):
 @app.get("/api/investigations/{trace_id}/receipts")
 async def get_investigation_receipts(trace_id: str):
     """Retrieve raw receipts for a completed investigation trace."""
-    with _CACHE_LOCK:
-        data = _RECENT_INVESTIGATIONS.get(trace_id)
+    _, data = _lookup_investigation(trace_id)
     if not data:
         return JSONResponse(status_code=404, content={"error": "Investigation not found or expired"})
     return JSONResponse(content=data)
@@ -437,12 +606,7 @@ async def get_investigation_receipts(trace_id: str):
 @app.post("/api/export/markdown")
 async def export_incident_to_markdown(payload: ExportDocRequest):
     """Generates direct structured Markdown report for 1-click client-side download."""
-    trace_id = (payload.trace_id or "").strip()
-    with _CACHE_LOCK:
-        if (not trace_id or trace_id == "latest") and _RECENT_INVESTIGATIONS:
-            trace_id = next(reversed(_RECENT_INVESTIGATIONS))
-        cached = _RECENT_INVESTIGATIONS.get(trace_id)
-
+    trace_id, cached = _lookup_investigation(payload.trace_id)
     if not cached:
         return JSONResponse(status_code=404, content={"error": f"No investigation found for trace '{trace_id}'"})
 
@@ -462,12 +626,7 @@ async def export_incident_to_doc(payload: ExportDocRequest):
     Exports a cached investigation trace and its CLI execution receipts to a Google Doc,
     or returns the structured Markdown report for 1-click download.
     """
-    trace_id = (payload.trace_id or "").strip()
-    with _CACHE_LOCK:
-        if (not trace_id or trace_id == "latest") and _RECENT_INVESTIGATIONS:
-            trace_id = next(reversed(_RECENT_INVESTIGATIONS))
-        cached = _RECENT_INVESTIGATIONS.get(trace_id)
-
+    trace_id, cached = _lookup_investigation(payload.trace_id)
     if not cached:
         return JSONResponse(status_code=404, content={"error": f"No investigation found for trace '{trace_id}'"})
 
@@ -490,106 +649,20 @@ async def range_simulate(payload: RangeSimulateRequest, request: Request):
     """
     user_message = payload.message.strip()
     if not user_message:
-        return JSONResponse(
-            content={"error": "Empty message"},
-            status_code=400
-        )
-    
-    async def generate():
-        try:
-            brain = get_brain()
-            status_queue = queue.Queue()
-            abort_event = threading.Event()
-            
-            def status_callback(msg: str):
-                status_queue.put(msg)
-            
-            yield f"data: {json.dumps({'type': 'status', 'content': 'Initializing Simulation...'})}\n\n"
-            yield f"data: {json.dumps({'type': 'status', 'content': 'Cartographer mapping physical network...'})}\n\n"
-            from core.panos.cartographer import Cartographer
-            target_device = (payload.device or "default").strip()
-            cartographer = Cartographer(target_device=target_device)
-            base_graph_json = cartographer.build_graph()
-            
-            loop = asyncio.get_running_loop()
-            result_future = loop.run_in_executor(
-                None,
-                lambda: brain.investigate(
-                    user_message,
-                    user_id="web-user",
-                    status_callback=status_callback,
-                    target_mode="range",
-                    target_device=target_device,
-                    base_graph_json=base_graph_json,
-                    abort_event=abort_event,
-                    return_details=True
-                )
-            )
-            
-            last_heartbeat = time.time()
-            try:
-                while not result_future.done():
-                    if await request.is_disconnected():
-                        abort_event.set()
-                        logger.info("[RANGE] Client disconnected -- aborted simulation.")
-                        break
+        return JSONResponse(content={"error": "Empty message"}, status_code=400)
 
-                    await asyncio.sleep(0.3)
-                    sent_status = False
-                    while not status_queue.empty():
-                        try:
-                            msg = status_queue.get_nowait()
-                            yield f"data: {json.dumps({'type': 'status', 'content': msg})}\n\n"
-                            sent_status = True
-                            last_heartbeat = time.time()
-                        except queue.Empty:
-                            break
-                    
-                    # SSE Heartbeat: keep connection alive during model thinking pauses
-                    if not sent_status and time.time() - last_heartbeat > 5.0:
-                        yield ": heartbeat\n\n"
-                        last_heartbeat = time.time()
-
-                while not status_queue.empty():
-                    try:
-                        msg = status_queue.get_nowait()
-                        yield f"data: {json.dumps({'type': 'status', 'content': msg})}\n\n"
-                    except queue.Empty:
-                        break
-                
-                if not abort_event.is_set():
-                    result = await result_future
-                    if isinstance(result, dict):
-                        verdict = result.get("verdict", "")
-                        receipts = result.get("receipts", [])
-                        trace_id = result.get("trace_id", "")
-                    else:
-                        verdict = str(result)
-                        receipts = []
-                        trace_id = ""
-
-                    if trace_id:
-                        _cache_investigation(trace_id, user_message, verdict, receipts)
-
-                    if receipts:
-                        yield f"data: {json.dumps({'type': 'receipts', 'content': receipts, 'trace_id': trace_id})}\n\n"
-                    yield f"data: {json.dumps({'type': 'response', 'content': verdict, 'trace_id': trace_id})}\n\n"
-                    yield f"data: {json.dumps({'type': 'done', 'trace_id': trace_id})}\n\n"
-            finally:
-                abort_event.set()
-            
-        except Exception as e:
-            logger.exception(f"[RANGE] Simulation error: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'content': 'Simulation encountered an error. Please check server logs.'})}\n\n"
-    
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        }
+    target_device = (payload.device or "default").strip()
+    return _create_sse_investigation_stream(
+        request=request,
+        user_message=user_message,
+        target_device=target_device,
+        target_mode="range",
+        log_tag="RANGE",
+        error_message="Simulation encountered an error. Please check server logs.",
+        pre_status_messages=[
+            "Initializing Simulation...",
+            "Cartographer mapping physical network...",
+        ],
     )
 
 
@@ -604,7 +677,7 @@ async def setup(payload: SetupRequest, request: Request):
     """
     existing_key = os.getenv("API_ACCESS_KEY")
     # Security bootstrap guard: require valid X-API-Key if reconfiguring an already configured system
-    if existing_key and os.getenv("PANOS_HOSTNAME"):
+    if existing_key and (os.getenv("PANOS_HOSTNAME") or _has_configured_fleet_devices()):
         provided_key = request.headers.get("X-API-Key")
         import hmac as _hmac
         if not provided_key or not _hmac.compare_digest(provided_key, existing_key):

@@ -48,3 +48,8 @@ _legacy/
 # Landing Site (Deployed separately)
 landing_site/
 
+# Dual-Slot Worktrees & Shared Persistent State
+.slots/
+.state/
+
+

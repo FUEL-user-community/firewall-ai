@@ -33,8 +33,10 @@ def verify_prompt_integrity(path: Path = None) -> None:
     if not _PROMPTS_EXPECTED_SHA:
         logger.warning("[INTEGRITY] PROMPTS_YAML_SHA not set in .env — skipping checksum verification.")
         return
-    actual_sha = hashlib.sha256(path.read_bytes()).hexdigest()
-    if actual_sha != _PROMPTS_EXPECTED_SHA:
+    raw_bytes = path.read_bytes()
+    actual_sha = hashlib.sha256(raw_bytes.replace(b"\r\n", b"\n")).hexdigest()
+    raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+    if actual_sha != _PROMPTS_EXPECTED_SHA and raw_sha != _PROMPTS_EXPECTED_SHA:
         raise RuntimeError(
             f"CRITICAL: prompts.yaml checksum mismatch. "
             f"Expected: {_PROMPTS_EXPECTED_SHA[:16]}... Got: {actual_sha[:16]}... "
@@ -303,8 +305,10 @@ def build_reality_prompt(
         )
     else:
         reality_check = (
-            f"REALITY_CHECK: You only have these tools: [{manifest_str}].\n"
-            "Verify tool names against this list before every call.\n\n"
+            f"REALITY_CHECK: Active mounted tools: [{manifest_str}].\n"
+            "Verify tool names against this list before every call. Additional specialized trays "
+            "('#sys', '#net', '#sec', '#vpn', '#ops', '#troubleshoot', '#ha', '#routing', '#l2', "
+            "'#user-id', '#forge') can be mounted via summon_toolkit(tray='...').\n\n"
             f"{fleet}"
         )
 

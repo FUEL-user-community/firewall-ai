@@ -48,7 +48,9 @@ _CITATION_RE = re.compile(r"\[Steps?\s+(\d+(?:\s*(?:,|-|–|and|&)\s*\d+)*)([^\]
 _PAGE_RE = re.compile(
     r"\b(?:pp?\.|pages?)\s*(\d{1,4}(?:\s*(?:-|–|,|and|&|to)\s*\d{1,4})*)", re.IGNORECASE
 )
-_IP_RE = re.compile(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3})(?:/\d{1,2})?(?!(?:\.\d|[\d]))")
+# IPv4 octet: 0-255, no leading zeros (same acceptance set as ipaddress.IPv4Address).
+_OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
+_IP_RE = re.compile(rf"(?<![\d.])((?:{_OCTET}\.){{3}}{_OCTET})(?:/\d{{1,2}})?(?!(?:\.\d|[\d]))")
 def _extract_all_ips(text: str) -> List[str]:
     v4 = _IP_RE.findall(text or "")
     v6_candidates = re.findall(r"(?<![a-fA-F0-9:])([a-fA-F0-9:]{2,39})(?:/\d{1,3})?(?![:a-fA-F0-9])", text or "")
@@ -65,8 +67,9 @@ def _extract_all_ips(text: str) -> List[str]:
 
 
 def _extract_query_candidate_ips(query: str) -> List[str]:
-    """Extract IPv4/IPv6 host addresses from user query, excluding netmasks, broadcast, and loopback."""
-    candidates = _extract_all_ips(query or "")
+    """Extract IPv4/IPv6 host addresses from user query, excluding netmasks, broadcast, loopback, and appended Cartographer JSON."""
+    user_part = (query or "").split("\n{", 1)[0]
+    candidates = _extract_all_ips(user_part)
     valid_hosts: List[str] = []
     for ip_str in candidates:
         try:
@@ -151,20 +154,45 @@ _PRESENCE_SOURCES = (
         "admin/mgmt client lists only show authenticated or currently connected clients, not probes",
     ),
 )
-_SIM_TOOLS = {"test_security_policy", "test_nat_policy", "test_routing_fib", "test_routing_lookup", "test_pbf_policy"}
-_CONFIG_TOOLS = {"get_live_config", "fetch_running_config_xml", "query_knowledge_base"}
+_SIM_TOOLS = {
+    "test_security_policy",
+    "test_policy_match",
+    "test_nat_policy",
+    "test_nat_match",
+    "test_routing_fib",
+    "test_routing_lookup",
+    "test_pbf_policy",
+    "test_url_category",
+    "test_packet_walk",
+}
+_CONFIG_TOOLS = {
+    "get_live_config",
+    "fetch_running_config_xml",
+    "query_knowledge_base",
+    "inspect_own_harness",
+    "board_ops",
+    "slot_forge",
+    "search_live_docs",
+}
+
+
+def _is_non_wire_receipt(tool: str, args_str: str) -> bool:
+    """Returns True if a tool call is a simulation, configuration read, or meta-tool rather than live wire telemetry."""
+    if tool in _SIM_TOOLS or tool in _CONFIG_TOOLS:
+        return True
+    if tool == "execute_operational_command" and re.search(r"\b(?:config|test|find)\b", args_str, re.IGNORECASE):
+        return True
+    return False
 
 
 def _presence_source(tool: str, args_str: str) -> Optional[int]:
     """Index into _PRESENCE_SOURCES for a receipt, or None if it is not a presence source."""
-    if tool in _SIM_TOOLS or tool in _CONFIG_TOOLS:
+    if _is_non_wire_receipt(tool, args_str):
         return None
     for idx, (_, tools, arg_re, _) in enumerate(_PRESENCE_SOURCES):
         if tool in tools:
             return idx
     if tool == "execute_operational_command":
-        if re.search(r"\bconfig\b", args_str, re.IGNORECASE):
-            return None
         for idx, (_, _, arg_re, _) in enumerate(_PRESENCE_SOURCES):
             if arg_re is not None and arg_re.search(args_str):
                 return idx
@@ -570,6 +598,54 @@ def build_facts(receipts: List[Dict[str, Any]], query: str = "") -> List[str]:
                     act_str = f" ({action})" if action else ""
                     facts.append(f"NAT policy match: rule '{rule}'{act_str} {_cite(i)}")
 
+    # Core Diagnostic Verdicts: Full SP3 Packet Walk
+    for i, r in ok:
+        tool = r.get("tool")
+        if tool == "test_packet_walk":
+            data = _load(_raw(r))
+            pw = _find(data, "packet_walk") if isinstance(data, dict) else None
+            if isinstance(pw, dict):
+                flow_info = pw.get("flow") or {}
+                ing = pw.get("ingress_stage") or {}
+                pre_fib = pw.get("pre_nat_fib_stage") or {}
+                nat_st = pw.get("nat_stage") or {}
+                post_rt = pw.get("post_nat_routing_stage") or {}
+                sec_st = pw.get("security_policy_stage") or {}
+
+                src_ip = flow_info.get("source")
+                dst_ip = flow_info.get("destination")
+                port_val = flow_info.get("port", "443")
+
+                if post_rt.get("post_nat_fib_performed"):
+                    facts.append(
+                        f"Packet walk routing ({src_ip} -> {dst_ip}): ingress zone '{ing.get('from_zone')}', "
+                        f"pre-NAT egress {pre_fib.get('egress_interface')} (zone '{pre_fib.get('egress_zone')}'), "
+                        f"post-DNAT egress {post_rt.get('egress_interface')} (final zone '{post_rt.get('final_to_zone')}') {_cite(i)}"
+                    )
+                elif pre_fib.get("egress_interface") or post_rt.get("final_to_zone"):
+                    facts.append(
+                        f"Packet walk routing ({src_ip} -> {dst_ip}): ingress zone '{ing.get('from_zone')}' -> "
+                        f"egress interface {pre_fib.get('egress_interface')} (zone '{post_rt.get('final_to_zone')}') {_cite(i)}"
+                    )
+
+                if nat_st.get("rule") or nat_st.get("dnat_detected"):
+                    dnat_str = f" -> DNAT destination {nat_st.get('translated_destination')}" if nat_st.get("dnat_detected") else ""
+                    facts.append(f"NAT policy match: rule '{nat_st.get('rule') or 'matched'}'{dnat_str} {_cite(i)}")
+
+                if sec_st.get("rule") and sec_st.get("action"):
+                    idx_str = f" (index {sec_st['index']})" if sec_st.get("index") else ""
+                    zone_pair = (
+                        f" [{sec_st.get('evaluated_from_zone')} -> {sec_st.get('evaluated_to_zone')}]"
+                        if sec_st.get("evaluated_from_zone") or sec_st.get("evaluated_to_zone")
+                        else ""
+                    )
+                    eval_dst = sec_st.get("evaluated_destination_ip") or dst_ip
+                    flow_str = f" ({src_ip} -> {eval_dst}:{port_val})" if src_ip and eval_dst else ""
+                    facts.append(
+                        f"Security policy verdict{flow_str}{zone_pair}: rule '{sec_st['rule']}'{idx_str} -> "
+                        f"action {str(sec_st['action']).upper()} {_cite(i)}"
+                    )
+
     # Adversary Presence Triage (queried host vs presence sources).
     # Three states only: OBSERVED, NOT OBSERVED in named sources (uncorroborated, not
     # disproven), NOT CHECKED. Absence is never promoted to "simulated": each source
@@ -586,7 +662,7 @@ def build_facts(receipts: List[Dict[str, Any]], query: str = "") -> List[str]:
                 src = _presence_source(tool, args_str)
                 if src is not None:
                     checked.setdefault(src, []).append(i)
-                if tool not in _SIM_TOOLS and tool not in _CONFIG_TOOLS and cand_ip in _raw(r):
+                if not _is_non_wire_receipt(tool, args_str) and cand_ip in _raw(r):
                     cand_observed_steps.append(i)
 
             if cand_observed_steps:
@@ -743,7 +819,7 @@ def _is_claim_line(stripped: str) -> bool:
         return False
     if stripped.startswith(("#", ">", "<", "---", "===", "|:", "| :", "```")):
         return False
-    if re.match(r"^\[(?:CRITICAL|CAUTION|NORMAL|ENFORCING)\]\s+", stripped):
+    if re.match(r"^\[(?:CRITICAL|CAUTION|NORMAL|ENFORCING)\s*\]", stripped):
         return False
     if re.fullmatch(r"[\s|:\-]+", stripped):
         return False
@@ -797,7 +873,13 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
         i: rngs for i, r in enumerate(receipts, 1)
         if statuses[i - 1] == "success" and (rngs := _read_pages_from_receipt(r))
     }
-    device_raw_ips = set(_extract_all_ips("\n".join(ok_raw.values())))
+    wire_raw_outputs = [
+        _raw(r)
+        for r, st in zip(receipts, statuses)
+        if st == "success"
+        and not _is_non_wire_receipt(str(r.get("tool") or "").lower(), str(r.get("args") or ""))
+    ]
+    device_raw_ips = set(_extract_all_ips("\n".join(wire_raw_outputs)))
     query_cand_ips = set(_extract_query_candidate_ips(query or ""))
     unobserved_query_ips = query_cand_ips - device_raw_ips
     stats = {"claims": 0, "cited_ok": 0, "inference": 0, "unverified": 0, "uncited": 0, "disputes": 0}

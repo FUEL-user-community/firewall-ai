@@ -9,6 +9,7 @@ import sys
 import re
 import hashlib
 import hmac
+import secrets
 import yaml
 import os
 from typing import Dict, Union, List
@@ -44,24 +45,26 @@ class ToxicXmlSanitizer:
     }
 
     # Patterns to mask while preserving structural integrity via hashing
-    # Note: IP masking is removed to ensure full, uninhibited diagnostic visibility
+    # PAN-OS serials are 12-15 chars containing digits; avoids corrupting 40-char Git SHAs / 64-char SHA-256 hashes
     MASK_PATTERNS = {
-        'serial': re.compile(r'\b[0-9A-F]{12,}\b')
+        'serial': re.compile(r'\b(?=[0-9A-F]*\d)[0-9A-F]{12,15}\b')
     }
 
-    _DEFAULT_SEED = b"panos_static_sanitizer_seed"
+    # 12 hex = 48 bits; birthday n50 ~ 19.8M (was 8 hex = 32 bits, n50 ~ 77k).
+    _TAG_HEX = 12
 
     def __init__(self, seed: str = None):
-        raw_seed = seed or os.getenv('SANITIZER_SEED')
+        raw_seed = seed or os.getenv('SANITIZER_SEED') or os.getenv('SCRUBBER_SEED')
         if raw_seed:
             self.seed = raw_seed.encode('utf-8')
         else:
-            self.seed = self._DEFAULT_SEED
+            from core.safety.scrubber import _SCRUB_KEY
+            self.seed = _SCRUB_KEY
 
     def _hash_value(self, text: str, prefix: str = "VAL") -> str:
         """Deterministic, irreversible HMAC masking."""
         h = hmac.new(self.seed, text.encode('utf-8'), hashlib.sha256)
-        return f"{{{{{prefix}_{h.hexdigest()[:8]}}}}}"
+        return f"{{{{{prefix}_{h.hexdigest()[:self._TAG_HEX]}}}}}"
 
     def _sanitize_text(self, text) -> str:
         """Applies mechanical masking to sensitive identifiers."""

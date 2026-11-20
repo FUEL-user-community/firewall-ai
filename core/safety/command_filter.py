@@ -21,6 +21,7 @@ class CommandFilter:
     ALLOWED_PREFIXES = (
         "show ",
         "test ",
+        "find command ",
         "ping ",
         "traceroute ",
     )

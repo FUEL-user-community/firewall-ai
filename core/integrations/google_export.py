@@ -244,27 +244,11 @@ def generate_incident_markdown(
 
 
 def _init_drive_write_service():
-    """Initializes Google Drive API with write permissions using Service Account or ADC."""
-    creds_file = os.getenv("GCP_SERVICE_ACCOUNT_FILE")
-    scopes = [
-        'https://www.googleapis.com/auth/drive.file',
-        'https://www.googleapis.com/auth/drive'
-    ]
-
+    """Initializes Google Drive API with write permissions via unified GoogleDriveClient."""
     try:
-        from googleapiclient.discovery import build
-        from google.oauth2 import service_account
-
-        if creds_file and os.path.exists(creds_file):
-            logger.info(f"[EXPORT-GDOC] Authenticating with service account file: {creds_file}")
-            creds = service_account.Credentials.from_service_account_file(creds_file, scopes=scopes)
-        else:
-            import google.auth
-            logger.info("[EXPORT-GDOC] Authenticating using Application Default Credentials (ADC)...")
-            creds, _ = google.auth.default(scopes=scopes)
-
-        service = build('drive', 'v3', credentials=creds, cache_discovery=False)
-        return service, None
+        from core.integrations.gdrive_client import GoogleDriveClient
+        client = GoogleDriveClient(mode="readwrite")
+        return client.get_service()
     except Exception as e:
         logger.warning(f"[EXPORT-GDOC] Google Drive write service not available: {e}")
         return None, str(e)

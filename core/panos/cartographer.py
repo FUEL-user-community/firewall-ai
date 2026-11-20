@@ -422,6 +422,29 @@ class Cartographer:
             root.findtext(".//rulebase/default-security-rules/rules/entry[@name='interzone-default']/action")
             or "deny"
         ).strip()
+        intrazone_default_action = (
+            root.findtext(".//rulebase/default-security-rules/rules/entry[@name='intrazone-default']/action")
+            or "allow"
+        ).strip()
+        pbf_rules_count = len(root.findall(".//rulebase/pbf/rules/entry"))
+        nat_rules_count = len(root.findall(".//rulebase/nat/rules/entry"))
+        decryption_rules_count = len(root.findall(".//rulebase/decryption/rules/entry"))
+        uninspected_allow_rules: List[str] = []
+        for sec_entry in root.findall(".//rulebase/security/rules/entry"):
+            r_name = sec_entry.get("name")
+            if not r_name:
+                continue
+            disabled_text = (sec_entry.findtext("disabled") or "no").strip().lower()
+            action_text = (sec_entry.findtext("action") or "").strip().lower()
+            if disabled_text != "yes" and action_text == "allow":
+                prof_setting = sec_entry.find("profile-setting")
+                has_prof = prof_setting is not None and (
+                    bool(prof_setting.findall(".//group/member"))
+                    or bool(prof_setting.findall(".//profiles/*"))
+                )
+                if not has_prof:
+                    uninspected_allow_rules.append(r_name)
+
         threat_update_action = (
             root.findtext(".//deviceconfig/system/update-schedule/threats/recurring/weekly/action")
             or root.findtext(".//deviceconfig/system/update-schedule/threats/recurring/daily/action")
@@ -582,6 +605,11 @@ class Cartographer:
             "interface_modes": interface_modes,
             "zone_modes": zone_modes,
             "interzone_default_action": interzone_default_action,
+            "intrazone_default_action": intrazone_default_action,
+            "pbf_rules_count": pbf_rules_count,
+            "nat_rules_count": nat_rules_count,
+            "decryption_rules_count": decryption_rules_count,
+            "uninspected_allow_rules": list(dict.fromkeys(uninspected_allow_rules)),
             "threat_update_action": threat_update_action,
             "decorative_security_profiles": list(dict.fromkeys(weak_profiles)),
             "active_admin_sessions": admin_sessions

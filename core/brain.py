@@ -139,6 +139,7 @@ class InvestigationState:
     receipts: List[Dict[str, Any]] = field(default_factory=list)
     user_query: str = ""
     last_facts: str = ""
+    tray_pivoted: bool = False
 
     def emit(self, msg: str) -> None:
         """Emits user status update if a callback is registered."""
@@ -231,7 +232,10 @@ class CoreBrain:
             logger.info(f"[BRAIN] Model initialized: {GEMINI_MODEL} ({len(self.tools)} tools, safety={safety_level})")
 
         # License Awareness Context
-        self.license_context = "License Status: UNKNOWN (Assume Capability). Check with 'request license info'."
+        self.license_context = (
+            "License Status: UNVERIFIED (Do NOT assume Threat/WildFire/URL subscriptions "
+            "are active without live receipt; check 'license_info' when material)."
+        )
 
         # Usage tracking
         self.usage_tracker = UsageTracker(
@@ -244,9 +248,9 @@ class CoreBrain:
         self.circuit_breaker = CircuitBreaker(max_steps=30, max_loops=4)
         self.policy = PolicyEngine() if PolicyEngine else None
 
-        # Human-in-the-loop approval provider
+        # Human-in-the-loop approval provider (fail-closed interactive queue unless explicitly overridden)
         if get_hitl_provider:
-            hitl_mode = os.getenv("HITL_MODE", "autopilot").lower()
+            hitl_mode = os.getenv("HITL_MODE", "queue").lower()
             self.hitl = get_hitl_provider(mode=hitl_mode)
             logger.info(f"[HITL] Provider: {self.hitl.get_mode()}")
         else:
@@ -414,7 +418,7 @@ class CoreBrain:
                 pass
 
         if self.budget_guard:
-            self.budget_guard.reset_investigation()
+            self.budget_guard.reset_investigation(trace_id)
 
         mode = classify_mode(user_query, target_mode=effective_mode)
         thinking_level = get_thinking_level(mode)
@@ -558,6 +562,8 @@ class CoreBrain:
             self.budget_guard.record_usage(
                 prompt_tokens=getattr(meta, 'prompt_token_count', 0),
                 response_tokens=getattr(meta, 'candidates_token_count', 0),
+                trace_id=state.trace_id,
+                thoughts_tokens=getattr(meta, 'thoughts_token_count', 0),
             )
             return None
         except BudgetExceededError as be:
@@ -571,7 +577,7 @@ class CoreBrain:
                     ),
                     operation_name="budget exceeded report"
                 )
-                return f"[BUDGET LIMIT] Budget limit reached ({self.budget_guard.get_status()})\n\n{partial_resp.text}"
+                return f"[BUDGET LIMIT] Budget limit reached ({self.budget_guard.get_status(state.trace_id)})\n\n{partial_resp.text}"
             except Exception:
                 return f"[BUDGET LIMIT] Budget limit reached: {be}"
 
@@ -607,10 +613,11 @@ class CoreBrain:
                     clean_reasoning = " | ".join(line.strip() for line in reasoning_text.split('\n') if line.strip())
                     state.emit(f"[DIAGNOSTICS] {clean_reasoning[:150]}...")
 
-                    hyp_match = re.search(r'\[HYPOTHESIS_MATRIX\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
-                    con_match = re.search(r'\[CONTRADICTION_CHECK\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
-                    blast_match = re.search(r'\[BLAST_RADIUS_CRITIQUE\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
-                    ev_match = re.search(r'\[EVIDENCE_REQUIRED\]:(.*?)(?=\[|$)', reasoning_text, re.DOTALL)
+                    _tag_end = r'(?=\n\s*(?:\[[A-Z_]+\]\s*:|(?:INITIATIVE|STATE_GAP|HYPOTHESIS|FALSIFY|SELF_TRAP|DISPATCH)\s*:)|$)'
+                    hyp_match = re.search(r'(?:\[HYPOTHESIS_MATRIX\]|INITIATIVE|STATE_GAP|HYPOTHESIS)\s*:(.*?)' + _tag_end, reasoning_text, re.DOTALL | re.IGNORECASE)
+                    con_match = re.search(r'(?:\[CONTRADICTION_CHECK\]|FALSIFY)\s*:(.*?)' + _tag_end, reasoning_text, re.DOTALL | re.IGNORECASE)
+                    blast_match = re.search(r'(?:\[BLAST_RADIUS_CRITIQUE\]|SELF_TRAP)\s*:(.*?)' + _tag_end, reasoning_text, re.DOTALL | re.IGNORECASE)
+                    ev_match = re.search(r'(?:\[EVIDENCE_REQUIRED\]|DISPATCH)\s*:(.*?)' + _tag_end, reasoning_text, re.DOTALL | re.IGNORECASE)
 
                     trace_turn = {
                         "turn": turn,
@@ -682,6 +689,7 @@ class CoreBrain:
 
                 state.tool_executor.tools = new_tools
                 state.manifest_str = ", ".join([t.__name__ for t in new_tools])
+                state.tray_pivoted = True
                 state.emit(f"[PIVOT] Swapped toolkit to {tray_name} ({len(new_tools)} tools active)")
                 logger.info(f"[{state.trace_id}] [PIVOT] Hot-swapped tool tray to {tray_name} ({len(new_tools)} tools)")
 
@@ -736,7 +744,8 @@ class CoreBrain:
 
         # Probe Ceiling Guard: Enforce graceful synthesis before hitting turn limits
         ceiling_applied = False
-        outward_receipts = [r for r in state.receipts if r.get("tool") != "inspect_own_harness"]
+        _internal_meta_tools = {"inspect_own_harness", "board_ops", "slot_forge"}
+        outward_receipts = [r for r in state.receipts if r.get("tool") not in _internal_meta_tools]
         ceiling_directive = get_ceiling_directive(
             target_mode=state.target_mode,
             turn=turn,
@@ -759,6 +768,8 @@ class CoreBrain:
         extra_kwargs = {}
         if ceiling_applied:
             extra_kwargs["tool_config"] = {"function_calling_config": {"mode": "NONE"}}
+        elif getattr(state, "tray_pivoted", False) and getattr(state.tool_executor, "tools", None):
+            extra_kwargs["tools"] = state.tool_executor.tools
 
         return self._execute_with_quota_retry(
             lambda: chat.send_message(
@@ -783,7 +794,7 @@ class CoreBrain:
 
         # Enforce strict JSON schema for range simulation mode
         if state.target_mode == "range":
-            final_text = self._enforce_range_schema(final_text, state.trace_id)
+            final_text = self._enforce_range_schema(final_text, trace_id=state.trace_id)
         elif state.target_mode == "advisory":
             # Advisory mode emits conversational strategic guidance without forcing Device Facts banner
             pass

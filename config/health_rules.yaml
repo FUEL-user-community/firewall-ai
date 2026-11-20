@@ -3,6 +3,9 @@
 # ═══════════════════════════════════════════════════════════════════
 # No coding required. Modify any number below to adjust health alerts.
 # Restart the server or run a new health check to apply changes.
+#
+# Semantics: every limit is STRICT. "caution_pct: 85" alerts at 86%, not 85%;
+# "idle_caution_under_pct: 50" alerts at 49.9%, not 50%.
 # ═══════════════════════════════════════════════════════════════════
 
 # System Uptime Rules
@@ -28,15 +31,15 @@ storage:
   # Critical OS and Configuration Partitions (/ and /opt/pancfg)
   # If these fill up, commits fail and the firewall management plane hangs.
   system_partitions:
-    caution_pct: 85
-    critical_pct: 95
+    caution_pct: 85    # Alert if usage exceeds 85%
+    critical_pct: 95   # Critical if usage exceeds 95%
 
   # Traffic and Threat Log Storage (/opt/panlogs)
   # PAN-OS automatically purges older logs when this partition reaches 90-95%.
   # Normal operation is high utilization; do NOT alert at 80%.
   log_partitions:
-    caution_pct: 92
-    critical_pct: 97
+    caution_pct: 92    # Alert if usage exceeds 92%
+    critical_pct: 97   # Critical if usage exceeds 97%
 
 # Device-Specific Overrides (Optional)
 # Target specific firewalls from config/devices.yaml by name.

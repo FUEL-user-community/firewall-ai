@@ -73,6 +73,9 @@ class ToolExecutor:
     safety gates → execution → caching → PII scrub → response building.
     """
 
+    # Trusted internal code/board tools where raw unified diffs and SHAs must not be mangled by prose regexes
+    _RAW_CODE_TOOLS = frozenset({"inspect_own_harness", "board_ops", "slot_forge"})
+
     def __init__(self, policy, hitl, circuit_breaker, tools):
         self.policy = policy
         self.hitl = hitl
@@ -159,9 +162,14 @@ class ToolExecutor:
             )
             is_unbounded_session = False
 
-            if fname == "execute_operational_command":
+            if fname in ("session_all", "execute_live_app_analytics"):
+                is_unbounded_session = True
+            elif fname == "execute_operational_command":
                 cmd_val = str(fargs.get("cmd") or fargs.get("command") or "").lower()
-                if re.search(r'\bshow\s+session\s+all\b', cmd_val) and not re.search(r'\bfilter\s+\S+', cmd_val):
+                if (
+                    (re.search(r'\bshow\s+session\s+all\b', cmd_val) and not re.search(r'\bfilter\s+\S+', cmd_val))
+                    or re.search(r'<show>\s*<session>\s*<all\b', cmd_val)
+                ):
                     is_unbounded_session = True
                     # Counter-logic defense: Strip any self-declared approval argument fabricated by LLM
                     fargs.pop("hitl_approved", None)
@@ -199,7 +207,12 @@ class ToolExecutor:
             blocked_by = ""
 
         # --- 6. PII SCRUB + RESPONSE BUILDING ---
-        scrubbed = scrub(str(result)) if result is not None else ""
+        if result is None:
+            scrubbed = ""
+        elif fname in self._RAW_CODE_TOOLS:
+            scrubbed = str(result)
+        else:
+            scrubbed = scrub(str(result))
         if step_number is not None:
             # Same numbering as the report's receipt table, so the model can cite [Step N].
             status = classify_outcome(str(result) if result is not None else "", blocked_by if result else "")

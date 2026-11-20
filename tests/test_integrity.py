@@ -8,16 +8,21 @@ these tests exist so that class of failure cannot hide behind green again.
 """
 
 import inspect
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import core.forge.slot_mutator as forge_mutator
+import core.integrations.board_sync as board_sync_mod
 import core.panos.config as panos_config
 import core.panos.logs as panos_logs
 import core.panos.ops as panos_ops
 from core.integrations.google_export import generate_incident_markdown
+from core.pipeline.evidence import build_facts
 from core.pipeline.outcomes import classify_outcome, effective_status
 from core.pipeline.tool_executor import ToolExecutor
+from core.pipeline.tool_keeper import ToolKeeper
 from core.pipeline.tool_schemas import TOOL_SCHEMAS
 
 
@@ -26,21 +31,24 @@ from core.pipeline.tool_schemas import TOOL_SCHEMAS
 CONTRACT_SAMPLES = {
     "test_security_policy": {"source": "10.0.0.1", "destination": "8.8.8.8", "port": "443"},
     "test_nat_policy": {"source": "8.8.8.8", "destination": "203.0.113.20", "port": "443"},
+    "test_packet_walk": {"source": "10.0.0.1", "destination": "8.8.8.8", "port": "443"},
     "test_routing_fib": {"ip": "8.8.8.8"},
     "test_pbf_policy": {"source": "10.0.0.1", "destination": "8.8.8.8"},
     "get_telemetry_snapshot": {},
     "get_live_config": {"xpath": "/config/devices"},
     "execute_log_query": {"log_type": "traffic"},
     "execute_operational_command": {"cmd": "show system info"},
+    "board_ops": {"action": "sync"},
+    "slot_forge": {"action": "status"},
 }
 
 
 def _resolve_tool(name):
-    for module in (panos_ops, panos_config, panos_logs):
+    for module in (panos_ops, panos_config, panos_logs, board_sync_mod, forge_mutator):
         fn = getattr(module, name, None)
         if callable(fn):
             return fn
-    raise AssertionError(f"Schema '{name}' has no matching tool function in core.panos")
+    raise AssertionError(f"Schema '{name}' has no matching tool function")
 
 
 # ─── 1. Tool Contracts ───────────────────────────────────────────────
@@ -107,6 +115,88 @@ def test_executor_discloses_dropped_arguments():
     assert result.startswith("Device: fw-hq")
     assert "[EXECUTOR NOTE]" in result
     assert "zone" in result
+
+
+def test_yaml_tools_have_explicit_signatures_and_no_var_keyword():
+    """YAML commands with {placeholders} must expose explicit parameters to Gemini and reject unknown args."""
+    keeper = ToolKeeper()
+    all_tools = {t.__name__: t for t in keeper.get_all_tools()}
+
+    sess_src = all_tools["session_filter_source"]
+    sig = inspect.signature(sess_src)
+    assert "source" in sig.parameters
+    assert "target_device" in sig.parameters
+    assert not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    assert "source" in ToolExecutor.unsupported_args(all_tools["system_info"], {"source": "1.2.3.4"})
+    assert not ToolExecutor.unsupported_args(sess_src, {"source": "1.2.3.4"})
+
+
+def test_packet_walk_sp3_dnat_counter_logic():
+    """Verify SP3 counter-logic: DNAT triggers post-NAT FIB zone re-lookup, while Security Policy uses Pre-NAT IP + Post-NAT Zone."""
+    ifnet_xml = (
+        "<response status='success'><result><ifnet>"
+        "<entry><name>ethernet1/1</name><zone>outside</zone></entry>"
+        "<entry><name>ethernet1/2</name><zone>inside</zone></entry>"
+        "<entry><name>ethernet1/3</name><zone>dmz</zone></entry>"
+        "</ifnet></result></response>"
+    )
+    fib_src = "response:\n  result:\n    fibs:\n      entry:\n        interface: ethernet1/1\n        nh: 203.0.113.1\n"
+    fib_pre_dst = "response:\n  result:\n    fibs:\n      entry:\n        interface: ethernet1/1\n        nh: 203.0.113.1\n"
+    fib_post_dst = "response:\n  result:\n    fibs:\n      entry:\n        interface: ethernet1/3\n        nh: 0.0.0.0\n"
+    pbf_out = "response:\n  result: {}\n"
+    nat_out = (
+        "response:\n  result:\n    rules:\n      entry: Inbound-DNAT\n"
+        "    ip: 192.168.50.10:443\n"
+    )
+    sec_out = (
+        "response:\n  result:\n    rules:\n      entry:\n"
+        "        rule: Allow-Public-To-DMZ\n        action: allow\n        index: '3'\n"
+    )
+
+    def fake_fib(ip, virtual_router="default", target_device=None):
+        if ip == "198.51.100.5":
+            return fib_src
+        if ip == "203.0.113.20":
+            return fib_pre_dst
+        if ip == "192.168.50.10":
+            return fib_post_dst
+        return "response:\n  result: {}\n"
+
+    with patch("core.panos.ops._get_pool") as get_pool, \
+         patch("core.panos.ops.test_routing_fib", side_effect=fake_fib), \
+         patch("core.panos.ops.test_pbf_policy", return_value=pbf_out), \
+         patch("core.panos.ops.test_nat_policy", return_value=nat_out), \
+         patch("core.panos.ops.test_security_policy", return_value=sec_out) as mock_sec:
+        client = MagicMock()
+        client.execute_op.return_value = (200, ifnet_xml)
+        get_pool.return_value.get_client.return_value = client
+
+        out = panos_ops.test_packet_walk(
+            source="198.51.100.5",
+            destination="203.0.113.20",
+            port="443",
+            protocol="6",
+        )
+
+    # Security policy MUST be evaluated with Pre-NAT destination IP (203.0.113.20) + Post-NAT zone (dmz)
+    mock_sec.assert_called_once()
+    sec_kwargs = mock_sec.call_args.kwargs
+    assert sec_kwargs["destination"] == "203.0.113.20"
+    assert sec_kwargs["from_zone"] == "outside"
+    assert sec_kwargs["to_zone"] == "dmz"
+
+    # Evidence engine must extract packet_walk facts and NOT misclassify simulated query IP as OBSERVED on wire
+    receipt = {
+        "tool": "test_packet_walk",
+        "status": "success",
+        "args": {"source": "198.51.100.5", "destination": "203.0.113.20", "port": "443"},
+        "raw_output": out,
+    }
+    facts_str = "\n".join(build_facts([receipt], query="Can 198.51.100.5 reach 203.0.113.20 on 443?"))
+    assert "post-DNAT egress ethernet1/3 (final zone 'dmz') [Step 1]" in facts_str
+    assert "NAT policy match: rule 'Inbound-DNAT' -> DNAT destination 192.168.50.10 [Step 1]" in facts_str
+    assert "Security policy verdict (198.51.100.5 -> 203.0.113.20:443) [outside -> dmz]: rule 'Allow-Public-To-DMZ' (index 3) -> action ALLOW [Step 1]" in facts_str
+    assert "OBSERVED in device telemetry" not in facts_str
 
 
 # ─── 2. Outcome Classification ───────────────────────────────────────

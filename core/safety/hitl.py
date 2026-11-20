@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import threading
+import secrets
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -55,6 +56,9 @@ class ApprovalRequest:
     trace_id: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     channel_id: str = ""
+    # Per-request entropy: two identical writes in the same trace must get distinct IDs,
+    # otherwise the second overwrites the first in the pending queue.
+    nonce: str = field(default_factory=lambda: secrets.token_hex(8))
 
     @property
     def summary(self) -> str:
@@ -63,7 +67,7 @@ class ApprovalRequest:
 
     @property
     def request_id(self) -> str:
-        payload = f"{self.tool_name}:{json.dumps(self.tool_args, sort_keys=True)}:{self.trace_id}"
+        payload = f"{self.tool_name}:{json.dumps(self.tool_args, sort_keys=True)}:{self.trace_id}:{self.nonce}"
         return hmac.new(_HITL_SECRET, payload.encode(), hashlib.sha256).hexdigest()[:12]
 
 
@@ -201,10 +205,12 @@ class InteractiveHITLProvider:
     Fail-closed security: if timeout expires without approval, operation is denied.
     """
     def __init__(self, timeout_seconds: Optional[float] = None, **kwargs):
-        self.timeout_seconds = timeout_seconds or float(os.getenv("HITL_TIMEOUT_SECONDS", "60.0"))
+        # `is None` check: an explicit 0 means "fail-closed immediately", not "use default".
+        if timeout_seconds is None:
+            timeout_seconds = float(os.getenv("HITL_TIMEOUT_SECONDS", "60.0"))
+        self.timeout_seconds = max(0.0, float(timeout_seconds))
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
-        req_id = request.request_id
         event = threading.Event()
         pending = PendingApproval(
             request=request,
@@ -214,6 +220,12 @@ class InteractiveHITLProvider:
         )
 
         with _APPROVAL_LOCK:
+            # 48-bit IDs: P(collision among n pending) ~ n^2 / 2^49. Re-roll on the
+            # rare hit so uniqueness is guaranteed rather than probabilistic.
+            req_id = request.request_id
+            while req_id in _PENDING_APPROVALS:
+                request.nonce = secrets.token_hex(8)
+                req_id = request.request_id
             _PENDING_APPROVALS[req_id] = pending
 
         logger.info(
@@ -249,7 +261,9 @@ class InteractiveHITLProvider:
                 )
         finally:
             with _APPROVAL_LOCK:
-                _PENDING_APPROVALS.pop(req_id, None)
+                # Only remove OUR entry; never a different request that reused the key.
+                if _PENDING_APPROVALS.get(req_id) is pending:
+                    del _PENDING_APPROVALS[req_id]
 
     def get_mode(self) -> str:
         return "interactive"

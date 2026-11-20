@@ -21,7 +21,7 @@ vpn_comprehensive_status:
     - "show vpn ike-sa"
     - "show vpn ipsec-sa"
     - "show vpn tunnel"
-    - "show log system direction equal backward | match vpn"
+    - "show log system ( subtype eq vpn )"
   tags: ["#vpn", "#sec"]
 
   
@@ -42,7 +42,7 @@ userid_infrastructure_health:
     - "show user server-monitor state all"
     - "show user user-id-agent state all"
     - "show user group list"
-    - "show user ip-user-mapping all | match count"
+    - "show user ip-user-mapping all"
   tags: ["#sec", "#user-id"]
 
 
@@ -198,8 +198,8 @@ global_counters:
   tags: ["#net", "#troubleshoot"]
 
 global_counters_filter:
-  description: "Show global counters matching a specific string"
-  cmd: "show counter global | match {filter}"
+  description: "Show global counters matching a specific category/aspect"
+  cmd: "show counter global filter aspect {filter}"
   tags: ["#net", "#troubleshoot"]
 
 auth_logs:

@@ -777,6 +777,11 @@ def test_build_graph_non_l3_modes_and_enterprise_posture(mock_client_pool):
     assert posture["zone_modes"]["tap-zone"] == "tap"
 
     assert posture["interzone_default_action"] == "deny"
+    assert posture["intrazone_default_action"] == "allow"
+    assert posture["pbf_rules_count"] == 0
+    assert posture["nat_rules_count"] == 0
+    assert posture["decryption_rules_count"] == 0
+    assert posture["uninspected_allow_rules"] == []
     assert posture["threat_update_action"] == "download-only"
     assert "spyware:AlertOnly-Spyware:alert_on_crit_high" in posture["decorative_security_profiles"]
     assert "vulnerability:Weak-Vuln:missing_critical_block" in posture["decorative_security_profiles"]

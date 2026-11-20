@@ -3,12 +3,14 @@ PAN-OS Operational Commands Module
 Extracted from pan_tools.py — uses PanOSClientPool for multi-firewall support.
 
 Contains: execute_operational_command, test_security_policy, test_routing_fib,
-          test_nat_policy, get_telemetry_snapshot, get_device_inventory,
+          test_nat_policy, test_pbf_policy, test_packet_walk,
+          get_telemetry_snapshot, get_device_inventory,
           apply_dynamic_tag, capture_pcap.
 """
 
 import re
 import time
+import yaml
 import logging
 import ipaddress
 import threading
@@ -28,6 +30,7 @@ __all__ = [
     "test_routing_fib",
     "test_nat_policy",
     "test_pbf_policy",
+    "test_packet_walk",
     "get_telemetry_snapshot",
     "get_device_inventory",
     "apply_dynamic_tag",
@@ -330,10 +333,10 @@ def test_pbf_policy(
     destination_clean = destination.strip()
     port_clean = str(destination_port).strip() if destination_port else "443"
 
-    # Counter-logic defense: validate IP addresses/CIDRs
+    # Counter-logic defense: PBF match tests a single flow, so each side must be one host address
     for ip_val, name in [(source_clean, "source"), (destination_clean, "destination")]:
         try:
-            ipaddress.ip_network(ip_val, strict=False)
+            ipaddress.ip_address(ip_val)
         except ValueError:
             return f"ERROR: [test_pbf_policy] Invalid {name} IP address '{ip_val}'."
 
@@ -441,6 +444,254 @@ def test_nat_policy(source: str, destination: str, port: str,
             return f"ERROR: [test_nat_policy] PAN-OS returned HTTP {status}. {result[:500]}. NO NAT DATA WAS RETRIEVED."
     except Exception as e:
         return f"ERROR: [test_nat_policy] failed. Reason: {str(e)}. NO NAT DATA WAS RETRIEVED."
+
+
+def _find_yaml_val(obj, key: str):
+    """Depth-first helper to find the first scalar/dict value for key in parsed YAML."""
+    if isinstance(obj, dict):
+        if key in obj and obj[key] not in (None, ""):
+            return obj[key]
+        for v in obj.values():
+            found = _find_yaml_val(v, key)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_yaml_val(item, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _fetch_interface_zone_map(target_device: Optional[str] = None) -> dict:
+    """Queries <show><interface>all</interface></show> fail-softly to map interface -> zone."""
+    if_to_zone = {}
+    try:
+        client = _get_pool().get_client(target_device)
+        status, xml_out = client.execute_op("<show><interface>all</interface></show>")
+        if status == 200 and xml_out:
+            root = fromstring(xml_out)
+            for entry in root.findall(".//ifnet/entry"):
+                name = entry.findtext("name")
+                zone = entry.findtext("zone")
+                if name and zone and name.strip() and zone.strip():
+                    if_to_zone[name.strip()] = zone.strip()
+    except Exception as e:
+        logger.debug(f"[PacketWalk] Interface-to-zone lookup skipped: {e}")
+    return if_to_zone
+
+
+def test_packet_walk(
+    source: str = None,
+    destination: str = None,
+    port: str = "443",
+    protocol: str = "6",
+    from_zone: Optional[str] = None,
+    to_zone: Optional[str] = None,
+    application: Optional[str] = None,
+    virtual_router: str = "default",
+    target_device: Optional[str] = None,
+) -> str:
+    """
+    Executes a complete, deterministic PAN-OS Single-Pass Parallel Processing (SP3)
+    packet walk across Ingress FIB, Policy-Based Forwarding (PBF), Pre-NAT Routing FIB,
+    NAT Policy Evaluation, Post-DNAT Re-Routing, and Security Policy Evaluation.
+
+    Counter-Logic Enforced:
+    - Resolves Ingress Zone automatically from source IP FIB lookup if from_zone is omitted.
+    - Evaluates PBF before Virtual Router FIB.
+    - If Destination NAT (DNAT) mutates the destination IP, re-runs FIB lookup on the
+      translated destination IP to resolve the true Post-NAT Egress Interface and Post-NAT Zone.
+    - Evaluates Security Policy against the Pre-NAT Destination IP and Post-NAT Destination Zone.
+
+    Args:
+        source (str): Source IP address (e.g., '10.0.1.5'). Required.
+        destination (str): Destination IP address (e.g., '203.0.113.20'). Required.
+        port (str): Destination port number (1-65535). Default '443'.
+        protocol (str): IP protocol ('6' or 'tcp', '17' or 'udp', '1' or 'icmp'). Default '6'.
+        from_zone (str): Optional ingress security zone override.
+        to_zone (str): Optional egress security zone override.
+        application (str): Optional App-ID name (e.g., 'web-browsing', 'ssl').
+        virtual_router (str): Virtual router name (auto-discovered if 'default').
+        target_device (str): Target firewall alias from fleet inventory.
+    """
+    if not source or not str(source).strip():
+        return "ERROR: [test_packet_walk] source IP address is required."
+    if not destination or not str(destination).strip():
+        return "ERROR: [test_packet_walk] destination IP address is required."
+
+    source_clean = str(source).strip()
+    destination_clean = str(destination).strip()
+    port_clean = str(port).strip() if port else "443"
+
+    for ip_val, label in ((source_clean, "source"), (destination_clean, "destination")):
+        try:
+            ipaddress.ip_address(ip_val)
+        except ValueError:
+            return f"ERROR: [test_packet_walk] Invalid {label} IP address '{ip_val}'."
+
+    proto_map = {"tcp": "6", "udp": "17", "icmp": "1"}
+    proto_raw = str(protocol).strip().lower() if protocol else "6"
+    protocol_clean = proto_map.get(proto_raw, proto_raw)
+    if not re.match(r"^\d+$", protocol_clean) or not (1 <= int(protocol_clean) <= 255):
+        return f"ERROR: [test_packet_walk] Invalid protocol '{protocol}'."
+
+    if not re.match(r"^\d+$", port_clean) or not (1 <= int(port_clean) <= 65535):
+        return f"ERROR: [test_packet_walk] Invalid port number '{port_clean}'. Must be 1-65535."
+
+    if_to_zone = _fetch_interface_zone_map(target_device)
+
+    # 1. Ingress Zone & Interface Resolution
+    ingress_fib_raw = test_routing_fib(ip=source_clean, virtual_router=virtual_router, target_device=target_device)
+    ingress_fib_data = yaml.safe_load(ingress_fib_raw) if not ingress_fib_raw.startswith("ERROR:") else None
+    ingress_intf = _find_yaml_val(ingress_fib_data, "interface") or _find_yaml_val(ingress_fib_data, "egress-interface")
+    resolved_from_zone = (from_zone.strip() if from_zone and str(from_zone).strip() else None) or (
+        if_to_zone.get(str(ingress_intf)) if ingress_intf else None
+    )
+
+    # 2. PBF Lookup (evaluates before VR FIB)
+    pbf_raw = test_pbf_policy(
+        source=source_clean,
+        destination=destination_clean,
+        destination_port=port_clean,
+        protocol=protocol_clean,
+        from_zone=resolved_from_zone,
+        application=application,
+        target_device=target_device,
+    )
+    pbf_data = yaml.safe_load(pbf_raw) if not pbf_raw.startswith(("ERROR:", "PBF Policy Match: No PBF")) else None
+    pbf_rule = _find_yaml_val(pbf_data, "rule") if isinstance(pbf_data, dict) else None
+    pbf_egress_intf = _find_yaml_val(pbf_data, "egress-interface") if isinstance(pbf_data, dict) else None
+
+    # 3. Pre-NAT FIB Lookup on Destination IP
+    pre_fib_raw = test_routing_fib(ip=destination_clean, virtual_router=virtual_router, target_device=target_device)
+    if pre_fib_raw.startswith("ERROR:"):
+        return pre_fib_raw
+    pre_fib_data = yaml.safe_load(pre_fib_raw)
+    pre_fib_intf = _find_yaml_val(pre_fib_data, "interface") or _find_yaml_val(pre_fib_data, "egress-interface")
+    pre_fib_nh = _find_yaml_val(pre_fib_data, "next-hop") or _find_yaml_val(pre_fib_data, "nexthop")
+    effective_pre_nat_intf = str(pbf_egress_intf or pre_fib_intf or "") or None
+    pre_nat_to_zone = if_to_zone.get(effective_pre_nat_intf) if effective_pre_nat_intf else None
+
+    # 4. NAT Policy Evaluation
+    nat_raw = test_nat_policy(
+        source=source_clean,
+        destination=destination_clean,
+        port=port_clean,
+        protocol=protocol_clean,
+        from_zone=resolved_from_zone,
+        to_interface=effective_pre_nat_intf,
+        target_device=target_device,
+    )
+    nat_data = yaml.safe_load(nat_raw) if not nat_raw.startswith("ERROR:") else None
+    nat_rule = _find_yaml_val(nat_data, "rule") if isinstance(nat_data, dict) else None
+    if not nat_rule and isinstance(nat_data, dict):
+        rules_block = _find_yaml_val(nat_data, "rules")
+        if isinstance(rules_block, dict):
+            nat_rule = rules_block.get("entry") or rules_block.get("rule")
+        elif isinstance(rules_block, str):
+            nat_rule = rules_block
+
+    # Detect Destination NAT (DNAT) translated IP if present in NAT output
+    translated_dst_ip = None
+    if isinstance(nat_data, dict):
+        for candidate_key in ("destination", "translated-destination", "dst", "to", "ip"):
+            val = _find_yaml_val(nat_data, candidate_key)
+            if isinstance(val, str):
+                ip_cand = val.split(":")[0].split("/")[0].strip()
+                try:
+                    ipaddress.ip_address(ip_cand)
+                    if ip_cand != destination_clean and ip_cand != source_clean:
+                        translated_dst_ip = ip_cand
+                        break
+                except ValueError:
+                    continue
+
+    # 5. Post-DNAT Re-Routing (SP3 Counter-Logic: if DNAT mutated destination IP, re-evaluate FIB for Post-NAT Zone)
+    post_fib_intf = effective_pre_nat_intf
+    post_fib_nh = pre_fib_nh
+    if translated_dst_ip:
+        post_fib_raw = test_routing_fib(ip=translated_dst_ip, virtual_router=virtual_router, target_device=target_device)
+        if not post_fib_raw.startswith("ERROR:"):
+            post_fib_data = yaml.safe_load(post_fib_raw)
+            post_fib_intf = (
+                _find_yaml_val(post_fib_data, "interface")
+                or _find_yaml_val(post_fib_data, "egress-interface")
+                or effective_pre_nat_intf
+            )
+            post_fib_nh = (
+                _find_yaml_val(post_fib_data, "next-hop")
+                or _find_yaml_val(post_fib_data, "nexthop")
+                or pre_fib_nh
+            )
+
+    resolved_to_zone = (to_zone.strip() if to_zone and str(to_zone).strip() else None) or (
+        if_to_zone.get(str(post_fib_intf)) if post_fib_intf else pre_nat_to_zone
+    )
+
+    # 6. Security Policy Evaluation (Pre-NAT Destination IP + Post-NAT Destination Zone)
+    sec_raw = test_security_policy(
+        source=source_clean,
+        destination=destination_clean,
+        port=port_clean,
+        protocol=protocol_clean,
+        from_zone=resolved_from_zone,
+        to_zone=resolved_to_zone,
+        application=application,
+        target_device=target_device,
+    )
+    if sec_raw.startswith("ERROR:"):
+        return sec_raw
+    sec_data = yaml.safe_load(sec_raw)
+    sec_rule = _find_yaml_val(sec_data, "rule") or _find_yaml_val(sec_data, "rules")
+    sec_action = _find_yaml_val(sec_data, "action")
+    sec_index = _find_yaml_val(sec_data, "index") or _find_yaml_val(sec_data, "rule-idx")
+
+    walk_summary = {
+        "packet_walk": {
+            "flow": {
+                "source": source_clean,
+                "destination": destination_clean,
+                "effective_post_nat_destination": translated_dst_ip or destination_clean,
+                "port": port_clean,
+                "protocol": protocol_clean,
+                "application": application or "any",
+            },
+            "ingress_stage": {
+                "ingress_interface": ingress_intf or "unknown",
+                "from_zone": resolved_from_zone or "any",
+            },
+            "pbf_stage": {
+                "matched_rule": pbf_rule or "none",
+                "override_egress_interface": pbf_egress_intf or "none",
+            },
+            "pre_nat_fib_stage": {
+                "egress_interface": pre_fib_intf or "unknown",
+                "next_hop": pre_fib_nh or "0.0.0.0",
+                "egress_zone": pre_nat_to_zone or "unknown",
+            },
+            "nat_stage": {
+                "rule": nat_rule,
+                "translated_destination": translated_dst_ip,
+                "dnat_detected": bool(translated_dst_ip),
+            },
+            "post_nat_routing_stage": {
+                "post_nat_fib_performed": bool(translated_dst_ip),
+                "egress_interface": post_fib_intf or "unknown",
+                "next_hop": post_fib_nh or "0.0.0.0",
+                "final_to_zone": resolved_to_zone or "any",
+            },
+            "security_policy_stage": {
+                "evaluated_from_zone": resolved_from_zone or "any",
+                "evaluated_to_zone": resolved_to_zone or "any",
+                "evaluated_destination_ip": destination_clean,
+                "rule": sec_rule or "interzone-default/unmatched",
+                "action": sec_action or "unknown",
+                "index": sec_index,
+            },
+        }
+    }
+    return yaml.safe_dump(walk_summary, sort_keys=False)
 
 
 def execute_operational_command(

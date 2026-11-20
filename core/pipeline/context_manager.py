@@ -67,16 +67,14 @@ class ContextManager:
         if target_mode == "range":
             return None
 
-        if turn <= 0 or turn % self.COMPRESS_INTERVAL != 0 or history_length <= 6:
+        if turn <= 0 or turn == self.CHECKPOINT_TURN or turn % self.COMPRESS_INTERVAL != 0 or history_length <= 6:
             return None
 
-        logger.info(f"[{trace_id}] [COMPRESS] Injecting context summarization at Turn {turn+1}")
+        logger.info(f"[{trace_id}] [COMPRESS] Injecting state-focus anchor at Turn {turn+1}")
         return (
-            "\n\n[SYSTEM: CONTEXT CHECKPOINT. Summarize your observations so far in 3-5 bullet points. "
-            "State the original user query, key findings, and what remains unresolved. "
-            "This summary replaces the raw tool logs in your working memory. "
-            "This is NOT the final answer: in the same response, continue the investigation by calling "
-            "the next tool. Only deliver the final report once nothing material remains unresolved.]"
+            "\n\n[SYSTEM: STATE-FOCUS CHECKPOINT. Before your next tool call, keep working focus tight: "
+            "(1) proven facts with [Step N] receipts, (2) remaining unresolved state gap, and "
+            "(3) whether current evidence already suffices to terminate cleanly without wasted turns.]"
         )
 
     MAX_FILES_PER_TURN = 5
@@ -93,6 +91,9 @@ class ContextManager:
             if len(drive_files) >= self.MAX_FILES_PER_TURN:
                 break
             if not hasattr(part, 'function_response'):
+                continue
+            fname = getattr(part.function_response, 'name', None)
+            if isinstance(fname, str) and fname and fname != 'query_knowledge_base':
                 continue
             result_text = part.function_response.response.get('result', '')
             if not isinstance(result_text, str) or 'GEMINI_FILE_URI:' not in result_text:

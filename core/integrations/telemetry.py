@@ -30,7 +30,15 @@ class UsageTracker:
     def track(self, response, latency_ms=0, success=True, tray="#core",
               ops_count=0, trace_id="", tool_summary=""):
         """Extract token usage from response and log to console."""
-        p_tok, c_tok = 0, 0
+        def _to_int(val) -> int:
+            if isinstance(val, bool) or not isinstance(val, (int, float, str)):
+                return 0
+            try:
+                return max(0, int(val))
+            except (ValueError, TypeError):
+                return 0
+
+        p_tok, c_tok, t_tok = 0, 0, 0
         if response:
             usage = None
             if hasattr(response, 'usage_metadata'):
@@ -40,26 +48,39 @@ class UsageTracker:
 
             if usage:
                 if isinstance(usage, dict):
-                    p_tok = int(usage.get('prompt_token_count', 0) or 0)
-                    c_tok = int(usage.get('candidates_token_count', 0) or 0)
+                    p_tok = _to_int(usage.get('prompt_token_count', 0))
+                    c_tok = _to_int(usage.get('candidates_token_count', 0))
+                    t_tok = _to_int(usage.get('thoughts_token_count', 0))
                 else:
-                    p_tok = int(getattr(usage, 'prompt_token_count', 0) or 0)
-                    c_tok = int(getattr(usage, 'candidates_token_count', 0) or 0)
+                    p_tok = _to_int(getattr(usage, 'prompt_token_count', 0))
+                    c_tok = _to_int(getattr(usage, 'candidates_token_count', 0))
+                    t_tok = _to_int(getattr(usage, 'thoughts_token_count', 0))
 
-        if p_tok == 0 and c_tok == 0:
+        if p_tok == 0 and c_tok == 0 and t_tok == 0:
             return
 
+        # Thinking tokens are billed at the output rate.
         cost = (p_tok / 1_000_000 * self.price_input) + \
-               (c_tok / 1_000_000 * self.price_output)
+               ((c_tok + t_tok) / 1_000_000 * self.price_output)
 
         logger.info(
-            f"[USAGE] [{trace_id}] in={p_tok} out={c_tok} "
+            f"[USAGE] [{trace_id}] in={p_tok} out={c_tok} think={t_tok} "
             f"cost=${cost:.4f} tools=[{tool_summary}]"
         )
 
         if self.callback:
             try:
-                self.callback(self.model_name, p_tok, c_tok)
+                import inspect
+                sig = inspect.signature(self.callback)
+                params = list(sig.parameters.values())
+                has_var = any(
+                    p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                    for p in params
+                )
+                if has_var or len(params) >= 4:
+                    self.callback(self.model_name, p_tok, c_tok, t_tok)
+                else:
+                    self.callback(self.model_name, p_tok, c_tok + t_tok)
             except Exception as e:
                 logger.warning(f"Usage callback failed: {e}")
 
