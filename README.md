@@ -1,67 +1,68 @@
-# NEO — Symbiotic SSH + XML-API Cybersec Resident for PAN-OS
+# NEO — PAN-OS SSH & XML-API CLI Assistant
 
-NEO fuses an interactive **OpenSSH PTY (`TCP/22`)** and a persistent **PAN-OS XML-API channel (`TCP/443`)** into a single zero-port terminal session (`neo_cli.py`), powered by Google Gemini and deterministic Single-Pass Parallel Processing (SP3) path math.
+[![CI](https://github.com/FUEL-user-community/firewall-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/FUEL-user-community/firewall-ai/actions/workflows/ci.yml)
 
-Instead of bouncing between a live firewall SSH window and a separate API script, MCP chat client, or cloud dashboard, you work inside one native `admin@firewall>` / `#` prompt. Both channels terminate inside PAN-OS's `mgmtsrvr` daemon—giving you `0ms` native CLI `Tab`/`?` completion on the front channel while NEO queries FIB/PBF/NAT/Security Policy, inspects uncommitted candidate XML, scrubs credentials, stages `set` rules into `[edit]`, and gates `commit` against self-lockout on the back channel.
+NEO wraps a native **OpenSSH PTY (`TCP/22`)** and a persistent **PAN-OS XML-API client (`TCP/443`)** into a single local terminal process (`neo_cli.py`), combining deterministic PAN-OS Single-Pass Parallel Processing (SP3) checks with Google Gemini.
+
+You stay inside one `admin@firewall>` / `#` prompt with native `Tab`, `?`, and CLI history. Typing `@` at an idle prompt queries NEO with a credential-scrubbed window of recent SSH output, runs local XML-API diagnostics without LLM calls, checks candidate `set` syntax against the firewall's own `?` parser before staging, and evaluates candidate changes for self-lockout before `commit` executes.
 
 ---
 
-## Architecture: Dual-Plane Convergence on `mgmtsrvr`
+## Architecture
 
 ```text
-  [Operator Terminal: tmux / Remmina / WSL / Linux / macOS]
-                 │  stdin / stdout (tty.setraw <-> _cooked_guard + less -RFX)
+  [Operator Terminal: Linux / macOS / WSL / tmux]
+                 │  stdin / stdout (raw PTY <-> cooked prompts + less -RFX)
                  ▼
   ┌─────────────────────────────────────────────────────────────────────────┐
-  │ neo_cli.py (In-Process Resident) — ZERO listening network ports         │
-  │  • _SEALED_VAULT: consumes API keys once & purges os.environ pre-SSH    │
-  │  • Multi-encoding secret scrubber (raw, Base64, hex, URL, reversed)     │
-  │  • VT100 cursor/backspace folder + 8 KB scrubbed SSH output ring        │
+  │ neo_cli.py — local process, zero listening network ports                │
+  │  • Sealed credentials: loads .env/Vault once & purges os.environ        │
+  │  • Secret scrubber: redacts raw, Base64, hex, URL, and reversed forms   │
+  │  • Unified policy gate across API tools AND SSH-channel writes          │
+  │  • Hash-chained change provenance log (~/.neo/audit/neo_audit.jsonl)    │
   ├─────────────────────────────────┬───────────────────────────────────────┤
-  │ Front Plane: POSIX PTY master   │ Back Plane: PanOSClient (RLock)       │
-  │ Child /usr/bin/ssh (clean env)  │ Persistent HTTPS pan.xapi + Cert Pin  │
+  │ SSH Channel: POSIX PTY master   │ API Channel: PanOSClient (RLock)      │
+  │ Child /usr/bin/ssh (clean env)  │ HTTPS pan.xapi + optional cert pin    │
   └────────────────┬────────────────┴───────────────────┬───────────────────┘
                    │ TCP/22 (sshd -> cli)               │ TCP/443 (/api/)
                    └───────────────► mgmtsrvr ◄─────────┘
-                        (Shared Candidate XML DOM + Running SP3 State)
+                        (Shared Candidate XML + Running SP3 State)
 ```
 
 ---
 
-## Core Capabilities
+## What It Does
 
-- **Single-Prompt Symbiotic SSH (`--ssh`):** Wraps `/usr/bin/ssh` in a local POSIX PTY (`0ms` keystroke passthrough for `Tab`, `?`, `↑`/`↓` history, and pipes). Typing `@` at column `0` of any idle `>` or `#` prompt invokes NEO inline with the last 8 KB of credential-scrubbed SSH output automatically attached.
-- **Simultaneous Dual-Plane Dispatch (`+ @`) & Live Output Piping (`| @`):**
-  - `show system info + @ check traffic logs` — fires the SSH CLI command (auto-advancing `--more--` pages) and a background XML-API Gemini investigation simultaneously at `t = 0ms`, rendering clean non-interleaved output.
-  - `show routing route | @ any blackhole or asymmetric routes?` — drains the SSH command first and pipes its scrubbed output directly into NEO's turn context.
-- **`$0.00` Deterministic SP3 & Candidate Audits (Zero LLM Tokens):**
-  - `@walk <src> <dst> [port] [proto]` — executes full PAN-OS SP3 path math (`Ingress FIB -> PBF -> Pre-NAT FIB -> NAT -> Post-DNAT FIB -> Security Policy`), filtering outbound SNAT false positives and warning whenever uncommitted `[edit]` edits exist.
-  - `@diff` — audits uncommitted `[edit]` candidate XML at `$0.00` for management self-lockout, MGT IP/gateway drift, `interzone-default: deny` active-flow severance, and `application:any` / `service:any` / uninspected `allow` rules.
-  - `@macro [list|<name>]` — runs composite multi-command sweeps from `config/commands.yaml` at `$0.00`.
-- **Direct `[edit]` Candidate Injection (`@stage`):** Extracts only `set`/`move`/`rename`/`delete` lines (stripping `commit`, `request`, `debug`, `exit`), normalizes PAN-OS 10.0 `[ a b ]` list brackets, writes lines directly into your active SSH `[edit]` session via `master_fd` (avoiding `config-lock` conflicts across admin sessions), and aborts mid-batch immediately if PAN-OS echoes `Invalid syntax` or `Unknown command`.
-- **`$0.00` Pre-Commit Sanctuary Gate (`commit`):** Intercepts typed, `Tab`-completed, history-recalled, backspaced, or pasted `commit` commands in `#` mode and evaluates `core/panos/sanctuary.py` over XML-API *before* `\r` reaches `mgmtsrvr`.
-- **90 Verified PAN-OS Tools & Entitlement Awareness:** Dynamic tray mounting (`#core` plus `#sys`, `#net`, `#sec`, `#vpn`, `#ops`, `#troubleshoot`, `#ha`, `#routing`, `#l2`, `#user-id`), `Cartographer` (`map_home_topology`), End-of-Life OS (`<= 10.1`) detection, and explicit separation of expired Threat/WildFire/URL subscriptions from working base-OS controls (`App-ID`, `Zone Protection`, `File Blocking`, `DAG`, `MGT permitted-ip`).
-- **Receipt Referee & Constitutional Self-Forging (`slot_forge`):** `core/pipeline/evidence.py` validates `[Step N]` citations against real tool receipts in forensic/CAB export modes, while `core/forge/slot_mutator.py` + `core/forge/laws.py` allow in-memory tool/macro evolution gated by AST constitutional checks, `pytest`, and terminal `[y/N]` diff approval.
+- **Inline SSH Wrapper (`--ssh`):** Runs real OpenSSH inside a local POSIX PTY (`0ms` passthrough for `Tab`, `?`, history, and pipes). Typing `@` at column `0` of an idle `>` or `#` prompt invokes NEO with the last 8 KB of scrubbed SSH output attached.
+- **Concurrent (`+ @`) & Piped (`| @`) Execution:**
+  - `test security-policy-match ... + @ why is this flow still failing?` — runs the SSH command immediately while querying the XML-API (including a 6-stage SP3 cross-check for Post-DNAT zone shifts and PBF overrides) in a background thread.
+  - `show routing route | @ check for asymmetric or blackhole paths` — runs the SSH command first and pipes its scrubbed output into NEO.
+- **Syntax-Checked Candidate Staging (`@stage`):** Strips `commit`/`request`/`debug`/`exit`, normalizes PAN-OS `[ a b ]` list brackets, probes each candidate line against the firewall's live `?` CLI parser (`Ctrl+C` line-clear, zero partial mutations on syntax error), requires explicit `[y/N]` re-approval if NEO repairs a rejected line, and warns on Panorama-managed firewalls.
+- **Scope-Aware Pre-Commit Safety Check (`commit`):** Intercepts `commit`, `commit force`, and `commit partial admin <name>` in `#` mode to check candidate XML for management `permitted-ip` self-lockout, MGT IP/gateway drift, and uncovered `interzone-default: deny` severance before `\r` reaches `mgmtsrvr`. Offers `commit description "NEO-assisted <trace>"` when committing NEO-staged lines.
+- **Bounded `packet-diag` Counter Delta (`@diag`):** Runs a bidirectional (`src <-> dst`) packet-filtered `show counter global filter packet-filter yes delta yes` + session sample from either `>` or `#` mode (requires `@write diag`), disarming `filter off`, `capture off`, and `clear filter` inside `finally:` even on `Ctrl+C`.
+- **Local SP3 Packet Walk & Candidate Review (`@walk`, `@diff`, `@macro`):** Evaluates `Ingress FIB -> PBF -> Pre-NAT FIB -> NAT -> Post-DNAT FIB -> Security Policy` with zero LLM calls, plus a best-effort pre-commit candidate `[edit]` comparison when uncommitted changes exist.
+
+## What It Does Not Do
+
+- **Never commits autonomously:** `commit` is never injected by `@stage` or any API tool.
+- **Never mutates SSH or API state in `READ_ONLY`:** Both XML-API write tools and SSH-channel writes (`@stage`, `@diag`) are blocked until elevated with `@write on` (and `@write diag` for `packet-diag`), with `[y/N]` confirmation on every action.
+- **No background network listener:** Binds zero TCP/HTTP/WebSocket ports.
+- **Self-patching disabled by default:** Experimental runtime tool/macro self-patching (`slot_forge`) and Drive board sync (`board_ops`) are off unless `NEO_ENABLE_FORGE=1` is explicitly set.
 
 ---
 
 ## Quick Start
 
-### 1. Requirements & Installation
-- Python `3.11+`
-- PAN-OS firewall (`10.0.x`, `10.1.x`, `10.2.x`, `11.x`) reachable via HTTPS XML-API (and SSH for `--ssh` mode)
-- Google Gemini API key
+### 1. Install
+
+Requires Python `3.10+`, a PAN-OS firewall (`10.0.x`–`11.x`) reachable over HTTPS (and SSH for `--ssh`), and a Google Gemini API key.
 
 ```bash
 git clone https://github.com/FUEL-user-community/firewall-ai.git
 cd firewall-ai
 
 python3 -m venv venv
-# Linux / macOS / WSL:
-source venv/bin/activate
-# Windows PowerShell:
-venv\Scripts\Activate.ps1
-
+source venv/bin/activate        # Windows PowerShell: venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 cp .env.example .env
 ```
@@ -76,84 +77,95 @@ PANOS_API_KEY=your-panos-api-key
 PANOS_VERIFY_SSL=false
 ```
 
-For multi-firewall fleets or alias binding (`fw-hq`), edit `config/devices.yaml` with per-device IPs, labels, optional virtual routers (auto-discovered if omitted), and optional SHA-256 `ssl_fingerprint` pins.
+For named device aliases (`fw-hq`), multiple firewalls, or SHA-256 `ssl_fingerprint` certificate pinning, edit `config/devices.yaml`. For HashiCorp Vault AppRole setup, see [VAULT_GUIDE.md](VAULT_GUIDE.md).
 
-### 3. Verify & Launch
+### 3. Verify & Run
 
 ```bash
-# 1. Pre-flight check (vault seal, model ID validation, fleet reachability, 90-tool registry)
+# Pre-flight check (credential seal, model ID, firewall reachability, tool catalog)
 python3 neo_cli.py --check
 
-# 2. Persistent tmux Symbiotic SSH session (Linux / WSL / macOS — mouse scroll enabled)
+# Persistent tmux SSH session (Linux / macOS / WSL — mouse scroll enabled)
 ./neo_tmux.sh
 
-# 3. Direct Single-Prompt Symbiotic SSH without tmux (alias from devices.yaml or user@ip)
+# Direct SSH wrapper without tmux
 python3 neo_cli.py --ssh fw-hq
 python3 neo_cli.py --ssh admin@192.168.1.254
 
-# 4. Standalone Resident REPL (Windows / Linux / macOS — commands use '/' prefix)
+# Standalone REPL (Windows / Linux / macOS — commands use '/' prefix)
 python neo_cli.py
 
-# 5. Headless one-shot execution
-python neo_cli.py -q "map my home topology and audit uninspected allow rules"
+# Single headless query
+python neo_cli.py -q "check management permitted-ip and expired licenses"
 ```
 
 ---
 
-## Operator Command Reference
+## Command Reference
 
-Inside `--ssh` mode, type `@` at column `0` of an idle `>` or `#` prompt (in standalone REPL mode, use `/` instead of `@`):
+Inside `--ssh` mode, type `@` at column `0` of an idle `>` or `#` prompt (in standalone mode, use `/` instead of `@`):
 
-| Command | Cost | Description |
+| Command | Execution | Description |
 | :--- | :--- | :--- |
-| `<panos_cli>` | `$0.00` | Native `0ms` OpenSSH passthrough (`Tab`, `?`, `↑`/`↓` history, pipes). |
-| `@ <question>` | Gemini | Inline Resident turn (10-turn memory + scrubbed 8 KB SSH output ring). |
-| `<cmd> + @ <question>` | Gemini / `$0.00` | Run SSH `<cmd>` and NEO query simultaneously at `t = 0ms`. |
-| `<cmd> \| @ <question>` | Gemini | Run SSH `<cmd>` first and pipe its scrubbed output directly into NEO. |
-| `@walk <s> <d> [p] [pr]` | `$0.00` | Deterministic SP3 packet walk (`FIB -> PBF -> NAT -> Security Policy`). |
-| `@diff` | `$0.00` | Pre-commit candidate XML audit (lockout, severance, permissive rules). |
-| `@macro [list\|<name>]` | `$0.00` | Execute any composite macro or read-only tool from `config/commands.yaml`. |
-| `@stage` | `$0.00` | Validate & inject candidate `set`/`move`/`rename`/`delete` lines into `[edit]`. |
-| `commit` (in `#` mode) | `$0.00` | Automatic Pre-Commit Sanctuary check before `\r` reaches `mgmtsrvr`. |
-| `@write [on\|off\|status]` | `$0.00` | Toggle `PolicyEngine` `READ_WRITE` / `READ_ONLY` in-session (`[y/N]` HITL active). |
-| `@audit <question>` | Gemini | Strict forensic mode with code-computed `Device Facts` & `[Step N]` referee. |
-| `@why` / `@raw <N>` / `@mem` | `$0.00` | View `<REASONING>` trace, raw XML/YAML receipt `#N`, or session memory. |
-| `@board` / `@forge` / `@export` | `$0.00` | Sync Stigmergic Board, inspect `#core` / RAM patches, or save CAB `.md` report. |
-| `@reset` / `@help` | `$0.00` | Clear rolling resident session memory or show command help. |
+| `<panos_cli>` | Local | Native `0ms` OpenSSH passthrough (`Tab`, `?`, history, pipes). |
+| `@ <question>` | Gemini | Ask NEO inline (attaches scrubbed 8 KB SSH output window). |
+| `<cmd> + @ <question>` | Gemini | Run SSH `<cmd>` immediately while NEO queries the XML-API in parallel. |
+| `<cmd> \| @ <question>` | Gemini | Run SSH `<cmd>` first, then pass its scrubbed output to NEO. |
+| `@walk <s> <d> [p] [pr]` | Local | SP3 packet walk across committed state (+ candidate `[edit]` approximation if edited). |
+| `@diff` | Local | Pre-commit review of uncommitted candidate XML changes. |
+| `@macro [list\|<name>]` | Local | Run a read-only multi-command bundle from `config/commands.yaml`. |
+| `@stage` | Local | Syntax-check candidate `set`/`move`/`rename`/`delete` lines via `?` and inject into `[edit]` (needs `@write on`). |
+| `@diag <s> <d> [p] [t]` | Local | Bounded `packet-diag` + hardware drop-counter delta; always disarms filters (needs `@write diag`). |
+| `commit` (in `#` mode) | Local | Scope-aware pre-commit safety check before `\r` reaches `mgmtsrvr`. |
+| `@write [on\|diag\|off\|status]` | Local | Control session write policy across API tools, `@stage`, and `@diag`. |
+| `@log [N]` | Local | Show recent change-provenance entries and verify the SHA-256 hash chain. |
+| `@audit <question>` | Gemini | Formal report mode with code-computed `Device Facts` and `[Step N]` citation checks. |
+| `@why` / `@raw <N>` / `@mem` | Local | View `<REASONING>` trace, raw XML/YAML receipt `#N`, or 10-turn session memory. |
+| `@export [file.md]` | Local | Save the last turn as a change-review Markdown report. |
+| `@reset` / `@help` | Local | Clear session memory or print command help. |
 
-Outputs taller than the terminal viewport automatically open in `less -RFX` (`↑`/`↓`/`PgUp`/`PgDn`/mouse wheel to scroll, `q` to return to the firewall prompt; set `NEO_PAGER=0` to disable).
-
----
-
-## Security & Key Isolation
-
-1. **Zero Open Network Ports:** Runs strictly in-process inside your local terminal—no HTTP/WebSocket listener is ever bound.
-2. **Consume-Once `_SEALED_VAULT` (`core/integrations/secrets.py`):** Secrets are loaded once at startup, `chmod 600` is enforced on `.env` / `devices.yaml`, and `PANOS_API_KEY*`, `GEMINI_API_KEY`, and Vault/cloud tokens are deleted from `os.environ` before `/usr/bin/ssh` or Turn 1 spawns.
-3. **Multi-Encoding Output & SSH Scrubbing (`core/safety/scrubber.py`):** Runtime secrets are fingerprinted and redacted across raw, Base64, hex, URL-encoded, and reversed (`[::-1]`) forms across all tool receipts and SSH ring captures (`pre-shared-key`, `phash`, `password`, `LUFRPT`, `AIza` lines dropped before LLM egress).
-4. **Layered Write & Sanctuary Governance:** Defaults to `READ_ONLY`. Write-capable API tools (`apply_dynamic_tag`, `capture_pcap`, elevated `clear session id`) require both `READ_WRITE` elevation (`@write on`) and interactive `[y/N]` terminal HITL approval, while Sanctuary blocks tagging firewall MGT or active admin session IPs.
-5. **Constitutional Self-Patch Ring (`core/forge/laws.py`):** Blocks autonomous `slot_forge` mutations from touching `neo_cli.py`, `sanctuary.py`, `secrets.py`, `scrubber.py`, `policy_engine.py`, `hitl.py`, `client.py`, `evidence.py`, or `tests/`, and rejects credential/network exfiltration AST primitives.
+Outputs taller than the terminal automatically open in `less -RFX` (`q` to return to the prompt; set `NEO_PAGER=0` to disable).
 
 ---
 
-## Repository Structure
+## Safety & Change Provenance
+
+1. **Unified Write Policy (`PolicyEngine`):** Defaults to `READ_ONLY` across both the XML-API and SSH channels. `@stage` requires `@write on` + `[y/N]` approval; `@diag` additionally requires `@write diag`.
+2. **Hash-Chained Provenance Log (`core/safety/audit_log.py`):** Because PAN-OS attributes `@stage` lines to the logged-in SSH admin, NEO records proposals, operator approvals/rejections, injected lines, `@diag` runs, and commit checks in `~/.neo/audit/neo_audit.jsonl` (`chmod 600`, scrubbed, SHA-256 hash-chained, verifiable via `@log`) and offers `commit description "NEO-assisted <trace>"` on bare commits.
+3. **Consume-Once Credential Seal (`core/integrations/secrets.py`):** Loads secrets once into an in-process store, enforces `0600` permissions on `.env` / `devices.yaml`, and deletes secret env vars from `os.environ` before spawning `ssh`.
+4. **Multi-Encoding Scrubbing (`core/safety/scrubber.py`):** Redacts registered secrets across raw, Base64, hex, URL-encoded, and reversed forms across tool outputs, SSH captures, and audit logs.
+
+---
+
+## Known Limitations
+
+- **Candidate `[edit]` walk is an approximation:** PAN-OS has no native CLI/API command to test uncommitted candidate rules. `evaluate_candidate_packet_walk()` models `/config/shared` and `vsys` XML in Python and returns `INDETERMINATE` whenever a rule above the match depends on runtime state (FQDNs, Dynamic Address Groups, EDLs, regions, or unmapped App-ID default ports). Commit + live `test security-policy-match` remains authoritative.
+- **`?` checks syntax, not object references:** Live `?` probing catches invalid CLI grammar/keywords for the exact PAN-OS version before lines enter `[edit]`, while nonexistent zone or address-object names are validated by PAN-OS at `validate` / `commit` time.
+- **Shared-candidate race window:** On multi-admin or Panorama-managed firewalls, another admin or push can modify the shared candidate configuration between the pre-commit check and `commit` execution.
+- **Single-device POSIX PTY:** `--ssh` wraps one SSH session per process and requires Linux, macOS, or Windows WSL (`pty` stdlib). Native Windows PowerShell supports standalone REPL (`python neo_cli.py`) and `-q` modes.
+
+---
+
+## Repository Layout
 
 | Path | Role |
 | :--- | :--- |
-| `neo_cli.py`, `neo_tmux.sh` | Symbiotic SSH PTY multiplexer, standalone REPL, pager, and staging engine. |
-| `core/brain.py` | Multi-turn Gemini cognitive loop, rolling resident memory, and quota/budget guards. |
-| `core/panos/` | `client.py` (TLS/fingerprint `xapi` pool), `ops.py` (SP3 math & ops), `sanctuary.py` (pre-commit gate), `cartographer.py` (topology/EoL graph), `logs.py`, `config.py`, `research.py`. |
+| `neo_cli.py`, `neo_tmux.sh` | SSH PTY wrapper, standalone REPL, syntax prober, `packet-diag` runner, and pager. |
+| `core/brain.py` | Multi-turn Gemini loop, 10-turn session memory, and budget/circuit-breaker integration. |
+| `core/panos/` | `client.py` (TLS/pinning `xapi` pool), `ops.py` (SP3 walks & ops), `sanctuary.py` (pre-commit & candidate checks, Panorama detection), `cartographer.py` (topology & EoL), `logs.py`, `config.py`, `research.py`. |
 | `core/pipeline/` | `tool_keeper.py`, `tool_executor.py`, `tool_schemas.py`, `evidence.py`, `outcomes.py`, `prompt_assembler.py`, `model_config.py`, `context_manager.py`, `synthesizer.py`. |
-| `core/safety/` | `policy_engine.py`, `hitl.py`, `command_filter.py`, `scrubber.py`, `budget_guard.py`, `circuit_breaker.py`. |
-| `core/forge/` | `laws.py` (constitutional AST/path ring), `slot_mutator.py` (zero-disk live patching), `crucible.py`, `state_store.py`. |
-| `core/integrations/` | `secrets.py` (sealed vault / Vault / GCP / AWS / Azure), `gdrive_client.py`, `drive_knowledge.py`, `board_sync.py`, `google_export.py`, `telemetry.py`. |
-| `config/` | `prompts.yaml` (SHA-256 pinned resident kernel), `commands.yaml` (operational tool & macro catalog), `devices.yaml` (fleet inventory; API keys stored in vault/env). |
-| `tests/` | `388`-test suite covering key sealing, PTY staging/folding, Sanctuary gates, dual-plane concurrency, SP3 math, and constitutional boundaries. |
+| `core/safety/` | `policy_engine.py`, `hitl.py`, `command_filter.py`, `scrubber.py`, `audit_log.py` (hash-chained provenance), `budget_guard.py`, `circuit_breaker.py`. |
+| `core/integrations/` | `secrets.py` (dotenv / Vault / GCP / AWS / Azure), `gdrive_client.py`, `drive_knowledge.py`, `board_sync.py`, `google_export.py`, `telemetry.py`. |
+| `core/forge/` | Opt-in (`NEO_ENABLE_FORGE=1`) sandboxed tool staging (`laws.py`, `slot_mutator.py`, `crucible.py`, `state_store.py`). |
+| `config/` | `prompts.yaml` (SHA-256 pinned system prompt), `commands.yaml` (88-tool catalog), `devices.yaml` (device inventory). |
+| `tests/` | `406`-test suite covering credential sealing, unified write policy, PTY `?` syntax probing, provenance hash chains, candidate SP3 tri-state logic, and safety gates. |
 
 ---
 
-## Running Tests
+## Testing & Linting
 
 ```bash
+ruff check .
 python -m pytest -q
 ```
 

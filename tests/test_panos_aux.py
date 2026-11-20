@@ -1,6 +1,5 @@
 import os
 import unittest.mock as mock
-import pytest
 from core.panos.client import PanOSClient
 from core.panos.interceptors import CommandRouter, CommandType
 from core.panos.logs import (

@@ -430,7 +430,7 @@ def fetch_running_config_xml(target_device: str = None) -> str:
         if isinstance(client, PanOSClient):
             status_code, result = client.execute_export(category="configuration")
             if status_code != 200:
-                return f"ERROR: [fetch_running_config_xml] Failed to export configuration"
+                return "ERROR: [fetch_running_config_xml] Failed to export configuration"
         else:
             client.fw.xapi.export(category="configuration")
             result = client.fw.xapi.xml_result()

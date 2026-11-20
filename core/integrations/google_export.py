@@ -60,7 +60,7 @@ def sanitize_mermaid_labels(text: str) -> str:
         block = match.group(1)
         cleaned = re.sub(
             r"\|([^|\n]+)\|",
-            lambda m: f"|{re.sub(r'\s+', ' ', m.group(1).replace('(', ' - ').replace(')', '')).strip()}|",
+            lambda m: "|" + " ".join(m.group(1).replace("(", " - ").replace(")", "").split()) + "|",
             block,
         )
         return f"```mermaid\n{cleaned}\n```"

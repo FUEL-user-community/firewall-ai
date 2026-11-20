@@ -714,3 +714,722 @@ def test_spark_google_doc_export_and_extensionless_board_ingest():
     mock_drive.download_bytes.assert_called_once_with(
         "doc-id-123", mime_type="application/vnd.google-apps.document"
     )
+
+
+def test_pty_grammar_oracle_passes_valid_and_blocks_hallucinated_syntax_with_live_completions():
+    """
+    Verify `probe_pty_cli_grammar` probes PAN-OS CLI with `?` + `Ctrl+C` (`\\x03`) without executing `\\r`,
+    and on syntax error walks prefixes to extract live valid completions for this exact PAN-OS build.
+    """
+    written_payloads = []
+    # Sequence of PTY reads for:
+    # 1) valid pass test: `top\r` -> `cmd?` -> `\x03`
+    pass_reads = [
+        b"top\r\nadmin@firewall-a# ",
+        b"  <cr>\r\nadmin@firewall-a# set deviceconfig system timezone UTC",
+        b"^C\r\nadmin@firewall-a# ",
+    ]
+
+    def fake_select_pass(rlist, *_args):
+        return (rlist if pass_reads else [], [], [])
+
+    with patch("select.select", side_effect=fake_select_pass), \
+         patch("os.write", side_effect=lambda _fd, b: written_payloads.append(b) or len(b)), \
+         patch("os.read", side_effect=lambda _fd, _n: pass_reads.pop(0)):
+        res_ok = neo_cli.probe_pty_cli_grammar(
+            master_fd=77,
+            commands=["set deviceconfig system timezone UTC"],
+            current_mode="config",
+        )
+
+    assert res_ok["passed"] is True
+    assert res_ok["verified_count"] == 1
+    assert b"set deviceconfig system timezone UTC?" in written_payloads
+    assert b"\x03" in written_payloads
+    # Must NEVER execute the candidate command with \r during grammar probe!
+    assert b"set deviceconfig system timezone UTC\r" not in written_payloads
+
+    # 2) Hallucinated 11.x token `source-imsi` rejected by 10.0.12-h3 `?` parser:
+    written_fail = []
+    fail_reads = [
+        b"configure\r\nEntering configuration mode\r\nadmin@firewall-a# ",
+        # Full line `?` returns Invalid syntax
+        b"\r\nInvalid syntax.\r\nadmin@firewall-a# set rulebase security rules r1 source-imsi any",
+        b"^C\r\nadmin@firewall-a# ",
+        # Reverse step 1 (`... source-imsi ?`) still Invalid syntax
+        b"\r\nInvalid syntax.\r\nadmin@firewall-a# set rulebase security rules r1 source-imsi ",
+        b"^C\r\nadmin@firewall-a# ",
+        # Reverse step 2 (`set rulebase security rules r1 ?`) succeeds and lists valid 10.0.12-h3 tokens!
+        (
+            b"\r\n  action          Specify action\r\n"
+            b"  application     Specify application\r\n"
+            b"  destination     Specify destination\r\n"
+            b"  from            Specify source zone\r\n"
+            b"  service         Specify service\r\n"
+            b"  source          Specify source address\r\n"
+            b"  to              Specify destination zone\r\n"
+            b"admin@firewall-a# set rulebase security rules r1 "
+        ),
+        b"^C\r\nadmin@firewall-a# ",
+    ]
+
+    with patch("select.select", side_effect=lambda r, *_a: (r if fail_reads else [], [], [])), \
+         patch("os.write", side_effect=lambda _fd, b: written_fail.append(b) or len(b)), \
+         patch("os.read", side_effect=lambda _fd, _n: fail_reads.pop(0)):
+        res_bad = neo_cli.probe_pty_cli_grammar(
+            master_fd=77,
+            commands=["set rulebase security rules r1 source-imsi any"],
+            current_mode="op",
+        )
+
+    assert res_bad["passed"] is False
+    assert res_bad["failed_index"] == 1
+    assert res_bad["invalid_token"] == "source-imsi"
+    assert res_bad["valid_prefix"] == "set rulebase security rules r1"
+    assert "source" in res_bad["valid_completions"]
+    assert "application" in res_bad["valid_completions"]
+
+
+def test_stage_pty_grammar_self_correction_loop(capsys):
+    """
+    Verify `@stage` blocks hallucinated syntax BEFORE mutating `[edit]`, feeds live `?` tokens back
+    into NEO when approved, re-verifies `PASS`, and stages only the repaired command.
+    """
+    fake_brain = MagicMock()
+    fake_brain.policy.mode = "READ_WRITE"
+    state_box = {
+        "last_query": "lock down rule",
+        "last_result": {
+            "verdict": "```panos\nset rulebase security rules r1 source-imsi any\n```",
+            "receipts": [],
+            "reasoning": [],
+            "trace_id": "t-gram-1",
+        },
+    }
+
+    probe_results = [
+        {
+            "passed": False,
+            "prep_failed": False,
+            "failed_index": 1,
+            "failed_line": "set rulebase security rules r1 source-imsi any",
+            "error": "Invalid syntax",
+            "valid_prefix": "set rulebase security rules r1",
+            "invalid_token": "source-imsi",
+            "valid_completions": ["source", "destination", "application", "service", "action"],
+        },
+        {"passed": True, "verified_count": 1},
+    ]
+
+    repair_prompts = []
+
+    def fake_brain_turn(_brain, prompt, **_kw):
+        repair_prompts.append(prompt)
+        return {
+            "verdict": "```panos\nset rulebase security rules r1 source any action allow\n```",
+            "receipts": [],
+            "reasoning": [],
+            "trace_id": "t-gram-2",
+        }
+
+    staged_calls = []
+
+    with patch("builtins.input", side_effect=["y", "y", "y"]), \
+         patch("neo_cli.probe_pty_cli_grammar", side_effect=probe_results), \
+         patch("neo_cli._execute_brain_turn", side_effect=fake_brain_turn), \
+         patch(
+             "neo_cli.stage_lines_to_pty_master",
+             side_effect=lambda fd, cmds, **kw: staged_calls.append((fd, cmds, kw)) or (True, "Injected 1 line."),
+         ):
+        handled = neo_cli._dispatch_shared_meta_command(
+            "stage",
+            brain=fake_brain,
+            state_box=state_box,
+            target_device="fw-hq",
+            symbiotic=True,
+            pty_master_fd=91,
+            pty_prompt_mode="config",
+        )
+
+    assert handled is True
+    assert len(repair_prompts) == 1
+    assert "source-imsi" in repair_prompts[0]
+    assert "source, destination, application, service, action" in repair_prompts[0]
+    assert len(staged_calls) == 1
+    assert staged_calls[0][1] == ["set rulebase security rules r1 source any action allow"]
+    assert staged_calls[0][2]["skip_prep"] is True
+    out = capsys.readouterr().out
+    assert "BLOCKED BEFORE INJECTION" in out
+    assert "[syntax] PASS — repaired 1/1 line(s)" in out
+
+
+def test_candidate_packet_walk_simulates_uncommitted_dnat_post_nat_zone_and_shadow_rule(capsys):
+    """
+    Verify `evaluate_candidate_packet_walk` & `@walk` simulate uncommitted `[edit]` candidate XML
+    (named address objects, candidate DNAT -> Post-DNAT zone shift, `application-default` port math,
+    and shadow-rule warnings) side-by-side against committed running policy.
+    """
+    from core.panos import ops as panos_ops
+
+    vsys_xml = """
+    <response status="success"><result><entry name="vsys1">
+      <zone>
+        <entry name="Untrust"><network><layer3><member>ethernet1/1</member></layer3></network></entry>
+        <entry name="Trust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+        <entry name="DMZ"><network><layer3><member>ethernet1/3</member></layer3></network></entry>
+      </zone>
+      <address>
+        <entry name="Pub-VIP"><ip-netmask>203.0.113.20/32</ip-netmask></entry>
+        <entry name="DMZ-Web"><ip-netmask>192.168.50.10/32</ip-netmask></entry>
+      </address>
+      <rulebase>
+        <nat><rules>
+          <entry name="Stage-Inbound-DNAT">
+            <from><member>Untrust</member></from>
+            <to><member>Untrust</member></to>
+            <source><member>any</member></source>
+            <destination><member>Pub-VIP</member></destination>
+            <service>service-https</service>
+            <destination-translation><translated-address>DMZ-Web</translated-address></destination-translation>
+          </entry>
+        </rules></nat>
+        <security><rules>
+          <entry name="Allow-HTTPS-DMZ">
+            <from><member>Untrust</member></from>
+            <to><member>DMZ</member></to>
+            <source><member>any</member></source>
+            <destination><member>Pub-VIP</member></destination>
+            <application><member>ssl</member></application>
+            <service><member>application-default</member></service>
+            <action>allow</action>
+          </entry>
+          <entry name="Late-Deny-Shadowed">
+            <from><member>Untrust</member></from>
+            <to><member>DMZ</member></to>
+            <source><member>any</member></source>
+            <destination><member>any</member></destination>
+            <application><member>any</member></application>
+            <service><member>any</member></service>
+            <action>deny</action>
+          </entry>
+        </rules></security>
+      </rulebase>
+    </entry></result></response>
+    """
+    net_xml = """
+    <response status="success"><result><network>
+      <virtual-router><entry name="default">
+        <routing-table><ip><static-route>
+          <entry name="dmz-subnet">
+            <destination>192.168.50.0/24</destination>
+            <interface>ethernet1/3</interface>
+          </entry>
+        </static-route></ip></routing-table>
+      </entry></virtual-router>
+    </network></result></response>
+    """
+    ifnet_xml = (
+        "<response status='success'><result><ifnet>"
+        "<entry><name>ethernet1/1</name><zone>Untrust</zone></entry>"
+        "<entry><name>ethernet1/2</name><zone>Trust</zone></entry>"
+        "<entry><name>ethernet1/3</name><zone>DMZ</zone></entry>"
+        "</ifnet></result></response>"
+    )
+
+    fake_client = MagicMock()
+    fake_client.execute_op.return_value = (200, ifnet_xml)
+    fake_client.execute_get.side_effect = lambda xpath: (
+        (200, vsys_xml) if "vsys" in xpath else (200, net_xml)
+    )
+
+    def fake_fib(ip, virtual_router="default", target_device=None):
+        if ip in ("198.51.100.9", "203.0.113.20"):
+            return "response:\n  result:\n    fibs:\n      entry:\n        interface: ethernet1/1\n        nh: 203.0.113.1\n"
+        return "response:\n  result:\n    fibs:\n      entry:\n        interface: ethernet1/3\n        nh: 0.0.0.0\n"
+
+    # Committed running state currently DENIES via interzone-default (no committed NAT/Security rule yet)
+    with patch("core.panos.ops._get_pool") as p_ops, \
+         patch("core.panos.sanctuary.PanOSClientPool.get_instance") as p_sanc, \
+         patch("core.panos.sanctuary.get_pending_candidate_changes", return_value=["rulebase/nat", "rulebase/security"]), \
+         patch("core.panos.ops.test_routing_fib", side_effect=fake_fib), \
+         patch("core.panos.ops.test_pbf_policy", return_value="response:\n  result: {}\n"), \
+         patch("core.panos.ops.test_nat_policy", return_value="response:\n  result: {}\n"), \
+         patch(
+             "core.panos.ops.test_security_policy",
+             return_value="response:\n  result:\n    rules:\n      entry:\n        rule: interzone-default\n        action: deny\n",
+         ):
+        p_ops.return_value.get_client.return_value = fake_client
+        p_sanc.return_value.get_client.return_value = fake_client
+        neo_cli._run_zero_token_walk("198.51.100.9 203.0.113.20 443 tcp", "fw-hq")
+        raw_yaml = panos_ops.test_packet_walk(
+            source="198.51.100.9",
+            destination="203.0.113.20",
+            port="443",
+            protocol="tcp",
+            target_device="fw-hq",
+            include_candidate=True,
+        )
+
+    cli_out = capsys.readouterr().out
+    assert "VERDICT SHIFT IN [edit]" in cli_out
+    assert "COMMITTED RUNNING" in cli_out and "DENY via 'interzone-default'" in cli_out
+    assert "CANDIDATE [edit]" in cli_out and "ALLOW via 'Allow-HTTPS-DMZ' (to_zone=DMZ)" in cli_out
+    assert "DNAT -> 192.168.50.10" in cli_out
+    assert "SHADOW WARNING" in cli_out and "Late-Deny-Shadowed" in cli_out
+    assert "candidate_edit_walk:" in raw_yaml
+
+
+def test_dual_plane_test_security_policy_match_injects_sp3_cross_plane_overlay():
+    """Verify `test security-policy-match ... | @ ...` automatically attaches `<sp3_cross_plane_verification>`."""
+    tup = neo_cli.extract_panos_test_match_tuple(
+        "run test security-policy-match source 198.51.100.5 destination 203.0.113.20 destination-port 443 protocol 6"
+    )
+    assert tup == {
+        "source": "198.51.100.5",
+        "destination": "203.0.113.20",
+        "port": "443",
+        "protocol": "6",
+        "application": "",
+    }
+
+    with patch("core.panos.ops.test_packet_walk", return_value="packet_walk:\n  nat_stage:\n    dnat_detected: true\n"):
+        overlay = neo_cli._build_sp3_cross_plane_overlay(
+            "test security-policy-match source 198.51.100.5 destination 203.0.113.20 destination-port 443 protocol 6",
+            "fw-hq",
+        )
+    assert "<sp3_cross_plane_verification" in overlay
+    assert "dnat_detected: true" in overlay
+
+
+def test_bounded_tac_packet_diag_always_disarms_dp0_even_on_interrupt():
+    """
+    Verify `run_pty_tac_packet_diag` prefixes `run ` in `#` config mode, parses ASIC drop counters,
+    and ALWAYS executes `filter off` + `capture off` + `clear filter` even if interrupted early.
+    """
+    executed_cmds = []
+
+    def fake_write(_fd, data):
+        executed_cmds.append(data.decode("utf-8", errors="replace"))
+        return len(data)
+
+    def fake_drain(_fd, **_kw):
+        last_cmd = executed_cmds[-1] if executed_cmds else ""
+        if "show setting" in last_cmd:
+            return "Packet filter\n  Enabled : no\nadmin@firewall-a# "
+        if "show counter global" in last_cmd and executed_cmds.count(last_cmd) >= 2:
+            return (
+                "name                                   value     rate severity  category  aspect    description\n"
+                "-----------------------------------------------------------------------------------------------\n"
+                "flow_tcp_non_syn_drop                     14        4 drop      flow      parse     Packets dropped: non-SYN TCP without session match\n"
+                "flow_policy_nat_land                       2        0 drop      flow      nat       NAT: Land attack packets dropped\n"
+                "pkt_recv                                  40       11 info      packet    pktproc   Packets received\n"
+                "admin@firewall-a# "
+            )
+        if "show session all" in last_cmd:
+            return "10482  ssl  ACTIVE  FLOW  192.168.1.20[54112]/Trust/6 -> 10.20.30.40[443]/DMZ\nadmin@firewall-a# "
+        return "admin@firewall-a# "
+
+    # Trigger KeyboardInterrupt mid-window to prove `finally:` still disarms dp0!
+    with patch("os.write", side_effect=fake_write), \
+         patch("neo_cli.drain_pty_ssh_command", side_effect=fake_drain), \
+         patch("time.sleep", side_effect=KeyboardInterrupt):
+        ok, summary, trace = neo_cli.run_pty_tac_packet_diag(
+            master_fd=55,
+            arg_str="192.168.1.20 10.20.30.40 443 3.5",
+            current_mode="config",
+        )
+
+    assert ok is True
+    assert "flow_tcp_non_syn_drop" in summary
+    assert "flow_policy_nat_land" in summary
+    assert "[stopped early]" in summary
+    assert "10482" in trace
+    # Every command must be prefixed with `run ` in `#` config mode, and finally: MUST disarm all 3!
+    assert "run debug dataplane packet-diag set filter on" in executed_cmds
+    assert executed_cmds[-3:] == [
+        "run debug dataplane packet-diag set filter off",
+        "run debug dataplane packet-diag set capture off",
+        "run debug dataplane packet-diag clear filter",
+    ]
+
+
+def test_core_ast_clean_and_refresh_live_tools_rebinds_schema():
+    """Verify `laws.py` AST gates pass on all modified `core/` files and `CoreBrain.refresh_live_tools()` rebinds cleanly."""
+    for rel in (
+        "core/brain.py",
+        "core/panos/ops.py",
+        "core/panos/sanctuary.py",
+    ):
+        validate_python_ast(Path(rel).read_text(encoding="utf-8"), filename=rel)
+
+    from core.brain import CoreBrain
+
+    dummy = CoreBrain.__new__(CoreBrain)
+    fake_fn = lambda target_device=None: "ok"
+    fake_fn.__name__ = "custom_forged_sensor"
+    fake_keeper_cls = MagicMock()
+    fake_keeper_inst = MagicMock()
+    fake_keeper_inst.get_tools.return_value = [fake_fn]
+    fake_keeper_cls.return_value = fake_keeper_inst
+    dummy.keeper = MagicMock(__class__=fake_keeper_cls)
+    dummy.tools = []
+    dummy.tool_executor = MagicMock(tools=[], tool_map={})
+    dummy.model = MagicMock()
+    dummy.model_name = "gemini-3.1-pro-preview"
+    dummy._safety_settings = None
+
+    with patch("core.brain.genai.GenerativeModel") as mock_gm:
+        count = dummy.refresh_live_tools()
+
+    assert count == 1
+    assert dummy.tools == [fake_fn]
+    assert dummy.tool_executor.tools == [fake_fn]
+    assert "custom_forged_sensor" in dummy.tool_executor.tool_map
+    mock_gm.assert_called_once()
+
+
+
+def test_stage_repair_requires_explicit_approval_of_repaired_lines(capsys):
+    """HITL invariant: LLM-repaired lines must be displayed and re-approved; rejection leaves [edit] untouched."""
+    fake_brain = MagicMock()
+    fake_brain.policy.mode = "READ_WRITE"
+    state_box = {
+        "last_query": "q",
+        "last_result": {
+            "verdict": "```panos\nset rulebase security rules r1 source-imsi any\n```",
+            "receipts": [],
+            "reasoning": [],
+            "trace_id": "t1",
+        },
+    }
+    probe_results = [
+        {
+            "passed": False,
+            "prep_failed": False,
+            "failed_index": 1,
+            "failed_line": "set rulebase security rules r1 source-imsi any",
+            "error": "Invalid syntax",
+            "valid_prefix": "set rulebase security rules r1",
+            "invalid_token": "source-imsi",
+            "valid_completions": ["source"],
+        },
+        {"passed": True, "verified_count": 1},
+    ]
+    staged_calls = []
+    with patch("builtins.input", side_effect=["y", "y", "n"]), \
+         patch("neo_cli.probe_pty_cli_grammar", side_effect=probe_results), \
+         patch(
+             "neo_cli._execute_brain_turn",
+             return_value={"verdict": "```panos\nset rulebase security rules r1 source 10.9.9.9 action allow\n```"},
+         ), \
+         patch("neo_cli.stage_lines_to_pty_master", side_effect=lambda *a, **k: staged_calls.append(a) or (True, "x")):
+        neo_cli._dispatch_shared_meta_command(
+            "stage", brain=fake_brain, state_box=state_box, target_device="fw-hq",
+            symbiotic=True, pty_master_fd=91, pty_prompt_mode="config",
+        )
+    out = capsys.readouterr().out
+    assert "REPAIRED CANDIDATE LINES" in out
+    assert "set rulebase security rules r1 source 10.9.9.9 action allow" in out
+    assert "Repaired block rejected" in out
+    assert staged_calls == []
+
+
+def test_dual_plane_sp3_overlay_runs_in_worker_without_delaying_ssh_command():
+    """The `test *-policy-match` overlay must run inside the worker thread so SSH executes at t=0ms."""
+    import threading as _th
+    import time as _t
+
+    events = []
+    overlay_started = _th.Event()
+
+    def slow_overlay(_cmd, _dev):
+        overlay_started.set()
+        _t.sleep(0.4)
+        events.append("overlay_done")
+        return "\n<sp3_cross_plane_verification>x</sp3_cross_plane_verification>"
+
+    def fake_drain(_fd, **_kw):
+        events.append("ssh_drained")
+        return "Rule-Allow { action allow; }\nadmin@firewall-a> "
+
+    seen_queries = []
+    fake_brain = MagicMock()
+    fake_brain.investigate.side_effect = lambda q, **kw: (
+        seen_queries.append(q) or {"verdict": "ok", "receipts": [], "reasoning": [], "trace_id": "t"}
+    )
+
+    with patch("neo_cli._build_sp3_cross_plane_overlay", side_effect=slow_overlay), \
+         patch("neo_cli.drain_pty_ssh_command", side_effect=fake_drain), \
+         patch("neo_cli._render_turn_output"):
+        neo_cli.execute_dual_plane_turn(
+            ssh_cmd="test security-policy-match source 1.1.1.1 destination 2.2.2.2 destination-port 443 protocol 6",
+            op_char="+",
+            neo_raw_cmd="why does this die?",
+            master_fd=88,
+            echo_mode="op",
+            brain=fake_brain,
+            state_box={"last_result": {}, "last_query": ""},
+            target_device="fw-hq",
+            ssh_ring_snapshot="",
+        )
+
+    assert events.index("ssh_drained") < events.index("overlay_done")
+    assert "<sp3_cross_plane_verification>" in seen_queries[0]
+
+
+def test_ctrl_c_mid_diag_is_contained_and_never_kills_ssh_session(capsys):
+    """KeyboardInterrupt inside a PTY meta-command must be swallowed, send \\x03, and return True."""
+    writes = []
+    diag_brain = MagicMock()
+    diag_brain.policy.mode = "READ_WRITE"
+    diag_brain._pty_diag_enabled = True
+    with patch("neo_cli.run_pty_tac_packet_diag", side_effect=KeyboardInterrupt), \
+         patch("os.write", side_effect=lambda _fd, b: writes.append(b) or len(b)):
+        handled = neo_cli._dispatch_shared_meta_command(
+            "diag 192.168.1.20 10.20.30.40 443",
+            brain=diag_brain,
+            state_box={"last_result": {}, "last_query": ""},
+            target_device="fw-hq",
+            symbiotic=True,
+            pty_master_fd=55,
+            pty_prompt_mode="op",
+        )
+    assert handled is True
+    assert b"\x03" in writes
+    assert "SSH session preserved" in capsys.readouterr().out
+
+
+def test_candidate_walk_resolves_shared_objects_and_goes_indeterminate_on_fqdn_rule_above_match():
+    """
+    Shared (`/config/shared`) objects must resolve; an FQDN-based rule ABOVE the computed match must yield
+    INDETERMINATE instead of a confident verdict.
+    """
+    from core.panos.sanctuary import evaluate_candidate_packet_walk
+
+    shared_xml = """
+    <response status="success"><result><shared>
+      <address><entry name="Shared-Web"><ip-netmask>10.20.30.40/32</ip-netmask></entry></address>
+    </shared></result></response>
+    """
+
+    def make_vsys(with_fqdn_rule: bool) -> str:
+        fqdn_rule = """
+          <entry name="Block-CDN-FQDN">
+            <from><member>Trust</member></from><to><member>DMZ</member></to>
+            <source><member>any</member></source><destination><member>CDN-Host</member></destination>
+            <application><member>any</member></application><service><member>any</member></service>
+            <action>deny</action>
+          </entry>""" if with_fqdn_rule else ""
+        return f"""
+        <response status="success"><result><entry name="vsys1">
+          <zone>
+            <entry name="Trust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+            <entry name="DMZ"><network><layer3><member>ethernet1/3</member></layer3></network></entry>
+          </zone>
+          <address><entry name="CDN-Host"><fqdn>cdn.example.com</fqdn></entry></address>
+          <rulebase><security><rules>{fqdn_rule}
+            <entry name="Allow-Shared-Web">
+              <from><member>Trust</member></from><to><member>DMZ</member></to>
+              <source><member>any</member></source><destination><member>Shared-Web</member></destination>
+              <application><member>ssl</member></application><service><member>application-default</member></service>
+              <action>allow</action>
+            </entry>
+          </rules></security></rulebase>
+        </entry></result></response>
+        """
+
+    def run_walk(vsys_xml: str):
+        client = MagicMock()
+        client.execute_op.return_value = (200, "<response><result><ifnet/></result></response>")
+
+        def fake_get(xpath):
+            if "shared" in xpath:
+                return 200, shared_xml
+            if "vsys" in xpath:
+                assert "[@name='vsys1']" in xpath
+                return 200, vsys_xml
+            return 200, "<response><result><network/></result></response>"
+
+        client.execute_get.side_effect = fake_get
+        with patch("core.panos.sanctuary.PanOSClientPool.get_instance") as p:
+            p.return_value.get_client.return_value = client
+            return evaluate_candidate_packet_walk(
+                source="192.168.1.20",
+                destination="10.20.30.40",
+                port="443",
+                protocol="tcp",
+                live_if_to_zone={"ethernet1/2": "Trust", "ethernet1/3": "DMZ"},
+                live_routing_fallback={
+                    "192.168.1.20": {"interface": "ethernet1/2"},
+                    "10.20.30.40": {"interface": "ethernet1/3"},
+                },
+            )
+
+    clean = run_walk(make_vsys(with_fqdn_rule=False))
+    assert clean["verdict_status"] == "DETERMINED"
+    assert clean["security_rule"] == "Allow-Shared-Web"
+    assert clean["action"] == "allow"
+
+    murky = run_walk(make_vsys(with_fqdn_rule=True))
+    assert murky["verdict_status"] == "INDETERMINATE"
+    assert murky["action"] == "unknown"
+    assert murky["security_rule"] == "UNKNOWN"
+    assert any("Block-CDN-FQDN" in r for r in murky["indeterminate_reasons"])
+    assert murky["best_effort_rule_if_unresolved_objects_do_not_match"] == "Allow-Shared-Web"
+
+
+# ─── Polish pass: single policy plane, provenance, commit scope, Panorama, forge opt-in ───
+
+
+def test_pty_writes_obey_read_only_policy_and_diag_needs_explicit_opt_in(capsys):
+    """@stage and @diag must be blocked in READ_ONLY; @diag also needs '@write diag'."""
+    brain = MagicMock()
+    brain.policy.mode = "READ_ONLY"
+    brain._pty_diag_enabled = False
+    state_box = {"last_query": "q", "last_result": {"verdict": "```panos\nset deviceconfig system timezone UTC\n```"}}
+
+    with patch("neo_cli.probe_pty_cli_grammar") as probe, \
+         patch("neo_cli.stage_lines_to_pty_master") as stage, \
+         patch("neo_cli.run_pty_tac_packet_diag") as diag, \
+         patch("builtins.input", side_effect=AssertionError("must not prompt when blocked")):
+        neo_cli._dispatch_shared_meta_command(
+            "stage", brain=brain, state_box=state_box, target_device="fw-hq",
+            symbiotic=True, pty_master_fd=9, pty_prompt_mode="config",
+        )
+        neo_cli._dispatch_shared_meta_command(
+            "diag 10.0.0.1 10.0.0.2", brain=brain, state_box=state_box, target_device="fw-hq",
+            symbiotic=True, pty_master_fd=9, pty_prompt_mode="op",
+        )
+        brain.policy.mode = "READ_WRITE"
+        neo_cli._dispatch_shared_meta_command(
+            "diag 10.0.0.1 10.0.0.2", brain=brain, state_box=state_box, target_device="fw-hq",
+            symbiotic=True, pty_master_fd=9, pty_prompt_mode="op",
+        )
+
+    probe.assert_not_called()
+    stage.assert_not_called()
+    diag.assert_not_called()
+    out = capsys.readouterr().out
+    assert "[stage] Blocked: write policy is READ_ONLY" in out
+    assert "[diag] Blocked: write policy is READ_ONLY" in out
+    assert "'@write diag'" in out
+
+
+def test_write_diag_requires_read_write_and_off_clears_it():
+    pol = MagicMock()
+    pol.mode = "READ_ONLY"
+    brain = MagicMock(policy=pol, tool_executor=None)
+    brain._pty_diag_enabled = False
+    sb = {"last_result": {}, "last_query": ""}
+    neo_cli._dispatch_shared_meta_command("write diag", brain=brain, state_box=sb, target_device=None)
+    assert brain._pty_diag_enabled is False
+    neo_cli._dispatch_shared_meta_command("write on", brain=brain, state_box=sb, target_device=None)
+    neo_cli._dispatch_shared_meta_command("write diag", brain=brain, state_box=sb, target_device=None)
+    assert pol.mode == "READ_WRITE" and brain._pty_diag_enabled is True
+    neo_cli._dispatch_shared_meta_command("write off", brain=brain, state_box=sb, target_device=None)
+    assert pol.mode == "READ_ONLY" and brain._pty_diag_enabled is False
+
+
+def test_audit_log_hash_chain_records_and_detects_tampering(tmp_path, monkeypatch):
+    from core.safety.audit_log import read_recent_audit_events, record_audit_event, verify_audit_chain
+
+    log_path = tmp_path / "chain.jsonl"
+    monkeypatch.setenv("NEO_AUDIT_LOG", str(log_path))
+    record_audit_event("stage_proposed", trace_id="t-1", lines=["set a b"])
+    record_audit_event("stage_decision", trace_id="t-1", decision="approved")
+    record_audit_event("stage_injected", trace_id="t-1", result="ok")
+    assert verify_audit_chain(log_path) == (True, 3, None)
+    assert [e["event"] for e in read_recent_audit_events(5)] == ["stage_proposed", "stage_decision", "stage_injected"]
+
+    rows = log_path.read_text(encoding="utf-8").splitlines()
+    rows[1] = rows[1].replace('"approved"', '"rejected"')
+    log_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    ok, _count, bad_line = verify_audit_chain(log_path)
+    assert ok is False and bad_line == 2
+
+
+def test_stage_records_full_provenance_trail(tmp_path, monkeypatch):
+    from core.safety.audit_log import read_recent_audit_events
+
+    monkeypatch.setenv("NEO_AUDIT_LOG", str(tmp_path / "prov.jsonl"))
+    brain = MagicMock()
+    brain.policy.mode = "READ_WRITE"
+    sb = {
+        "last_query": "q",
+        "last_result": {"verdict": "```panos\nset deviceconfig system timezone UTC\n```", "trace_id": "t-77"},
+    }
+    with patch("builtins.input", return_value="y"), \
+         patch("neo_cli.probe_pty_cli_grammar", return_value={"passed": True, "verified_count": 1}), \
+         patch("neo_cli.stage_lines_to_pty_master", return_value=(True, "Injected 1 line.")):
+        neo_cli._dispatch_shared_meta_command(
+            "stage", brain=brain, state_box=sb, target_device="fw-hq",
+            symbiotic=True, pty_master_fd=9, pty_prompt_mode="config",
+        )
+    events = [e["event"] for e in read_recent_audit_events(10)]
+    assert events == ["stage_proposed", "stage_decision", "stage_injected"]
+    assert sb["neo_staged_trace"] == "t-77"
+    assert neo_cli.build_neo_commit_suffix("t-77") == ' description "NEO-assisted t-77"'
+    assert neo_cli.build_neo_commit_suffix('x"; delete all') == ' description "NEO-assisted xdeleteall"'
+
+
+def test_commit_scope_parsing_and_partial_commit_filters_by_admin():
+    from core.panos.sanctuary import evaluate_precommit_sanctuary, parse_commit_scope
+
+    assert parse_commit_scope("commit") == {"kind": "full", "admins": []}
+    assert parse_commit_scope("commit force") == {"kind": "force", "admins": []}
+    assert parse_commit_scope("commit partial admin alice") == {"kind": "partial", "admins": ["alice"]}
+    assert parse_commit_scope("commit partial admin [ alice bob ]")["admins"] == ["alice", "bob"]
+
+    changes_xml = (
+        "<response status='success'><result><journal>"
+        "<entry><xpath>/config/devices/entry/deviceconfig/system/permitted-ip</xpath><admin>bob</admin></entry>"
+        "<entry><xpath>/config/devices/entry/vsys/entry/address</xpath><admin>alice</admin></entry>"
+        "</journal></result></response>"
+    )
+    client = MagicMock()
+    client.execute_op.return_value = (200, changes_xml)
+    client.execute_get.side_effect = AssertionError("permitted-ip check must be skipped: bob's change is out of scope")
+    with patch("core.panos.sanctuary.PanOSClientPool.get_instance") as p, \
+         patch("core.panos.sanctuary.Cartographer") as cart:
+        p.return_value.get_client.return_value = client
+        cart.return_value._fetch_admin_sessions.return_value = []
+        verdict = evaluate_precommit_sanctuary(target_device="fw-hq", commit_cmd="commit partial admin alice")
+    assert verdict["safe"] is True
+    assert "1/2 change(s) attributed to alice" in verdict["scope_note"]
+
+    with patch("core.panos.sanctuary.PanOSClientPool.get_instance") as p:
+        p.return_value.get_client.return_value = client
+        none_verdict = evaluate_precommit_sanctuary(target_device="fw-hq", commit_cmd="commit partial admin carol")
+    assert none_verdict["changed"] is False
+
+
+def test_panorama_detection_reports_managed_unmanaged_and_unknown():
+    from core.panos.sanctuary import detect_panorama_management
+
+    def run(status, xml):
+        client = MagicMock()
+        client.execute_op.return_value = (status, xml)
+        with patch("core.panos.sanctuary.PanOSClientPool.get_instance") as p:
+            p.return_value.get_client.return_value = client
+            return detect_panorama_management("fw-hq")
+
+    managed = run(200, "<response><result>Panorama Server 1 : 10.1.1.5\n    Connected : yes\n</result></response>")
+    assert managed["managed"] is True and "10.1.1.5" in managed["detail"]
+    assert run(200, "<response><result></result></response>")["managed"] is False
+    assert run(500, "")["managed"] is None
+
+
+def test_forge_tools_are_opt_in(monkeypatch):
+    from core.pipeline.tool_keeper import ToolKeeper
+
+    monkeypatch.delenv("NEO_ENABLE_FORGE", raising=False)
+    names = {t.__name__ for t in ToolKeeper().get_tools("#core")}
+    assert "slot_forge" not in names and "board_ops" not in names
+    monkeypatch.setenv("NEO_ENABLE_FORGE", "1")
+    names_on = {t.__name__ for t in ToolKeeper().get_tools("#core")}
+    assert {"slot_forge", "board_ops"} <= names_on
+
+
+def test_audit_log_is_constitutionally_protected():
+    with pytest.raises(ConstitutionalError):
+        validate_mutation_paths(["core/safety/audit_log.py"])

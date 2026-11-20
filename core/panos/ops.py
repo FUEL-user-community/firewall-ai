@@ -567,11 +567,14 @@ def test_packet_walk(
     application: Optional[str] = None,
     virtual_router: str = "default",
     target_device: Optional[str] = None,
+    include_candidate: bool = False,
 ) -> str:
     """
     Executes a complete, deterministic PAN-OS Single-Pass Parallel Processing (SP3)
     packet walk across Ingress FIB, Policy-Based Forwarding (PBF), Pre-NAT Routing FIB,
     NAT Policy Evaluation, Post-DNAT Re-Routing, and Security Policy Evaluation.
+    When uncommitted `[edit]` candidate edits exist (or `include_candidate=True`),
+    also simulates the uncommitted candidate `<config>` XML side-by-side before `commit`.
 
     Counter-Logic Enforced:
     - Resolves Ingress Zone automatically from source IP FIB lookup if from_zone is omitted.
@@ -757,17 +760,80 @@ def test_packet_walk(
     }
     try:
         from core.panos.client import PanOSClient
+        from core.panos.sanctuary import evaluate_candidate_packet_walk, get_pending_candidate_changes
+
         live_client = _get_pool().get_client(target_device)
-        if isinstance(live_client, PanOSClient):
-            from core.panos.sanctuary import get_pending_candidate_changes
-            pending_edits = get_pending_candidate_changes(target_device=target_device)
+        pending_edits = (
+            get_pending_candidate_changes(target_device=target_device)
+            if (include_candidate or isinstance(live_client, PanOSClient))
+            else []
+        )
+        if pending_edits or include_candidate:
             if pending_edits:
-                walk_summary["sp3_packet_walk"]["candidate_config_warning"] = (
+                walk_summary["packet_walk"]["candidate_config_warning"] = (
                     f"UNCOMMITTED CANDIDATE EDITS ({len(pending_edits)}) IN [edit] — "
-                    "PAN-OS test_packet_walk evaluates COMMITTED running policy only."
+                    "see 'candidate_edit_walk' below for pre-commit simulation."
                 )
-    except Exception:
-        pass
+
+            def _fib_cb(lookup_ip: str) -> dict:
+                f_raw = test_routing_fib(ip=lookup_ip, virtual_router=virtual_router, target_device=target_device)
+                if f_raw.startswith("ERROR:"):
+                    return {}
+                f_data = yaml.safe_load(f_raw)
+                return {
+                    "interface": str(_find_yaml_val(f_data, "interface") or _find_yaml_val(f_data, "egress-interface") or ""),
+                    "next_hop": str(_find_yaml_val(f_data, "next-hop") or _find_yaml_val(f_data, "nexthop") or "0.0.0.0"),
+                }
+
+            seed_routes = {
+                source_clean: {"interface": str(ingress_intf or ""), "next_hop": "0.0.0.0"},
+                destination_clean: {"interface": str(pre_fib_intf or ""), "next_hop": str(pre_fib_nh or "0.0.0.0")},
+            }
+            if translated_dst_ip:
+                seed_routes[translated_dst_ip] = {
+                    "interface": str(post_fib_intf or ""),
+                    "next_hop": str(post_fib_nh or "0.0.0.0"),
+                }
+
+            cand_walk = evaluate_candidate_packet_walk(
+                source=source_clean,
+                destination=destination_clean,
+                port=port_clean,
+                protocol=protocol_clean,
+                from_zone=from_zone,
+                to_zone=to_zone,
+                application=application,
+                virtual_router=virtual_router,
+                target_device=target_device,
+                live_if_to_zone=if_to_zone,
+                live_routing_fallback=seed_routes,
+                fib_lookup_fn=_fib_cb,
+            )
+            walk_summary["candidate_edit_walk"] = cand_walk
+            run_act = str(sec_action or "unknown").lower()
+            cand_act = str(cand_walk.get("action") or "unknown").lower()
+            cand_status = str(cand_walk.get("verdict_status") or "DETERMINED")
+            walk_summary["running_vs_candidate_delta"] = {
+                "pending_edit_count": len(pending_edits),
+                "running_verdict": f"{run_act.upper()} via '{sec_rule or 'interzone-default'}' (to_zone={resolved_to_zone or 'any'})",
+                "candidate_verdict_status": cand_status,
+                "candidate_verdict": (
+                    f"{cand_act.upper()} via '{cand_walk.get('security_rule')}' "
+                    f"(to_zone={cand_walk.get('final_to_zone')})"
+                ),
+                "verdict_changed": (
+                    "indeterminate"
+                    if cand_status == "INDETERMINATE"
+                    else (
+                        run_act != cand_act
+                        or str(sec_rule or "") != str(cand_walk.get("security_rule") or "")
+                        or str(translated_dst_ip or "") != str(cand_walk.get("translated_destination") or "")
+                        or str(resolved_to_zone or "") != str(cand_walk.get("final_to_zone") or "")
+                    )
+                ),
+            }
+    except Exception as exc:
+        logger.debug(f"[PacketWalk] Candidate [edit] overlay skipped: {exc}")
     return yaml.safe_dump(walk_summary, sort_keys=False)
 
 

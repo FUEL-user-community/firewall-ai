@@ -12,6 +12,11 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
+def forge_enabled() -> bool:
+    """Experimental self-patching + Drive board tools are opt-in (`NEO_ENABLE_FORGE=1`)."""
+    return os.getenv("NEO_ENABLE_FORGE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def inspect_own_harness(target_paths: str = "tree", start_line: int = 1, end_line: int = 400) -> str:
     """
     Inspect the agent's own harness source code and configuration files.
@@ -143,7 +148,7 @@ def summon_toolkit(tray: str):
     Args:
         tray (str): Tray ID to mount: '#sys', '#net', '#sec', '#vpn', '#ops',
                     '#troubleshoot', '#ha', '#routing', '#l2', '#user-id', or
-                    '#forge' (unlocks board_ops stigmergic memory and slot_forge Slot B evolution).
+                    '#forge' (experimental; only available when NEO_ENABLE_FORGE=1).
     """
     return f"System: Pivoting to {tray} Toolkit..."
 
@@ -355,14 +360,15 @@ class ToolKeeper:
         except Exception as e:
             logger.warning(f"[TOOLS] Drive Knowledge Base Init Error: {e}")
 
-        # Rule 6.5: Stigmergic Board & Forge (always mounted in #core so Turn 1 can sync/post without extra tray pivot)
-        try:
-            from core.integrations.board_sync import board_ops
-            from core.forge.slot_mutator import slot_forge
-            tools.append(board_ops)
-            tools.append(slot_forge)
-        except Exception as e:
-            logger.warning(f"[TOOLS] Forge/Board Tools Init Error: {e}")
+        # Rule 6.5: Experimental self-patching (slot_forge) & Drive board (board_ops) — OFF unless NEO_ENABLE_FORGE=1
+        if forge_enabled():
+            try:
+                from core.integrations.board_sync import board_ops
+                from core.forge.slot_mutator import slot_forge
+                tools.append(board_ops)
+                tools.append(slot_forge)
+            except Exception as e:
+                logger.warning(f"[TOOLS] Forge/Board Tools Init Error: {e}")
 
 
         # Rule 7: Scan YAML Registry
@@ -437,13 +443,14 @@ class ToolKeeper:
         except Exception as e:
             logger.warning(f"[TOOLS] Drive Knowledge Base Init Error: {e}")
 
-        try:
-            from core.integrations.board_sync import board_ops
-            from core.forge.slot_mutator import slot_forge
-            tools.append(board_ops)
-            tools.append(slot_forge)
-        except Exception as e:
-            logger.warning(f"[TOOLS] Forge/Board Tools Init Error: {e}")
+        if forge_enabled():
+            try:
+                from core.integrations.board_sync import board_ops
+                from core.forge.slot_mutator import slot_forge
+                tools.append(board_ops)
+                tools.append(slot_forge)
+            except Exception as e:
+                logger.warning(f"[TOOLS] Forge/Board Tools Init Error: {e}")
 
         # Scan full YAML Registry (unfiltered)
         for tool_id, details in self.commands.items():

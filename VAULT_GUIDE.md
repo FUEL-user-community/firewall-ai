@@ -1,49 +1,60 @@
-# Enterprise Vault Setup Guide
+# HashiCorp Vault Setup (Optional)
 
-CORE DEFENSE natively supports HashiCorp Vault for secure API key management. For teams testing the Enterprise deployment flow locally, we've provided an automated script that spins up and provisions a Vault server for you.
+By default NEO reads credentials from `.env`, loads them once into an in-process sealed store, and
+removes them from `os.environ` before the first SSH session or LLM call. For teams that want
+credentials to live outside the workstation, NEO can read them from HashiCorp Vault via AppRole.
 
 ## Prerequisites
-- Docker and Docker Compose installed
-- Port `8200` available on your local machine
 
-## 1. Run the Auto-Provisioning Script
+- Docker
+- Port `8200` free on your machine (local test only)
 
-Open your terminal in the project root and run the script for your operating system:
+## 1. Start a local test Vault
 
-**Windows (PowerShell):**
-```powershell
-.\scripts\setup_vault.ps1
-```
-
-**Mac/Linux (Bash):**
 ```bash
+# Linux / macOS / WSL
 chmod +x scripts/setup_vault.sh
 ./scripts/setup_vault.sh
 ```
 
-## 2. What the Script Does
+```powershell
+# Windows PowerShell
+.\scripts\setup_vault.ps1
+```
 
-Behind the scenes, this script executes Vault configuration:
-1. Starts the `vault` container in `docker-compose.yml`.
-2. Enables the `approle` authentication method.
-3. Creates a read-only policy strictly scoped to the `secret/data/core-defense` path.
-4. Creates the `core-defense` AppRole and attaches the policy.
-5. Generates the required AppRole credentials.
+The script:
 
-## 3. Enter the Credentials
+1. Starts a dev-mode Vault container named `neo-vault` (`hashicorp/vault`, root token `root`).
+2. Enables AppRole authentication.
+3. Creates a read-only policy scoped to `secret/data/core-defense`.
+4. Creates the `core-defense` AppRole and prints its Role ID and Secret ID.
 
-Once the script finishes, it will print a color-coded summary containing three pieces of information:
-- **Vault URL**
-- **Vault AppRole ID**
-- **Vault Secret ID**
+Dev mode keeps everything in memory and uses a fixed root token. It is for local testing only.
 
-Simply open the CORE DEFENSE web interface (`http://127.0.0.1:8888`), select **Enterprise (HashiCorp Vault)** in the Setup Wizard, and paste those exact values in. 
+## 2. Store your keys in Vault
 
-## 4. Viewing the Vault UI
+Open http://127.0.0.1:8200, log in with token `root`, and add your keys under
+**Secrets Engines → secret → core-defense** (for example `gemini_api_key`, `panos_api_key_fw_hq`).
 
-You can view and modify your secrets directly in the Vault UI:
-1. Navigate to http://127.0.0.1:8200
-2. Enter the token: `root`
-3. Navigate to **Secrets Engines -> secret -> core-defense**
+## 3. Point NEO at Vault
 
-*Note: In a production environment, you would point CORE DEFENSE to your company's existing Vault infrastructure instead of running the local container.*
+Add these lines to `.env`:
+
+```env
+SECRETS_BACKEND=vault
+VAULT_ADDR=http://127.0.0.1:8200
+VAULT_ROLE_ID=<role id printed by the script>
+VAULT_SECRET_ID=<secret id printed by the script>
+VAULT_SECRET_PATH=core-defense
+```
+
+Then verify:
+
+```bash
+python3 neo_cli.py --check
+```
+
+## Production
+
+Point `VAULT_ADDR` at your organization's Vault cluster with TLS, use a narrowly scoped AppRole,
+and issue short-lived Secret IDs. Do not run dev-mode Vault outside a lab.

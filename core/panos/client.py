@@ -134,7 +134,7 @@ class PanOSClient:
             self.fw = Firewall(hostname=hostname, api_key=api_key)
             self._configure_ssl()
             vr_info = f", vr='{self.virtual_router}'" if self.virtual_router else ""
-            fp_info = f", fp_pin=True" if self.ssl_fingerprint else ""
+            fp_info = ", fp_pin=True" if self.ssl_fingerprint else ""
             logger.info(f"[PanOSClient] Initialized: {device_name} ({label}) @ {hostname} (ssl_verify={self.verify_ssl}{vr_info}{fp_info})")
         except Exception as e:
             logger.error(f"[PanOSClient] Failed to initialize {device_name}: {e}")

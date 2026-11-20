@@ -7,7 +7,6 @@ Comprehensive Counter-Logic Test Suite for:
 - Plane 5: Macro/outcome failure honesty, `PanOSClient` `RLock`, prose-safe `scrubber`, CVSS `10.0` isolation, URI scoping
 """
 
-import os
 import threading
 import time
 from pathlib import Path
@@ -17,7 +16,6 @@ import pytest
 
 from core.forge.laws import (
     ConstitutionalError,
-    extract_diff_paths,
     validate_mutation_paths,
     validate_python_ast,
     validate_yaml_content,
@@ -28,9 +26,6 @@ from core.integrations.board_sync import (
     ProbationWriteFenceError,
     StigmergicBoard,
     board_ops,
-    format_board_filename,
-    parse_board_markdown,
-    render_board_markdown,
 )
 from core.integrations.drive_knowledge import _extract_csv_summary, query_knowledge_base
 from core.panos.client import PanOSClient
@@ -585,12 +580,13 @@ def test_core_tray_mounts_board_ops_and_slot_forge_with_zero_sqlite_disk_writes(
     monkeypatch.delenv("NEO_PERSIST_BUDGET", raising=False)
     monkeypatch.delenv("NEO_PERSIST_TRACES", raising=False)
     monkeypatch.setenv("NEO_SLOT_ID", "STANDALONE")
+    monkeypatch.setenv("NEO_ENABLE_FORGE", "1")
     monkeypatch.setenv("DRIVE_BOARD_FOLDER_ID", "")
     monkeypatch.setenv("KNOWLEDGE_BASE_FOLDER_ID", "")
     monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "")
     SharedStateStore.reset_instance()
 
-    # 1. Both board_ops and slot_forge are always mounted in #core
+    # 1. With NEO_ENABLE_FORGE=1, board_ops and slot_forge are mounted in #core
     core_names = [t.__name__ for t in ToolKeeper().get_tools("#core")]
     assert "board_ops" in core_names
     assert "slot_forge" in core_names

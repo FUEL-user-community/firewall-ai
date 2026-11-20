@@ -341,7 +341,6 @@ def test_routing_fib_args_validation():
 
 def test_tool_schemas_preserve_target_device():
     """Verify target_device is preserved across all registered schemas."""
-    from core.pipeline.tool_schemas import TOOL_SCHEMAS
     for tool_name, schema in TOOL_SCHEMAS.items():
         fields = schema.model_fields
         assert "target_device" in fields, f"Schema for '{tool_name}' is missing target_device"

@@ -1,80 +1,58 @@
-#!/bin/bash
-# ══════════════════════════════════════════════════════════════
-# CORE DEFENSE — Local Vault Setup Wizard (Mac/Linux)
-# ══════════════════════════════════════════════════════════════
+#!/usr/bin/env bash
+# NEO - local dev-mode HashiCorp Vault for testing the `SECRETS_BACKEND=vault` path.
+# Dev mode is in-memory with a fixed root token. Never use it outside a lab.
+set -euo pipefail
 
-set -e
+CONTAINER="neo-vault"
+IMAGE="hashicorp/vault:latest"
 
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-NC='\033[0m'
-
-echo -e "${CYAN}======================================================${NC}"
-echo -e "${CYAN} CORE DEFENSE — Local Vault Setup Wizard${NC}"
-echo -e "${CYAN}======================================================${NC}\n"
-
-# Pre-flight: Check Docker availability
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}[ERROR] Docker CLI not found. Please install Docker.${NC}"
+if ! command -v docker >/dev/null 2>&1; then
+    echo "[error] docker CLI not found." >&2
+    exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+    echo "[error] Docker daemon is not running." >&2
     exit 1
 fi
 
-if ! docker info > /dev/null 2>&1; then
-    echo -e "${RED}[ERROR] Docker daemon is not running. Please start Docker and retry.${NC}"
-    exit 1
+vexec() { docker exec -i -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root "$CONTAINER" vault "$@"; }
+
+if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    echo "Starting $CONTAINER..."
+    docker run -d --name "$CONTAINER" --cap-add=IPC_LOCK -p 127.0.0.1:8200:8200 \
+        -e VAULT_DEV_ROOT_TOKEN_ID=root -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+        "$IMAGE" >/dev/null
 fi
 
-echo -e "${YELLOW}Starting Vault via Docker Compose...${NC}"
-docker compose up -d vault
-
-echo -e "${YELLOW}Waiting for Vault to become ready...${NC}"
-MAX_WAIT=30
-WAITED=0
-READY=false
-while [ $WAITED -lt $MAX_WAIT ]; do
-    if docker compose exec -T -e VAULT_TOKEN=root vault vault status >/dev/null 2>&1; then
-        READY=true
-        break
-    fi
+echo "Waiting for Vault..."
+for _ in $(seq 1 30); do
+    if vexec status >/dev/null 2>&1; then READY=1; break; fi
     sleep 1
-    WAITED=$((WAITED + 1))
 done
-
-if [ "$READY" = false ]; then
-    echo -e "${RED}[ERROR] Vault failed to become healthy within ${MAX_WAIT} seconds.${NC}"
+if [ "${READY:-0}" != "1" ]; then
+    echo "[error] Vault did not become ready within 30s." >&2
     exit 1
 fi
 
-echo -e "${YELLOW}Configuring AppRole authentication...${NC}"
-docker compose exec -T -e VAULT_TOKEN=root vault vault auth enable approle 2>/dev/null || true
+vexec auth enable approle >/dev/null 2>&1 || true
+printf 'path "secret/data/core-defense" {\n  capabilities = ["read"]\n}\n' | vexec policy write core-defense-policy - >/dev/null
+vexec write auth/approle/role/core-defense policies=core-defense-policy token_ttl=1h token_max_ttl=4h >/dev/null
+vexec kv put -mount=secret core-defense placeholder="replace-me" >/dev/null
 
-echo -e "${YELLOW}Creating CORE DEFENSE read-only policy...${NC}"
-cat <<EOF | docker compose exec -T -e VAULT_TOKEN=root vault vault policy write core-defense-policy - 2>/dev/null
-path "secret/data/core-defense" {
-  capabilities = ["read"]
-}
+ROLE_ID=$(vexec read -field=role_id auth/approle/role/core-defense/role-id | tr -d '\r')
+SECRET_ID=$(vexec write -f -field=secret_id auth/approle/role/core-defense/secret-id | tr -d '\r')
+
+cat <<EOF
+
+Vault dev server: http://127.0.0.1:8200  (UI token: root)
+
+Add to .env:
+  SECRETS_BACKEND=vault
+  VAULT_ADDR=http://127.0.0.1:8200
+  VAULT_ROLE_ID=$ROLE_ID
+  VAULT_SECRET_ID=$SECRET_ID
+  VAULT_SECRET_PATH=core-defense
+
+Then store your keys under secret/core-defense in the UI and run: python3 neo_cli.py --check
 EOF
-
-echo -e "${YELLOW}Creating CORE DEFENSE AppRole...${NC}"
-docker compose exec -T -e VAULT_TOKEN=root vault vault write auth/approle/role/core-defense policies=core-defense-policy token_ttl=1h token_max_ttl=4h 2>/dev/null
-
-echo -e "${YELLOW}Seeding dummy secret...${NC}"
-docker compose exec -T -e VAULT_TOKEN=root vault vault kv put -mount=secret core-defense dummy="Replace me in Vault UI" 2>/dev/null
-
-echo -e "${YELLOW}Retrieving Role ID and Secret ID...${NC}"
-ROLE_ID=$(docker compose exec -T -e VAULT_TOKEN=root vault vault read -field=role_id auth/approle/role/core-defense/role-id | tr -d '\r')
-SECRET_ID=$(docker compose exec -T -e VAULT_TOKEN=root vault vault write -f -field=secret_id auth/approle/role/core-defense/secret-id | tr -d '\r')
-
-clear
-echo -e "${GREEN}======================================================${NC}"
-echo -e "${GREEN}[OK] CORE DEFENSE LOCAL VAULT PROVISIONED SUCCESSFULLY${NC}"
-echo -e "${GREEN}======================================================${NC}"
-echo -e "Your local Vault is running at: http://127.0.0.1:8200"
-echo -e "You can log into the Vault UI using the token: root\n"
-echo -e "${YELLOW}Copy and paste these exact values into the CORE DEFENSE Setup Wizard:${NC}\n"
-echo -e "${CYAN}  Vault URL:         http://127.0.0.1:8200${NC}"
-echo -e "${CYAN}  Vault AppRole ID:  $ROLE_ID${NC}"
-echo -e "${CYAN}  Vault Secret ID:   $SECRET_ID${NC}\n"
-echo -e "${GREEN}======================================================${NC}"

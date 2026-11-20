@@ -120,7 +120,7 @@ class SlotMutator:
 
         for s in ("a", "b"):
             sp = self.slot_path(s)
-            if not (sp / "server.py").is_file() or (force_resync_inactive and s == inactive):
+            if not ((sp / "core").is_dir() or (sp / "neo_cli.py").is_file()) or (force_resync_inactive and s == inactive):
                 self._seed_slot_directory(s, sp)
 
         if not self.store.get_kv("active_slot"):
@@ -203,7 +203,7 @@ class SlotMutator:
         active_dir = self.slot_path(self.get_active_slot())
         inactive = self.get_inactive_slot()
         inactive_dir = self.slot_path(inactive)
-        source = active_dir if (active_dir / "server.py").is_file() else self.nucleus_root
+        source = active_dir if ((active_dir / "core").is_dir() or (active_dir / "neo_cli.py").is_file()) else self.nucleus_root
         self._overlay_workspace_files(source, inactive_dir)
         seal_slot_prompts_sha(inactive_dir)
         return str(inactive_dir)
@@ -671,8 +671,11 @@ def slot_forge(
                         from core.brain import get_active_brain
                         active_brain = get_active_brain()
                         if active_brain is not None:
-                            active_brain.keeper = active_brain.keeper.__class__()
-                            active_brain.tools = active_brain.keeper.get_tools("#core")
+                            if hasattr(active_brain, "refresh_live_tools"):
+                                active_brain.refresh_live_tools()
+                            else:
+                                active_brain.keeper = active_brain.keeper.__class__()
+                                active_brain.tools = active_brain.keeper.get_tools("#core")
                     except Exception:
                         pass
 

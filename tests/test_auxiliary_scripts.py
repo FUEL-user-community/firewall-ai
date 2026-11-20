@@ -4,10 +4,7 @@ Unit tests for auxiliary scripts and previously unreviewed pipeline utilities:
 - core/pipeline/synthesizer.py (resilience against safety filter candidate exceptions)
 """
 
-import sys
-import os
 import unittest.mock as mock
-import pytest
 
 from core.pipeline.context_manager import ContextManager
 from core.pipeline.synthesizer import ResponseSynthesizer

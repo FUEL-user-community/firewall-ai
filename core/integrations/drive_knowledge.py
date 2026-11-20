@@ -3,8 +3,6 @@ import io
 import csv
 import re
 import logging
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload
 try:
     import pypdf

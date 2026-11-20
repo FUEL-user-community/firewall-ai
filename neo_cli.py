@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-NEO — In-Process PAN-OS Cybersec Resident & Symbiotic SSH Shell (`neo_cli.py`).
+NEO - PAN-OS CLI assistant (`neo_cli.py`).
 
-Zero listening network ports. Keys are consumed once into sealed RAM and purged
-from `os.environ` before Turn 1.
+No listening network ports. API keys are loaded once into an in-process store and removed
+from `os.environ` before the first SSH session or model call.
 
-Execution Modes:
-  1. Single-Prompt Symbiotic SSH (Recommended on Linux/macOS):
+Modes:
+  1. SSH wrapper (Linux / macOS / WSL):
        python3 neo_cli.py --ssh fw-hq
        python3 neo_cli.py --ssh admin@192.168.1.254
-     Wraps real OpenSSH in a local PTY: native Tab/?/completion at 0ms latency,
-     column-0 `@` resident & `$0.00` repo commands (`@walk`, `@macro`, `@stage`),
-     rolling 8 KB scrubbed SSH output context, and Pre-Commit Sanctuary lockout gate.
-  2. Standalone Resident REPL (Linux/macOS/Windows, optional tmux side-pane):
+     Runs your real OpenSSH session in a local PTY (native Tab / ? / history), adds `@` commands
+     at an idle prompt, keeps a scrubbed 8 KB window of recent output for context, and runs a
+     local pre-commit safety check before `commit` reaches the firewall.
+  2. Standalone REPL (any OS, optional tmux side pane):
        python3 neo_cli.py
-  3. One-Shot / Pre-Flight Check:
+  3. One-shot / preflight:
        python3 neo_cli.py -q "check mgt permitted-ip"
        python3 neo_cli.py --check
 """
@@ -440,11 +440,352 @@ def stage_lines_to_tmux_ssh(pane_id: str, commands: List[str], step_delay: float
     )
 
 
+def parse_pty_help_completions(help_text: str) -> List[str]:
+    """
+    Extract clean valid keyword/object completions from PAN-OS CLI `?` output
+    (e.g. `  action         Specify action` -> `action`), ignoring prompts and `--more--`.
+    """
+    if not help_text:
+        return []
+    seen: List[str] = []
+    for raw_ln in strip_ansi(fold_vt100_line_edits(help_text)).splitlines():
+        ln = raw_ln.strip()
+        if not ln or ln.startswith("^") or _PANOS_CLI_ERROR_RE.search(ln):
+            continue
+        if re.match(r"^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+(?:\([^)]+\))?[>#]", ln):
+            continue
+        m = re.match(r"^(<cr>|[a-zA-Z0-9_./:-]+|\[\s*\S*)\s{2,}.*$", ln)
+        if not m:
+            m = re.match(r"^(<cr>|[a-zA-Z0-9_./:-]+)$", ln)
+        if m:
+            tok = m.group(1).strip()
+            if tok and tok not in seen:
+                seen.append(tok)
+    return seen[:25]
+
+
+def probe_pty_cli_grammar(
+    master_fd: int,
+    commands: List[str],
+    current_mode: str = "config",
+    timeout_per_probe: float = 1.8,
+) -> Dict[str, Any]:
+    """
+    Non-destructive `local` PAN-OS SSH PTY `?` Grammar Oracle:
+    - Enters `configure` / `top` on `master_fd`.
+    - Probes each candidate `set|move|rename|delete` line with `?` (NO `\\r` execution!),
+      auto-quits `--more--` if completions paginate, and immediately sends `Ctrl+C` (`\\x03`)
+      to clear `mgmtsrvr`'s readline buffer so ZERO partial mutations occur on syntax failure.
+    - If any line fails live `?` grammar, walks prefixes (`<prefix> ?`) to pinpoint the exact
+      diverging token and return the live valid completions for this exact PAN-OS build.
+    """
+    import select
+
+    def _drain_until_config_prompt(max_wait: float, allow_echoed: bool = False) -> str:
+        collected = bytearray()
+        deadline = time.time() + max_wait
+        while time.time() < deadline:
+            rlist, _, _ = select.select([master_fd], [], [], 0.06)
+            if not rlist:
+                dec_now = collected.decode("utf-8", errors="replace")
+                if detect_panos_prompt_mode(dec_now) == "config":
+                    break
+                if allow_echoed and extract_echoed_command_after_prompt(dec_now)[0] == "config":
+                    break
+                continue
+            try:
+                chunk = os.read(master_fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            dec_chunk = chunk.decode("utf-8", errors="replace")
+            if "--more--" in strip_ansi(dec_chunk).lower():
+                os.write(master_fd, b"q")
+            collected.extend(chunk)
+            dec_all = collected.decode("utf-8", errors="replace")
+            if detect_panos_prompt_mode(dec_all) == "config":
+                break
+            if allow_echoed and extract_echoed_command_after_prompt(dec_all)[0] == "config":
+                break
+        return strip_ansi(fold_vt100_line_edits(collected.decode("utf-8", errors="replace")))
+
+    def _probe_single_expr(expr: str) -> str:
+        os.write(master_fd, (expr + "?").encode("utf-8"))
+        help_out = _drain_until_config_prompt(timeout_per_probe, allow_echoed=True)
+        # Clear unexecuted input buffer with Ctrl+C so mgmtsrvr returns to an empty '#' prompt
+        os.write(master_fd, b"\x03")
+        _drain_until_config_prompt(0.8, allow_echoed=False)
+        return help_out
+
+    prep = "configure" if current_mode == "op" else "top"
+    os.write(master_fd, (prep + "\r").encode("utf-8"))
+    prep_out = _drain_until_config_prompt(timeout_per_probe, allow_echoed=False)
+    if _PANOS_CLI_ERROR_RE.search(prep_out):
+        return {
+            "passed": False,
+            "prep_failed": True,
+            "error": f"Failed to enter top [edit] hierarchy: {prep_out.strip()[-120:]}",
+        }
+
+    for idx, cmd in enumerate(commands, 1):
+        probe_out = _probe_single_expr(cmd)
+        err_m = _PANOS_CLI_ERROR_RE.search(probe_out)
+        if not err_m:
+            continue
+
+        # Pinpoint exact invalid token & harvest live PAN-OS '?' completions at the valid prefix
+        tokens = cmd.split()
+        valid_prefix = ""
+        invalid_tok = tokens[-1] if tokens else cmd
+        valid_completions: List[str] = []
+        probe_steps = 0
+        for k in range(len(tokens) - 1, 0, -1):
+            if probe_steps >= 6:
+                break
+            probe_steps += 1
+            pfx_candidate = " ".join(tokens[:k])
+            pfx_out = _probe_single_expr(pfx_candidate + " ")
+            if not _PANOS_CLI_ERROR_RE.search(pfx_out):
+                valid_prefix = pfx_candidate
+                invalid_tok = tokens[k]
+                valid_completions = parse_pty_help_completions(pfx_out)
+                break
+
+        return {
+            "passed": False,
+            "prep_failed": False,
+            "failed_index": idx,
+            "failed_line": cmd,
+            "error": err_m.group(1),
+            "valid_prefix": valid_prefix,
+            "invalid_token": invalid_tok,
+            "valid_completions": valid_completions,
+        }
+
+    return {
+        "passed": True,
+        "verified_count": len(commands),
+    }
+
+
+def parse_panos_counter_deltas(counter_output: str) -> List[Dict[str, str]]:
+    """Extract hardware `show counter global filter packet-filter yes delta yes` rows."""
+    if not counter_output:
+        return []
+    rows: List[Dict[str, str]] = []
+    for raw_ln in strip_ansi(counter_output).splitlines():
+        ln = raw_ln.strip()
+        if not ln or ln.startswith(("-", "Global", "name", "Elapsed", "Total")):
+            continue
+        m = re.match(
+            r"^([a-z0-9_]+)\s+(\d+)\s+(\d+)\s+(drop|warn|info|error)\s+(\S+)\s+(\S+)\s+(.*)$",
+            ln,
+            re.IGNORECASE,
+        )
+        if m:
+            rows.append(
+                {
+                    "name": m.group(1),
+                    "value": m.group(2),
+                    "rate": m.group(3),
+                    "severity": m.group(4).lower(),
+                    "category": m.group(5),
+                    "aspect": m.group(6),
+                    "description": m.group(7).strip(),
+                }
+            )
+    return rows
+
+
+def run_pty_tac_packet_diag(
+    master_fd: int,
+    arg_str: str,
+    current_mode: str = "op",
+    confirm_fn: Optional[Callable[[str], bool]] = None,
+) -> Tuple[bool, str, str]:
+    """
+    Bounded `local` TAC L3 `packet-diag` & Hardware ASIC Counter Delta Bracket:
+    - Validates `<src_ip> <dst_ip> [port] [seconds=3.5]` strictly via `ipaddress`.
+    - Prefixes `run ` automatically if operator is currently inside `#` (`[edit]`).
+    - Checks `debug dataplane packet-diag show setting` first so pre-existing filters aren't clobbered silently.
+    - Arms bidirectional (`src->dst` + `dst->src`) packet filters, primes `delta yes`, holds capture window,
+      collects `delta yes` + `show session all`, and ALWAYS disarms `filter off` + `capture off` in `finally:`.
+    Returns `(ok, formatted_summary, raw_scrubbed_trace)`.
+    """
+    import ipaddress
+
+    parts = [p for p in (arg_str or "").split() if p.strip()]
+    if len(parts) < 2:
+        return (
+            False,
+            "Usage: @diag <src_ip> <dst_ip> [dst_port] [window_sec=3.5]",
+            "",
+        )
+
+    try:
+        src_ip = str(ipaddress.ip_address(parts[0].strip()))
+        dst_ip = str(ipaddress.ip_address(parts[1].strip()))
+    except ValueError as ve:
+        return False, f"Invalid IP address for @diag: {ve}", ""
+
+    dst_port: Optional[int] = None
+    window_sec: float = 3.5
+    for extra_tok in parts[2:4]:
+        if "." in extra_tok:
+            try:
+                window_sec = max(1.0, min(10.0, float(extra_tok)))
+            except ValueError:
+                return False, f"Invalid capture window '{extra_tok}' (expected 1.0..10.0s).", ""
+        elif extra_tok.isdigit():
+            val = int(extra_tok)
+            if 1 <= val <= 10 and dst_port is not None:
+                window_sec = float(val)
+            elif 1 <= val <= 65535:
+                dst_port = val
+            else:
+                return False, f"Port '{extra_tok}' out of range (1..65535).", ""
+
+    run_pfx = "run " if current_mode == "config" else ""
+
+    def _exec_cli(cli_line: str, echo: bool = False, max_wait: float = 6.0) -> str:
+        os.write(master_fd, cli_line.encode("utf-8"))
+        return drain_pty_ssh_command(master_fd, max_wait=max_wait, max_pages=10, echo_stdout=echo)
+
+    # 1. Pre-check if another admin already left packet-diag filter enabled
+    pre_setting = _exec_cli(f"{run_pfx}debug dataplane packet-diag show setting", echo=False, max_wait=4.0)
+    already_enabled = bool(
+        re.search(r"Packet filter[\s\S]{0,120}?Enabled\s*:\s*yes", strip_ansi(pre_setting), re.IGNORECASE)
+    )
+    if already_enabled and callable(confirm_fn):
+        if not confirm_fn("packet-diag filter is already enabled on dp0. Override and disarm after capture? [y/N]: "):
+            return False, "[diag] Cancelled (existing packet-diag filter left untouched).", ""
+
+    raw_chunks: List[str] = []
+    delta_out = ""
+    sess_out = ""
+    interrupted = False
+    port_clause = f" destination-port {dst_port}" if dst_port else ""
+
+    try:
+        _exec_cli(f"{run_pfx}debug dataplane packet-diag clear filter", echo=False)
+        _exec_cli(
+            f"{run_pfx}debug dataplane packet-diag set filter match source {src_ip} destination {dst_ip}{port_clause}",
+            echo=False,
+        )
+        _exec_cli(
+            f"{run_pfx}debug dataplane packet-diag set filter match source {dst_ip} destination {src_ip}",
+            echo=False,
+        )
+        _exec_cli(f"{run_pfx}debug dataplane packet-diag set filter on", echo=False)
+
+        # Prime baseline hardware delta counters at t=0
+        _exec_cli(f"{run_pfx}show counter global filter packet-filter yes delta yes", echo=False)
+
+        sys.stdout.write(
+            f"{C_CYAN}[diag] Armed dp0 bidirectional filter ({src_ip} <-> {dst_ip}"
+            f"{f':{dst_port}' if dst_port else ''}) — sampling {window_sec:.1f}s (Ctrl+C to finish early)...{C_RESET}"
+        )
+        sys.stdout.flush()
+        try:
+            deadline = time.time() + window_sec
+            while time.time() < deadline:
+                time.sleep(min(0.2, max(0.01, deadline - time.time())))
+        except KeyboardInterrupt:
+            interrupted = True
+
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+        delta_cmd = f"{run_pfx}show counter global filter packet-filter yes delta yes"
+        sess_cmd = f"{run_pfx}show session all filter source {src_ip} destination {dst_ip}"
+        delta_out = _exec_cli(delta_cmd, echo=False)
+        sess_out = _exec_cli(sess_cmd, echo=False)
+        raw_chunks.append(f"$ {delta_cmd}\n{strip_ansi(delta_out)}")
+        raw_chunks.append(f"$ {sess_cmd}\n{strip_ansi(sess_out)}")
+    finally:
+        # HARD SAFETY INVARIANT: Always disarm packet-diag on dp0 even on Ctrl+C or PTY error
+        for disarm_cmd in (
+            f"{run_pfx}debug dataplane packet-diag set filter off",
+            f"{run_pfx}debug dataplane packet-diag set capture off",
+            f"{run_pfx}debug dataplane packet-diag clear filter",
+        ):
+            try:
+                _exec_cli(disarm_cmd, echo=False, max_wait=3.0)
+            except Exception:
+                pass
+
+    rows = parse_panos_counter_deltas(delta_out)
+    drops_warns = [r for r in rows if r["severity"] in ("drop", "warn", "error")]
+    info_rows = [r for r in rows if r["severity"] not in ("drop", "warn", "error")]
+
+    lines: List[str] = [
+        f"{C_BOLD}── PACKET-DIAG COUNTER DELTA ({src_ip} <-> {dst_ip}{f':{dst_port}' if dst_port else ''}, local) ──{C_RESET}",
+        f"{C_GREEN}[disarmed]{C_RESET} dp0 packet-diag filter=off, capture=off, filter=cleared (0 residual load)"
+        + (" [stopped early]" if interrupted else ""),
+    ]
+    if drops_warns:
+        lines.append(f"\n{C_RED}{C_BOLD}ASIC Drop / Warn Counters Triggered ({len(drops_warns)}):{C_RESET}")
+        for r in drops_warns[:12]:
+            col = C_RED if r["severity"] in ("drop", "error") else C_YELLOW
+            lines.append(
+                f"  {col}[{r['severity'].upper()}]{C_RESET} {C_BOLD}{r['name']}{C_RESET} "
+                f"(+{r['value']} pkts, {r['rate']}/s) — {r['description']}"
+            )
+    elif info_rows:
+        lines.append(f"\n{C_GREEN}Zero ASIC drop/warn counters during window ({len(info_rows)} info counter(s) incremented):{C_RESET}")
+        for r in info_rows[:8]:
+            lines.append(f"  [INFO] {r['name']} (+{r['value']}) — {r['description']}")
+    else:
+        lines.append(
+            f"\n{C_YELLOW}Zero matching packets hit dp0 during the {window_sec:.1f}s window "
+            f"(verify traffic generator or upstream L2/routing before this firewall).{C_RESET}"
+        )
+
+    clean_sess = "\n".join(
+        ln
+        for ln in strip_ansi(sess_out).splitlines()
+        if ln.strip() and not re.match(r"^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+(?:\([^)]+\))?[>#]", ln.strip())
+    ).strip()
+    if clean_sess:
+        lines.append(f"\n{C_BOLD}Matching Live Session Table:{C_RESET}\n{clean_sess}")
+
+    lines.append(f"\n{C_DIM}Captured into SSH context — type '@ explain drops' to correlate against SP3 config.{C_RESET}")
+    scrubbed_trace = sanitize_ssh_capture("\n\n".join(raw_chunks)[-8192:])
+    return True, "\n".join(lines), scrubbed_trace
+
+
+def extract_panos_test_match_tuple(cmd_text: str) -> Optional[Dict[str, str]]:
+    """
+    Detect single-table PAN-OS CLI `test security-policy-match ...` or `test nat-policy-match ...`
+    commands and extract `(source, destination, port, protocol)` so NEO can automatically check
+    whether Post-DNAT zone shifts, PBF, or `[edit]` candidate rules contradict the CLI `test` output.
+    """
+    clean = re.sub(r"^run\s+", "", (cmd_text or "").strip(), flags=re.IGNORECASE)
+    if not re.match(r"^test\s+(?:security-policy-match|nat-policy-match)\b", clean, re.IGNORECASE):
+        return None
+    src_m = re.search(r"\bsource\s+([0-9a-fA-F.:]+)", clean, re.IGNORECASE)
+    dst_m = re.search(r"\bdestination\s+([0-9a-fA-F.:]+)", clean, re.IGNORECASE)
+    if not src_m or not dst_m:
+        return None
+    port_m = re.search(r"\bdestination-port\s+(\d+)", clean, re.IGNORECASE)
+    proto_m = re.search(r"\bprotocol\s+(\d+|tcp|udp|icmp)\b", clean, re.IGNORECASE)
+    app_m = re.search(r"\bapplication\s+([a-zA-Z0-9_.-]+)", clean, re.IGNORECASE)
+    return {
+        "source": src_m.group(1),
+        "destination": dst_m.group(1),
+        "port": port_m.group(1) if port_m else "443",
+        "protocol": proto_m.group(1) if proto_m else "6",
+        "application": app_m.group(1) if app_m else "",
+    }
+
+
 def stage_lines_to_pty_master(
     master_fd: int,
     commands: List[str],
     current_mode: str = "config",
     timeout_per_cmd: float = 2.0,
+    skip_prep: bool = False,
 ) -> Tuple[bool, str]:
     """
     Directly write validated `set|move|rename|delete` lines into the live SSH PTY `master_fd`,
@@ -473,10 +814,11 @@ def stage_lines_to_pty_master(
                 break
         return strip_ansi(collected.decode("utf-8", errors="replace"))
 
-    prep = "configure" if current_mode == "op" else "top"
-    prep_out = _send_and_collect(prep)
-    if _PANOS_CLI_ERROR_RE.search(prep_out):
-        return False, f"Failed to enter top [edit] hierarchy: {prep_out.strip()[-120:]}"
+    if not skip_prep:
+        prep = "configure" if current_mode == "op" else "top"
+        prep_out = _send_and_collect(prep)
+        if _PANOS_CLI_ERROR_RE.search(prep_out):
+            return False, f"Failed to enter top [edit] hierarchy: {prep_out.strip()[-120:]}"
 
     sent = 0
     for idx, cmd in enumerate(commands, 1):
@@ -704,32 +1046,92 @@ def _render_turn_output(result: Dict[str, Any], brain=None) -> None:
 
 
 def _run_zero_token_walk(arg_str: str, target_device: Optional[str]) -> None:
-    """Execute deterministic `$0.00` SP3 `test_packet_walk` directly without spending LLM tokens."""
+    """Execute deterministic `local` SP3 `test_packet_walk` (+ Candidate `[edit]` walk when dirty or `--candidate`)."""
+    import yaml as _yaml
     from core.panos.ops import test_packet_walk
     from core.panos.sanctuary import get_pending_candidate_changes
 
-    tokens = arg_str.split()
+    raw_tokens = [t for t in arg_str.split() if t.strip()]
+    force_cand = False
+    tokens: List[str] = []
+    for tok in raw_tokens:
+        if tok.lower() in ("--candidate", "-c", "candidate"):
+            force_cand = True
+        else:
+            tokens.append(tok)
+
     if len(tokens) < 2:
-        print(f"{C_YELLOW}Usage: walk <src_ip> <dst_ip> [port=443] [proto=tcp|udp|icmp]{C_RESET}\n")
+        print(f"{C_YELLOW}Usage: walk <src_ip> <dst_ip> [port=443] [proto=tcp|udp|icmp] [--candidate]{C_RESET}\n")
         return
     src, dst = tokens[0], tokens[1]
     port = tokens[2] if len(tokens) >= 3 else "443"
     proto = tokens[3] if len(tokens) >= 4 else "tcp"
     t0 = time.perf_counter()
     pending = get_pending_candidate_changes(target_device=target_device)
-    out = test_packet_walk(source=src, destination=dst, port=port, protocol=proto, target_device=target_device)
+    want_cand = bool(pending or force_cand)
+    try:
+        out = test_packet_walk(
+            source=src,
+            destination=dst,
+            port=port,
+            protocol=proto,
+            target_device=target_device,
+            include_candidate=want_cand,
+        )
+    except TypeError:
+        out = test_packet_walk(source=src, destination=dst, port=port, protocol=proto, target_device=target_device)
     ms = (time.perf_counter() - t0) * 1000
-    cand_banner = (
-        f"{C_YELLOW}[NOTE: {len(pending)} uncommitted candidate edit(s) exist in [edit] — "
-        f"PAN-OS packet walk evaluates COMMITTED running policy only. Run '@diff' to audit candidate.]{C_RESET}\n"
-        if pending
-        else ""
-    )
-    _emit_or_page(f"{C_BOLD}── SP3 PACKET WALK ({ms:.1f}ms · $0.00) ──{C_RESET}\n{cand_banner}{out}\n")
+
+    cand_banner = ""
+    try:
+        parsed = _yaml.safe_load(out) if isinstance(out, str) and not out.startswith("ERROR:") else None
+    except Exception:
+        parsed = None
+
+    if isinstance(parsed, dict) and isinstance(parsed.get("running_vs_candidate_delta"), dict):
+        delta = parsed["running_vs_candidate_delta"]
+        c_walk = parsed.get("candidate_edit_walk") or {}
+        if delta.get("verdict_changed") == "indeterminate":
+            changed_tag = f"{C_YELLOW}INDETERMINATE (unresolved objects){C_RESET}"
+        elif delta.get("verdict_changed"):
+            changed_tag = f"{C_YELLOW}VERDICT SHIFT IN [edit]{C_RESET}"
+        else:
+            changed_tag = f"{C_GREEN}MATCHES RUNNING{C_RESET}"
+        banner_lines = [
+            f"{C_BOLD}┌─ PRE-COMMIT [edit] vs. COMMITTED SP3 COMPARISON ({delta.get('pending_edit_count', 0)} uncommitted edit(s)) · {changed_tag}{C_RESET}",
+            f"│ {C_DIM}COMMITTED RUNNING :{C_RESET} {delta.get('running_verdict')}",
+            f"└ {C_CYAN}CANDIDATE [edit]  :{C_RESET} {C_BOLD}{delta.get('candidate_verdict')}{C_RESET}"
+            + (
+                f"  {C_YELLOW}[DNAT -> {c_walk.get('translated_destination')}]{C_RESET}"
+                if c_walk.get("translated_destination")
+                else ""
+            ),
+        ]
+        for reason in c_walk.get("indeterminate_reasons") or []:
+            banner_lines.append(f"  {C_YELLOW}? {reason}{C_RESET}")
+        if c_walk.get("indeterminate_reasons"):
+            banner_lines.append(
+                f"  {C_DIM}Best-effort if unresolved objects do NOT match: "
+                f"'{c_walk.get('best_effort_rule_if_unresolved_objects_do_not_match')}'. "
+                f"Commit + live 'test security-policy-match' is authoritative.{C_RESET}"
+            )
+        for sh in c_walk.get("shadowed_later_rules") or []:
+            banner_lines.append(
+                f"  {C_RED}! SHADOW WARNING:{C_RESET} Later candidate rule {sh} also matches this flow "
+                f"but is shadowed by #{c_walk.get('rule_index')} '{c_walk.get('security_rule')}'."
+            )
+        cand_banner = "\n".join(banner_lines) + "\n\n"
+    elif pending:
+        cand_banner = (
+            f"{C_YELLOW}[NOTE: {len(pending)} uncommitted candidate edit(s) exist in [edit] — "
+            f"run '@diff' to audit candidate changes.]{C_RESET}\n"
+        )
+
+    _emit_or_page(f"{C_BOLD}── SP3 PACKET WALK ({ms:.1f}ms, local) ──{C_RESET}\n{cand_banner}{out}\n")
 
 
 def _run_zero_token_macro(arg_str: str, brain, target_device: Optional[str]) -> None:
-    """Execute any read-only `commands.yaml` macro or tool directly at `$0.00`."""
+    """Execute any read-only `commands.yaml` macro or tool directly at `local`."""
     all_tools = {t.__name__: t for t in brain.keeper.get_all_tools()}
     name = arg_str.strip()
     if not name or name == "list":
@@ -737,7 +1139,7 @@ def _run_zero_token_macro(arg_str: str, brain, target_device: Optional[str]) -> 
             k for k, cfg in (brain.keeper.commands or {}).items()
             if isinstance(cfg, dict) and cfg.get("type") == "macro"
         )
-        print(f"{C_BOLD}Available $0.00 Macros:{C_RESET} {', '.join(macros)}\n")
+        print(f"{C_BOLD}Available local Macros:{C_RESET} {', '.join(macros)}\n")
         return
     fn = all_tools.get(name)
     if not fn:
@@ -753,35 +1155,73 @@ def _run_zero_token_macro(arg_str: str, brain, target_device: Optional[str]) -> 
     except TypeError:
         out = fn()
     ms = (time.perf_counter() - t0) * 1000
-    _emit_or_page(f"{C_BOLD}── {name} ({ms:.1f}ms · $0.00) ──{C_RESET}\n{out}\n")
+    _emit_or_page(f"{C_BOLD}── {name} ({ms:.1f}ms, local) ──{C_RESET}\n{out}\n")
 
 
 def _print_help(symbiotic: bool = False) -> None:
     pfx = "@" if symbiotic else "/"
     extra = (
-        f"  {C_CYAN}@ <question>{C_RESET}          Ask NEO inline (auto-attaches recent scrubbed SSH output)\n"
-        f"  {C_CYAN}<cmd> + @ <question>{C_RESET}  Run SSH <cmd> & NEO XML-API query simultaneously (t=0ms)\n"
-        f"  {C_CYAN}<cmd> | @ <question>{C_RESET}  Run SSH <cmd> first and pipe its fresh output into NEO\n"
+        f"  {C_CYAN}@ <question>{C_RESET}          Ask NEO (recent scrubbed SSH output is attached automatically)\n"
+        f"  {C_CYAN}<cmd> + @ <question>{C_RESET}  Run the SSH command and the NEO question at the same time\n"
+        f"  {C_CYAN}<cmd> | @ <question>{C_RESET}  Run the SSH command, then hand its output to NEO\n"
+        f"  {C_CYAN}@diag <s> <d> [p] [t]{C_RESET} packet-diag + global drop-counter delta; filters always disarmed (needs '@write diag')\n"
         if symbiotic
-        else f"  {C_CYAN}/grab [lines]{C_RESET}         Capture & scrub last N lines from adjacent tmux SSH pane\n"
+        else f"  {C_CYAN}/grab [lines]{C_RESET}         Capture & scrub the last N lines from the adjacent tmux SSH pane\n"
+    )
+    forge_lines = (
+        f"  {C_CYAN}{pfx}board{C_RESET}                 [experimental] Drive board sync\n"
+        f"  {C_CYAN}{pfx}forge{C_RESET}                 [experimental] Self-patching status\n"
+        if _forge_enabled()
+        else ""
     )
     print(
-        f"\n{C_BOLD}NEO Commands ({'Symbiotic Single-Prompt SSH' if symbiotic else 'Resident REPL'}):{C_RESET}\n"
+        f"\n{C_BOLD}NEO commands ({'SSH wrapper' if symbiotic else 'standalone'}):{C_RESET}\n"
         f"{extra}"
-        f"  {C_CYAN}{pfx}walk <s> <d> [p] [pr]{C_RESET} Run $0.00 deterministic SP3 packet walk (FIB->PBF->NAT->Policy)\n"
-        f"  {C_CYAN}{pfx}diff{C_RESET}                  Run $0.00 candidate XML audit (lockout, severance, uninspected rules)\n"
-        f"  {C_CYAN}{pfx}macro [name|list]{C_RESET}     Run $0.00 commands.yaml composite macro (e.g. ha_deep_audit)\n"
-        f"  {C_CYAN}{pfx}stage{C_RESET}                 Validate & inject last 'set/move/delete' lines into [edit] (no commit)\n"
-        f"  {C_CYAN}{pfx}write [on|off]{C_RESET}        Toggle PolicyEngine READ_WRITE / READ_ONLY in-session (HITL enforced)\n"
-        f"  {C_CYAN}{pfx}why{C_RESET}                   Show full <REASONING> trace for the last exchange\n"
-        f"  {C_CYAN}{pfx}raw <N>{C_RESET}               Show exact raw PAN-OS XML/YAML/CLI output for [Step N]\n"
-        f"  {C_CYAN}{pfx}mem{C_RESET}                   Inspect rolling <resident_session_memory> (max 10 turns)\n"
-        f"  {C_CYAN}{pfx}board{C_RESET}                 Sync & view Stigmergic Board notes / Drive workorders\n"
-        f"  {C_CYAN}{pfx}forge{C_RESET}                 Inspect active #core tool count & staged zero-disk patches\n"
-        f"  {C_CYAN}{pfx}audit <query>{C_RESET}         Run strict forensic audit mode (Device Facts + claim referee)\n"
-        f"  {C_CYAN}{pfx}export [file.md]{C_RESET}      Compile CAB Markdown report (evidence.py + google_export.py)\n"
-        f"  {C_CYAN}{pfx}reset{C_RESET}                 Clear rolling resident session memory\n"
+        f"  {C_CYAN}{pfx}walk <s> <d> [p] [pr]{C_RESET} Packet walk: FIB -> PBF -> NAT -> security (committed, plus candidate if edited). Local.\n"
+        f"  {C_CYAN}{pfx}diff{C_RESET}                  Pre-commit review of candidate changes. Local.\n"
+        f"  {C_CYAN}{pfx}macro [name|list]{C_RESET}     Run a read-only command bundle from config/commands.yaml. Local.\n"
+        f"  {C_CYAN}{pfx}stage{C_RESET}                 Syntax-check NEO's last 'set' lines with '?' and inject into [edit] (needs '@write on')\n"
+        f"  {C_CYAN}{pfx}write [on|diag|off]{C_RESET}   Write policy for API tools and SSH writes (default READ_ONLY)\n"
+        f"  {C_CYAN}{pfx}log [N]{C_RESET}               Show the last N change-provenance entries and verify the hash chain\n"
+        f"  {C_CYAN}{pfx}why{C_RESET}                   Show the reasoning trace for the last answer\n"
+        f"  {C_CYAN}{pfx}raw <N>{C_RESET}               Show the raw firewall output behind [Step N]\n"
+        f"  {C_CYAN}{pfx}mem{C_RESET}                   Show session memory (last 10 turns)\n"
+        f"  {C_CYAN}{pfx}audit <question>{C_RESET}      Formal report mode with code-computed facts and citation checks\n"
+        f"  {C_CYAN}{pfx}export [file.md]{C_RESET}      Save the last answer as a change-review Markdown report\n"
+        f"{forge_lines}"
+        f"  {C_CYAN}{pfx}reset{C_RESET}                 Clear session memory\n"
     )
+
+
+def _build_sp3_cross_plane_overlay(ssh_cmd: str, target_device: Optional[str]) -> str:
+    """
+    When the operator runs `test security-policy-match ...` or `test nat-policy-match ...` in SSH
+    alongside `+ @` or `| @`, run a `local` full 6-stage SP3 walk (+ Candidate `[edit]` check)
+    so NEO immediately catches Post-DNAT zone shifts, PBF overrides, or uncommitted `[edit]` deltas.
+    """
+    tup = extract_panos_test_match_tuple(ssh_cmd)
+    if not tup:
+        return ""
+    try:
+        from core.panos.ops import test_packet_walk
+
+        sp3_yaml = test_packet_walk(
+            source=tup["source"],
+            destination=tup["destination"],
+            port=tup["port"],
+            protocol=tup["protocol"],
+            application=tup["application"] or None,
+            target_device=target_device,
+        )
+        if sp3_yaml and not sp3_yaml.startswith("ERROR:"):
+            return (
+                f"\n\n<sp3_cross_plane_verification command={ssh_cmd!r}>\n"
+                f"{sp3_yaml.strip()}\n"
+                f"</sp3_cross_plane_verification>"
+            )
+    except Exception:
+        pass
+    return ""
 
 
 def execute_dual_plane_turn(
@@ -794,6 +1234,7 @@ def execute_dual_plane_turn(
     state_box: Dict[str, Any],
     target_device: Optional[str],
     ssh_ring_snapshot: str,
+    ssh_ring_appender: Optional[Callable[[str], None]] = None,
 ) -> str:
     """
     Execute `<ssh_cmd> + @ <neo_cmd>` (concurrent t=0ms SSH + XML-API) or
@@ -809,7 +1250,8 @@ def execute_dual_plane_turn(
         raw_ssh_out = drain_pty_ssh_command(master_fd, echo_stdout=True)
         sys.stdout.write("\n")
         sys.stdout.flush()
-        piped_ctx = sanitize_ssh_capture(f"$ {ssh_cmd}\n{raw_ssh_out}"[-8192:])
+        sp3_overlay = _build_sp3_cross_plane_overlay(ssh_cmd, target_device)
+        piped_ctx = sanitize_ssh_capture(f"$ {ssh_cmd}\n{raw_ssh_out}"[-8192:]) + sp3_overlay
         handled = _dispatch_shared_meta_command(
             neo_cmd,
             brain=brain,
@@ -819,6 +1261,7 @@ def execute_dual_plane_turn(
             pty_master_fd=master_fd,
             pty_prompt_mode=echo_mode,
             ssh_ring_getter=lambda: piped_ctx,
+            ssh_ring_appender=ssh_ring_appender,
         )
         if not handled:
             state_box["last_query"] = neo_cmd
@@ -836,7 +1279,7 @@ def execute_dual_plane_turn(
     is_llm_audit = low.startswith("audit ") and bool(neo_cmd[6:].strip())
     is_meta_only = not is_llm_audit and (
         low in ("help", "diff", "reset", "mem", "board", "forge", "why", "stage")
-        or low.startswith(("write", "raw", "walk", "macro", "export"))
+        or low.startswith(("write", "raw", "walk", "macro", "export", "diag"))
     )
 
     if is_meta_only:
@@ -852,6 +1295,7 @@ def execute_dual_plane_turn(
             pty_master_fd=master_fd,
             pty_prompt_mode=echo_mode,
             ssh_ring_getter=lambda: ssh_ring_snapshot,
+            ssh_ring_appender=ssh_ring_appender,
         )
         return raw_ssh_out
 
@@ -863,6 +1307,7 @@ def execute_dual_plane_turn(
         if ssh_ring_snapshot
         else eff_query
     )
+    wants_sp3_overlay = extract_panos_test_match_tuple(ssh_cmd) is not None
 
     abort_event = threading.Event()
     ssh_draining = [True]
@@ -886,8 +1331,13 @@ def execute_dual_plane_turn(
 
     def _bg_worker() -> None:
         try:
+            # SP3 cross-plane overlay runs INSIDE the worker so the SSH command executes at t=0ms
+            worker_query = full_query
+            if wants_sp3_overlay and not abort_event.is_set():
+                _buffered_status("SP3 cross-plane verification of 'test *-policy-match' tuple (local)...")
+                worker_query += _build_sp3_cross_plane_overlay(ssh_cmd, target_device)
             res_holder["res"] = brain.investigate(
-                full_query,
+                worker_query,
                 user_id="ssh-operator",
                 status_callback=_buffered_status,
                 target_device=target_device,
@@ -978,6 +1428,52 @@ def _execute_brain_turn(
     return {"verdict": str(res), "receipts": [], "reasoning": [], "trace_id": ""}
 
 
+def _policy_mode(brain) -> str:
+    pol = getattr(brain, "policy", None)
+    mode = getattr(pol, "mode", None) if pol is not None else None
+    return mode if isinstance(mode, str) else "READ_ONLY"
+
+
+def _pty_policy_block(brain, action: str) -> Optional[str]:
+    """
+    Single policy plane: PTY writes (`@stage`, `@diag`) obey the same PolicyEngine mode as API write tools.
+    `@diag` additionally needs an explicit session opt-in because it runs `debug dataplane` commands that the
+    API-side CommandFilter forbids.
+    """
+    mode = _policy_mode(brain)
+    if mode != "READ_WRITE":
+        return (
+            f"[{action}] Blocked: write policy is {mode}. SSH-channel writes follow the same policy as API tools "
+            f"— run '@write on' first."
+        )
+    if action == "diag" and getattr(brain, "_pty_diag_enabled", False) is not True:
+        return (
+            "[diag] Blocked: packet-diag runs 'debug dataplane' commands, which the API command filter forbids. "
+            "Enable explicitly for this session with '@write diag'."
+        )
+    return None
+
+
+def _audit(event: str, **fields: Any) -> None:
+    """Record a provenance event; never raises."""
+    try:
+        from core.safety.audit_log import record_audit_event
+
+        record_audit_event(event, **fields)
+    except Exception:
+        pass
+
+
+def build_neo_commit_suffix(trace_id: str) -> str:
+    """Return the ` description "NEO-assisted <trace>"` suffix appended to a bare `commit` (PAN-OS-safe charset)."""
+    clean = re.sub(r"[^A-Za-z0-9_.:-]", "", str(trace_id or "cli"))[:48] or "cli"
+    return f' description "NEO-assisted {clean}"'
+
+
+def _forge_enabled() -> bool:
+    return os.getenv("NEO_ENABLE_FORGE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _dispatch_shared_meta_command(
     cmd_body: str,
     brain,
@@ -987,6 +1483,53 @@ def _dispatch_shared_meta_command(
     pty_master_fd: Optional[int] = None,
     pty_prompt_mode: str = "config",
     ssh_ring_getter: Optional[Callable[[], str]] = None,
+    ssh_ring_appender: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """
+    Ctrl+C containment wrapper: a KeyboardInterrupt raised mid-PTY-probe, mid-`@diag`, or mid-`@stage`
+    must cancel ONLY the NEO action (clearing any half-typed CLI line with `\\x03`), never propagate into
+    `run_symbiotic_ssh()`'s `finally: proc.terminate()` and kill the operator's live SSH session.
+    """
+    try:
+        return _dispatch_shared_meta_command_impl(
+            cmd_body,
+            brain=brain,
+            state_box=state_box,
+            target_device=target_device,
+            symbiotic=symbiotic,
+            pty_master_fd=pty_master_fd,
+            pty_prompt_mode=pty_prompt_mode,
+            ssh_ring_getter=ssh_ring_getter,
+            ssh_ring_appender=ssh_ring_appender,
+        )
+    except KeyboardInterrupt:
+        if symbiotic and pty_master_fd is not None:
+            try:
+                os.write(pty_master_fd, b"\x03")
+            except OSError:
+                pass
+        sys.stdout.write(
+            f"\r\033[K{C_YELLOW}[neo] Action interrupted (Ctrl+C) — SSH session preserved; "
+            f"run 'show config diff' in [edit] if a stage was in progress.{C_RESET}\n"
+        )
+        sys.stdout.flush()
+        try:
+            brain.record_operator_event(f"Operator interrupted NEO action '{cmd_body.strip()[:60]}' with Ctrl+C.")
+        except Exception:
+            pass
+        return True
+
+
+def _dispatch_shared_meta_command_impl(
+    cmd_body: str,
+    brain,
+    state_box: Dict[str, Any],
+    target_device: Optional[str],
+    symbiotic: bool = False,
+    pty_master_fd: Optional[int] = None,
+    pty_prompt_mode: str = "config",
+    ssh_ring_getter: Optional[Callable[[], str]] = None,
+    ssh_ring_appender: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """
     Shared handler for both `/cmd` (standalone REPL) and `@cmd` (symbiotic SSH).
@@ -1005,7 +1548,7 @@ def _dispatch_shared_meta_command(
         t0 = time.perf_counter()
         diff_out = summarize_candidate_diff(target_device=target_device)
         ms = (time.perf_counter() - t0) * 1000
-        _emit_or_page(f"{C_BOLD}── CANDIDATE PRE-COMMIT DIFF ({ms:.1f}ms · $0.00) ──{C_RESET}\n{diff_out}\n")
+        _emit_or_page(f"{C_BOLD}── CANDIDATE PRE-COMMIT DIFF ({ms:.1f}ms, local) ──{C_RESET}\n{diff_out}\n")
         return True
     if low == "write" or low.startswith("write "):
         sub = q[5:].strip().lower()
@@ -1014,9 +1557,10 @@ def _dispatch_shared_meta_command(
             print(f"{C_RED}[write] PolicyEngine unavailable.{C_RESET}\n")
             return True
         if sub in ("", "status"):
+            diag_state = "enabled" if getattr(brain, "_pty_diag_enabled", False) is True else "disabled"
             print(
-                f"{C_BOLD}[write]{C_RESET} PolicyEngine mode is currently "
-                f"{C_YELLOW}{pol.mode}{C_RESET} (terminal [y/N] HITL + Sanctuary IP gates enforced).\n"
+                f"{C_BOLD}[write]{C_RESET} Policy {C_YELLOW}{pol.mode}{C_RESET} applies to API tools AND SSH-channel "
+                f"writes (@stage). packet-diag (@diag): {diag_state}. Every write still needs your [y/N].\n"
             )
             return True
         if sub == "on":
@@ -1024,9 +1568,21 @@ def _dispatch_shared_meta_command(
             os.environ["POLICY_MODE"] = "READ_WRITE"
             if getattr(brain, "tool_executor", None) is not None and getattr(brain.tool_executor, "policy", None) is not None:
                 brain.tool_executor.policy.mode = "READ_WRITE"
+            _audit("policy_change", mode="READ_WRITE")
             print(
-                f"{C_YELLOW}[write] PolicyEngine elevated to READ_WRITE for this session "
-                f"(every write tool still requires your [y/N] terminal HITL approval + Sanctuary check).{C_RESET}\n"
+                f"{C_YELLOW}[write] READ_WRITE for this session (API tools + @stage). "
+                f"Every write still requires your [y/N]; '@write diag' separately enables @diag.{C_RESET}\n"
+            )
+            return True
+        if sub == "diag":
+            if pol.mode != "READ_WRITE":
+                print(f"{C_YELLOW}[write] Run '@write on' first; @diag is only available in READ_WRITE.{C_RESET}\n")
+                return True
+            brain._pty_diag_enabled = True
+            _audit("policy_change", mode="READ_WRITE", diag_enabled=True)
+            print(
+                f"{C_YELLOW}[write] @diag enabled for this session (runs 'debug dataplane packet-diag'; "
+                f"filters are always disarmed afterwards).{C_RESET}\n"
             )
             return True
         if sub == "off":
@@ -1034,9 +1590,30 @@ def _dispatch_shared_meta_command(
             os.environ["POLICY_MODE"] = "READ_ONLY"
             if getattr(brain, "tool_executor", None) is not None and getattr(brain.tool_executor, "policy", None) is not None:
                 brain.tool_executor.policy.mode = "READ_ONLY"
-            print(f"{C_GREEN}[write] PolicyEngine returned to READ_ONLY.{C_RESET}\n")
+            brain._pty_diag_enabled = False
+            _audit("policy_change", mode="READ_ONLY", diag_enabled=False)
+            print(f"{C_GREEN}[write] Back to READ_ONLY (API tools, @stage and @diag all blocked).{C_RESET}\n")
             return True
-        print(f"{C_YELLOW}Usage: write [on|off|status]{C_RESET}\n")
+        print(f"{C_YELLOW}Usage: write [on|diag|off|status]{C_RESET}\n")
+        return True
+    if low == "log" or low.startswith("log "):
+        from core.safety.audit_log import read_recent_audit_events, verify_audit_chain
+
+        n_arg = q[3:].strip()
+        limit = int(n_arg) if n_arg.isdigit() else 10
+        ok_chain, count, bad_line = verify_audit_chain()
+        chain_msg = (
+            f"{C_GREEN}chain intact ({count} entries){C_RESET}"
+            if ok_chain
+            else f"{C_RED}CHAIN BROKEN at line {bad_line} — log was edited or truncated{C_RESET}"
+        )
+        rows = [f"{C_BOLD}── CHANGE PROVENANCE LOG · {chain_msg} ──{C_RESET}"]
+        for ev in read_recent_audit_events(limit):
+            detail = ev.get("lines") or ev.get("result") or ev.get("decision") or ev.get("mode") or ""
+            if isinstance(detail, list):
+                detail = f"{len(detail)} line(s): {detail[0][:70] if detail else ''}"
+            rows.append(f"  {ev.get('ts', '')}  {C_CYAN}{ev.get('event', ''):<18}{C_RESET} {str(detail)[:100]}")
+        _emit_or_page("\n".join(rows) + "\n")
         return True
     if low == "reset":
         brain.reset_resident_session()
@@ -1054,6 +1631,9 @@ def _dispatch_shared_meta_command(
                 print(f"  {C_CYAN}#{idx:02d}{C_RESET} op   : {item.get('operator', '')[:100]}")
                 print(f"      tools: {C_DIM}{tools_str}{C_RESET}")
                 print(f"      neo  : {item.get('reply', '')[:140]}\n")
+        return True
+    if low in ("board", "forge") and not _forge_enabled():
+        print(f"{C_DIM}[{low}] Experimental self-patching / Drive board is disabled (set NEO_ENABLE_FORGE=1 to enable).{C_RESET}\n")
         return True
     if low == "board":
         from core.integrations.board_sync import board_ops
@@ -1125,6 +1705,31 @@ def _dispatch_shared_meta_command(
         out_path.write_text(md_doc, encoding="utf-8")
         print(f"{C_GREEN}[export] Saved CAB report to {out_path}{C_RESET}\n")
         return True
+    if low == "diag" or low.startswith("diag "):
+        if not symbiotic or pty_master_fd is None:
+            print(
+                f"{C_YELLOW}[diag] packet-diag needs the SSH wrapper "
+                f"(run 'python3 neo_cli.py --ssh fw-hq').{C_RESET}\n"
+            )
+            return True
+        blocked = _pty_policy_block(brain, "diag")
+        if blocked:
+            print(f"{C_YELLOW}{blocked}{C_RESET}\n")
+            _audit("diag_blocked", args=q[4:].strip(), reason=blocked)
+            return True
+        ok_d, summary_d, trace_d = run_pty_tac_packet_diag(
+            pty_master_fd,
+            q[4:].strip(),
+            current_mode=pty_prompt_mode,
+            confirm_fn=lambda prompt_msg: input(f"{C_YELLOW}{prompt_msg}{C_RESET}").strip().lower() in ("y", "yes"),
+        )
+        _emit_or_page(summary_d + "\n")
+        _audit("diag_executed", args=q[4:].strip(), result="ok" if ok_d else "failed")
+        if ok_d and trace_d:
+            if callable(ssh_ring_appender):
+                ssh_ring_appender(f"\n[TAC_PACKET_DIAG]\n{trace_d}\n")
+            brain.record_operator_event(f"Executed bounded packet-diag ({q[4:].strip()}); filters disarmed.")
+        return True
     if low == "stage":
         verdict_txt = str(last_result.get("verdict") or "")
         cand_lines = extract_stageable_panos_lines(verdict_txt)
@@ -1134,28 +1739,137 @@ def _dispatch_shared_meta_command(
         print(f"{C_BOLD}── CANDIDATE PAN-OS CLI LINES (commit stripped) ──{C_RESET}")
         for i, cl in enumerate(cand_lines, 1):
             print(f"  {C_GREEN}{i:02d}{C_RESET}  {cl}")
+        stage_trace = str(last_result.get("trace_id") or "cli")
+        _audit("stage_proposed", trace_id=stage_trace, lines=list(cand_lines))
 
         if symbiotic and pty_master_fd is not None:
-            confirm = input(f"\n{C_YELLOW}Inject these {len(cand_lines)} line(s) directly into active SSH [edit]? [y/N]: {C_RESET}").strip().lower()
+            blocked = _pty_policy_block(brain, "stage")
+            if blocked:
+                print(f"\n{C_YELLOW}{blocked}{C_RESET}\n{C_DIM}(Or copy the lines above by hand.){C_RESET}\n")
+                _audit("stage_blocked", trace_id=stage_trace, reason=blocked)
+                return True
+            pano = state_box.get("panorama") or {}
+            if pano.get("managed"):
+                print(
+                    f"\n{C_YELLOW}[panorama] This firewall is Panorama-managed ({pano.get('detail')}). Local candidate "
+                    f"edits can be overwritten by the next template / device-group push.{C_RESET}"
+                )
+            confirm = input(f"\n{C_YELLOW}Check syntax with '?' & inject {len(cand_lines)} line(s) into SSH [edit]? [y/N]: {C_RESET}").strip().lower()
             if confirm not in ("y", "yes"):
                 print(f"{C_DIM}[stage] Cancelled.{C_RESET}\n")
+                _audit("stage_decision", trace_id=stage_trace, decision="rejected")
                 return True
-            ok, msg = stage_lines_to_pty_master(pty_master_fd, cand_lines, current_mode=pty_prompt_mode)
+            _audit("stage_decision", trace_id=stage_trace, decision="approved", lines=list(cand_lines))
+
+            t_gram = time.perf_counter()
+            gram = probe_pty_cli_grammar(pty_master_fd, cand_lines, current_mode=pty_prompt_mode)
+            g_ms = (time.perf_counter() - t_gram) * 1000
+
+            if not gram.get("passed"):
+                if gram.get("prep_failed"):
+                    print(f"{C_RED}[grammar] {gram.get('error')}{C_RESET}\n")
+                    return True
+                valid_opts = ", ".join(gram.get("valid_completions") or []) or "none returned"
+                print(
+                    f"\n{C_RED}{C_BOLD}[syntax] BLOCKED BEFORE INJECTION ({g_ms:.0f}ms, local, 0 lines mutated in [edit]):{C_RESET}\n"
+                    f"  Line #{gram.get('failed_index')}: {C_YELLOW}{gram.get('failed_line')}{C_RESET}\n"
+                    f"  Invalid token : {C_RED}{gram.get('invalid_token')}{C_RESET} ({gram.get('error')})\n"
+                    f"  Valid prefix  : {C_CYAN}{gram.get('valid_prefix') or '<root>'}{C_RESET}\n"
+                    f"  Valid tokens from the firewall's '?' at that point: {C_GREEN}{valid_opts}{C_RESET}"
+                )
+                fix_ans = input(
+                    f"\n{C_YELLOW}Ask NEO to fix the line using those tokens? [Y/n]: {C_RESET}"
+                ).strip().lower()
+                if fix_ans in ("n", "no"):
+                    print(f"{C_DIM}[stage] Left [edit] untouched.{C_RESET}\n")
+                    return True
+
+                repair_prompt = (
+                    "Your previous PAN-OS CLI block failed live SSH PTY '?' grammar pre-validation on this exact "
+                    f"firewall build BEFORE execution.\n"
+                    f"- Failing line #{gram.get('failed_index')}: `{gram.get('failed_line')}`\n"
+                    f"- Rejected token: `{gram.get('invalid_token')}` ({gram.get('error')})\n"
+                    f"- Last valid prefix: `{gram.get('valid_prefix')}`\n"
+                    f"- Exact valid child tokens returned by live `mgmtsrvr` `?` at that cursor: [{valid_opts}]\n"
+                    f"- Full original candidate block:\n```panos\n" + "\n".join(cand_lines) + "\n```\n"
+                    "Output ONLY the corrected `panos` fenced `set`/`move` block strictly obeying those live `?` tokens."
+                )
+                state_box["last_query"] = "stage-grammar-repair"
+                repaired_res = _execute_brain_turn(
+                    brain,
+                    repair_prompt,
+                    mode="diagnostic",
+                    target_device=target_device,
+                    ssh_context=ssh_ring_getter() if callable(ssh_ring_getter) else "",
+                )
+                state_box["last_result"] = repaired_res
+                repaired_lines = extract_stageable_panos_lines(str(repaired_res.get("verdict") or ""))
+                if not repaired_lines:
+                    print(f"{C_RED}[stage] Repair turn produced no valid stageable lines.{C_RESET}\n")
+                    return True
+
+                re_gram = probe_pty_cli_grammar(pty_master_fd, repaired_lines, current_mode="config")
+                if not re_gram.get("passed"):
+                    print(
+                        f"{C_RED}[syntax] Repaired block still rejected at token "
+                        f"'{re_gram.get('invalid_token')}' — [edit] left untouched.{C_RESET}\n"
+                    )
+                    return True
+                # HITL invariant: the operator must see and approve the EXACT lines being injected.
+                print(f"\n{C_BOLD}── REPAIRED CANDIDATE LINES (syntax re-verified, NOT yet injected) ──{C_RESET}")
+                for i, rl in enumerate(repaired_lines, 1):
+                    print(f"  {C_GREEN}{i:02d}{C_RESET}  {rl}")
+                re_confirm = input(
+                    f"\n{C_YELLOW}Inject these {len(repaired_lines)} REPAIRED line(s) into SSH [edit]? [y/N]: {C_RESET}"
+                ).strip().lower()
+                if re_confirm not in ("y", "yes"):
+                    print(f"{C_DIM}[stage] Repaired block rejected — [edit] left untouched.{C_RESET}\n")
+                    _audit("stage_repair_decision", trace_id=stage_trace, decision="rejected", lines=list(repaired_lines))
+                    return True
+                _audit("stage_repair_decision", trace_id=stage_trace, decision="approved", lines=list(repaired_lines))
+                cand_lines = repaired_lines
+                print(
+                    f"{C_GREEN}[syntax] PASS — repaired {len(cand_lines)}/{len(cand_lines)} line(s) "
+                    f"accepted by the firewall's '?' parser (object/zone references are validated at commit).{C_RESET}"
+                )
+            else:
+                print(
+                    f"{C_GREEN}[syntax] PASS — {len(cand_lines)}/{len(cand_lines)} line(s) accepted by the firewall's "
+                    f"'?' parser ({g_ms:.0f}ms, local; object/zone references are validated at commit).{C_RESET}"
+                )
+
+            ok, msg = stage_lines_to_pty_master(
+                pty_master_fd,
+                cand_lines,
+                current_mode="config",
+                skip_prep=True,
+            )
             print(f"{C_GREEN if ok else C_RED}[stage] {msg}{C_RESET}\n")
+            _audit("stage_injected", trace_id=stage_trace, lines=list(cand_lines), result="ok" if ok else msg)
+            if pty_prompt_mode == "op":
+                brain.record_operator_event("SSH session moved from operational '>' into 'configure' mode by @stage.")
             if ok:
-                brain.record_operator_event(f"Injected {len(cand_lines)} candidate CLI line(s) into SSH [edit]: {cand_lines[0][:80]}")
+                state_box["neo_staged_trace"] = stage_trace
+                brain.record_operator_event(f"Injected {len(cand_lines)} syntax-checked CLI line(s) into SSH [edit]: {cand_lines[0][:80]}")
             return True
 
         pane = find_adjacent_tmux_pane()
         if not pane:
             print(f"\n{C_YELLOW}[standalone] Copy the validated block above into your PAN-OS SSH window.{C_RESET}\n")
             return True
+        blocked = _pty_policy_block(brain, "stage")
+        if blocked:
+            print(f"\n{C_YELLOW}{blocked}{C_RESET}\n")
+            _audit("stage_blocked", trace_id=stage_trace, reason=blocked)
+            return True
         confirm = input(f"\n{C_YELLOW}Stage these {len(cand_lines)} line(s) into tmux pane {pane} [edit]? [y/N]: {C_RESET}").strip().lower()
         if confirm not in ("y", "yes"):
             print(f"{C_DIM}[stage] Cancelled.{C_RESET}\n")
+            _audit("stage_decision", trace_id=stage_trace, decision="rejected")
             return True
         ok, msg = stage_lines_to_tmux_ssh(pane, cand_lines)
         print(f"{C_GREEN if ok else C_RED}[stage] {msg}{C_RESET}\n")
+        _audit("stage_injected", trace_id=stage_trace, lines=list(cand_lines), result="ok" if ok else msg, channel="tmux")
         if ok:
             brain.record_operator_event(f"Staged {len(cand_lines)} candidate CLI line(s) into SSH [edit]: {cand_lines[0][:80]}")
         return True
@@ -1174,10 +1888,10 @@ def _dispatch_shared_meta_command(
 
 def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verbose: bool = False) -> int:
     """
-    Single-Prompt PTY Symbiotic SSH Shell (`--ssh <alias_or_user@ip>`):
+    SSH wrapper (`--ssh <alias_or_user@ip>`):
     - Spawns real OpenSSH inside a POSIX PTY (`0ms` native Tab/?/arrow/history passthrough).
-    - Intercepts `@` typed at column 0 of an empty PAN-OS prompt for inline NEO queries & $0.00 tools.
-    - Intercepts `commit` in `#` config mode to run `evaluate_precommit_sanctuary()` ($0.00) BEFORE
+    - Intercepts `@` typed at column 0 of an empty PAN-OS prompt for inline NEO questions and local tools.
+    - Intercepts `commit` in `#` config mode to run `evaluate_precommit_sanctuary()` (local) BEFORE
       forwarding `Enter` to `mgmtsrvr`.
     """
     if os.name != "posix":
@@ -1226,12 +1940,24 @@ def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verb
     tls_badge = f"  {C_DIM}│{C_RESET}  {C_YELLOW}tls:unverified{C_RESET}" if tls_unverified else ""
 
     print(
-        f"{C_BOLD}{C_GREEN}NEO // SYMBIOTIC SSH{C_RESET}  {C_DIM}│{C_RESET}  "
-        f"{ssh_target}{alias_badge}  {C_DIM}│{C_RESET}  #core({tool_count})  {C_DIM}│{C_RESET}  "
-        f"{C_YELLOW}{policy_mode}{C_RESET}  {C_DIM}│{C_RESET}  keys-purged:{purged_count}{tls_badge}  {C_DIM}│{C_RESET}  "
-        f"{C_GREEN}Sanctuary Gate ARMED{C_RESET}"
+        f"{C_BOLD}{C_GREEN}NEO · PAN-OS SSH assistant{C_RESET}  {C_DIM}│{C_RESET}  "
+        f"{ssh_target}{alias_badge}  {C_DIM}│{C_RESET}  tools:{tool_count}  {C_DIM}│{C_RESET}  "
+        f"policy:{C_YELLOW}{policy_mode}{C_RESET} (api+ssh)  {C_DIM}│{C_RESET}  keys-purged:{purged_count}{tls_badge}  {C_DIM}│{C_RESET}  "
+        f"{C_GREEN}commit-check:on{C_RESET}"
     )
-    print(f"{C_DIM}At any PAN-OS '>' or '#' prompt, type '@' as the first char to invoke NEO ('@help' for commands).{C_RESET}\n")
+    panorama_state: Dict[str, Any] = {"managed": None, "detail": ""}
+    try:
+        from core.panos.sanctuary import detect_panorama_management
+
+        panorama_state = detect_panorama_management(target_device=resolved_dev)
+    except Exception:
+        pass
+    if panorama_state.get("managed"):
+        print(
+            f"{C_YELLOW}[panorama] Panorama-managed firewall ({panorama_state.get('detail')}). Local edits may be "
+            f"overwritten by the next push — prefer changing config in Panorama.{C_RESET}"
+        )
+    print(f"{C_DIM}At any PAN-OS '>' or '#' prompt, type '@' as the first character to ask NEO ('@help' for commands).{C_RESET}\n")
 
     master_fd, slave_fd = pty.openpty()
 
@@ -1261,28 +1987,89 @@ def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verb
     authenticated = False
     ssh_ring = ""
     tail_buf = ""
-    state_box: Dict[str, Any] = {"last_result": {}, "last_query": ""}
+    state_box: Dict[str, Any] = {"last_result": {}, "last_query": "", "panorama": panorama_state}
+    commit_fail_re = re.compile(
+        r"(Configuration is invalid|Validation Error\s*:|Commit job\s+\d+\s+failed|Result\s*:\s*FAIL)",
+        re.IGNORECASE,
+    )
 
     def _get_scrubbed_ring() -> str:
         return sanitize_ssh_capture(ssh_ring[-8192:]) if authenticated and ssh_ring else ""
 
-    def _intercept_commit_gate() -> bool:
+    def _append_to_ring(extra_text: str) -> None:
+        nonlocal ssh_ring
+        if extra_text:
+            ssh_ring = (ssh_ring + extra_text)[-12288:]
+
+    def _note_commit_outcome(chunk: str) -> None:
+        low_chunk = chunk.lower()
+        if "configuration committed successfully" in low_chunk:
+            brain.record_operator_event("Configuration committed in SSH session.")
+            _audit("commit_observed", result="success", neo_trace=state_box.get("neo_staged_trace"))
+            state_box["neo_staged_trace"] = None
+        elif commit_fail_re.search(chunk):
+            brain.record_operator_event(
+                "PAN-OS CLI commit/validation failure observed in SSH output — inspect <ssh_pane_capture> against candidate XML."
+            )
+            _audit("commit_observed", result="failed", neo_trace=state_box.get("neo_staged_trace"))
+
+    def _intercept_commit_gate(commit_cmd: str = "commit") -> bool:
         """Return True if safe/approved to send Enter on `commit`, False to cancel with Ctrl+C."""
         from core.panos.sanctuary import evaluate_precommit_sanctuary
 
         t0 = time.perf_counter()
-        verdict = evaluate_precommit_sanctuary(target_device=resolved_dev)
+        verdict = evaluate_precommit_sanctuary(target_device=resolved_dev, commit_cmd=commit_cmd)
         ms = (time.perf_counter() - t0) * 1000
+        scope = verdict.get("scope") or {}
         if verdict.get("safe", True):
+            _audit("commit_check", command=commit_cmd, scope=scope, decision="pass", neo_trace=state_box.get("neo_staged_trace"))
             return True
 
         with _cooked_guard():
-            print(f"\n\n{C_RED}{C_BOLD}╔══ SANCTUARY PRE-COMMIT INTERCEPT ({ms:.0f}ms · $0.00) ══╗{C_RESET}")
+            print(f"\n\n{C_RED}{C_BOLD}╔══ PRE-COMMIT SAFETY CHECK ({ms:.0f}ms, local) ══╗{C_RESET}")
+            if verdict.get("scope_note"):
+                print(f"{C_DIM}  scope: {verdict['scope_note']}{C_RESET}")
             for w in verdict.get("warnings") or []:
                 print(f"{C_YELLOW}  ! {w}{C_RESET}")
-            print(f"{C_RED}{C_BOLD}╚════════════════════════════════════════════════════════╝{C_RESET}")
-            ans = input(f"{C_YELLOW}Cancel this commit to prevent lockout/outage? [Y/n]: {C_RESET}").strip().lower()
-            return ans in ("n", "no")
+            print(f"{C_RED}{C_BOLD}╚══════════════════════════════════════════════╝{C_RESET}")
+            try:
+                ans = input(f"{C_YELLOW}Cancel this commit to prevent lockout/outage? [Y/n]: {C_RESET}").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                ans = "y"
+            proceed = ans in ("n", "no")
+            _audit(
+                "commit_check",
+                command=commit_cmd,
+                scope=scope,
+                warnings=verdict.get("warnings") or [],
+                decision="operator_override" if proceed else "cancelled",
+                neo_trace=state_box.get("neo_staged_trace"),
+            )
+            return proceed
+
+    def _maybe_tag_neo_commit(echoed_cmd: str, has_trailing_space: bool = False) -> Optional[bytes]:
+        """
+        If NEO staged lines since the last commit and the operator typed a bare `commit`, offer to tag it.
+        Returns `bytes` to append (may be `b""` if declined), or `None` if interrupted with Ctrl+C.
+        """
+        trace = state_box.get("neo_staged_trace")
+        if not trace or echoed_cmd.strip().lower() != "commit":
+            return b""
+        suffix = build_neo_commit_suffix(trace)
+        with _cooked_guard():
+            try:
+                ans = input(
+                    f"\n{C_YELLOW}NEO staged lines in this commit. Add{C_RESET}{suffix}{C_YELLOW} for the PAN-OS audit trail? [Y/n]: {C_RESET}"
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return None
+        if ans in ("n", "no"):
+            return b""
+        _audit("commit_tagged", neo_trace=trace, suffix=suffix.strip())
+        out_bytes = suffix.encode("utf-8")
+        return out_bytes.lstrip(b" ") if has_trailing_space else out_bytes
 
     try:
         _enter_raw()
@@ -1304,8 +2091,7 @@ def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verb
                     authenticated = True
                 if authenticated:
                     ssh_ring = (ssh_ring + decoded)[-12288:]
-                    if "configuration committed successfully" in decoded.lower():
-                        brain.record_operator_event("Configuration committed in symbiotic SSH session.")
+                    _note_commit_outcome(decoded)
 
             if stdin_fd in rlist:
                 try:
@@ -1394,30 +2180,36 @@ def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verb
                         continue
 
                     if echo_mode == "config" and _COMMIT_CMD_RE.match(ssh_cmd.strip()):
-                        if not _intercept_commit_gate():
+                        if not _intercept_commit_gate(ssh_cmd.strip()):
                             with _cooked_guard():
-                                print(f"{C_GREEN}[sanctuary] Cancelled commit (candidate config preserved).{C_RESET}")
+                                print(f"{C_GREEN}[commit-check] Cancelled commit (candidate config preserved).{C_RESET}")
                             os.write(master_fd, b"\x03")
                             continue
 
                     with _cooked_guard():
                         ring_before = _get_scrubbed_ring()
-                        captured_ssh = execute_dual_plane_turn(
-                            ssh_cmd=ssh_cmd,
-                            op_char=op_char,
-                            neo_raw_cmd=neo_part,
-                            master_fd=master_fd,
-                            echo_mode=echo_mode,
-                            brain=brain,
-                            state_box=state_box,
-                            target_device=resolved_dev,
-                            ssh_ring_snapshot=ring_before,
-                        )
+                        try:
+                            captured_ssh = execute_dual_plane_turn(
+                                ssh_cmd=ssh_cmd,
+                                op_char=op_char,
+                                neo_raw_cmd=neo_part,
+                                master_fd=master_fd,
+                                echo_mode=echo_mode,
+                                brain=brain,
+                                state_box=state_box,
+                                target_device=resolved_dev,
+                                ssh_ring_snapshot=ring_before,
+                                ssh_ring_appender=_append_to_ring,
+                            )
+                        except KeyboardInterrupt:
+                            # Contain Ctrl+C mid-drain so it never reaches `finally: proc.terminate()`
+                            os.write(master_fd, b"\x03")
+                            print(f"\n{C_YELLOW}[neo] Dual-plane turn interrupted — SSH session preserved.{C_RESET}")
+                            captured_ssh = ""
                         if captured_ssh:
                             ssh_ring = (ssh_ring + captured_ssh)[-12288:]
                             tail_buf = (tail_buf + captured_ssh)[-512:]
-                            if "configuration committed successfully" in captured_ssh.lower():
-                                brain.record_operator_event("Configuration committed in symbiotic SSH session.")
+                            _note_commit_outcome(captured_ssh)
                     os.write(master_fd, b"\r")
                     continue
 
@@ -1444,6 +2236,7 @@ def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verb
                                 pty_master_fd=master_fd,
                                 pty_prompt_mode=echo_mode,
                                 ssh_ring_getter=_get_scrubbed_ring,
+                                ssh_ring_appender=_append_to_ring,
                             )
                             if not handled:
                                 state_box["last_query"] = inline_cmd
@@ -1473,11 +2266,22 @@ def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verb
                 )
 
                 if is_enter_on_echoed_commit:
-                    if _intercept_commit_gate():
+                    if _intercept_commit_gate(echoed_after_prompt):
+                        tag_bytes = _maybe_tag_neo_commit(
+                            echoed_after_prompt,
+                            has_trailing_space=raw_after_prompt.endswith(" "),
+                        )
+                        if tag_bytes is None:
+                            with _cooked_guard():
+                                print(f"{C_GREEN}[commit-check] Cancelled commit (sent Ctrl+C to CLI; candidate config preserved).{C_RESET}")
+                            os.write(master_fd, b"\x03")
+                            continue
+                        if tag_bytes:
+                            os.write(master_fd, tag_bytes)
                         os.write(master_fd, b"\r")
                     else:
                         with _cooked_guard():
-                            print(f"{C_GREEN}[sanctuary] Cancelled commit (sent Ctrl+C to CLI; candidate config preserved).{C_RESET}")
+                            print(f"{C_GREEN}[commit-check] Cancelled commit (sent Ctrl+C to CLI; candidate config preserved).{C_RESET}")
                         os.write(master_fd, b"\x03")
                     continue
 
@@ -1487,11 +2291,12 @@ def run_symbiotic_ssh(ssh_spec: str, explicit_device: Optional[str] = None, verb
                     prefix_str = in_text[:split_pos]
                     os.write(master_fd, prefix_str.encode("utf-8"))
                     time.sleep(0.35)
-                    if _intercept_commit_gate():
+                    pasted_cmd_line = in_text[pasted_commit_match.start():pasted_commit_match.end()].strip()
+                    if _intercept_commit_gate(pasted_cmd_line):
                         os.write(master_fd, in_text[split_pos:].encode("utf-8"))
                     else:
                         with _cooked_guard():
-                            print(f"{C_GREEN}[sanctuary] Cancelled pasted commit (sent Ctrl+C to CLI).{C_RESET}")
+                            print(f"{C_GREEN}[commit-check] Cancelled pasted commit (sent Ctrl+C to CLI).{C_RESET}")
                         os.write(master_fd, b"\x03")
                     continue
 

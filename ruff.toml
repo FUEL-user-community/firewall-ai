@@ -1,0 +1,10 @@
+target-version = "py310"
+line-length = 140
+extend-exclude = ["_legacy", ".slots", ".state"]
+
+[lint]
+# Correctness-focused set: pyflakes (F) + syntax errors (E9) + mutable-default bugs (B006/B008).
+select = ["F", "E9", "B006", "B008"]
+
+[lint.per-file-ignores]
+"tests/*" = ["F841"]

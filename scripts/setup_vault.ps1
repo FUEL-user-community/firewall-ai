@@ -1,80 +1,58 @@
-# ══════════════════════════════════════════════════════════════
-# CORE DEFENSE — Local Vault Setup Wizard (Windows)
-# ══════════════════════════════════════════════════════════════
-
+# NEO - local dev-mode HashiCorp Vault for testing the SECRETS_BACKEND=vault path.
+# Dev mode is in-memory with a fixed root token. Never use it outside a lab.
 $ErrorActionPreference = "Stop"
 
-Write-Host "======================================================" -ForegroundColor Cyan
-Write-Host " CORE DEFENSE — Local Vault Setup Wizard" -ForegroundColor Cyan
-Write-Host "======================================================" -ForegroundColor Cyan
-Write-Host ""
+$Container = "neo-vault"
+$Image = "hashicorp/vault:latest"
 
-# Pre-flight: Check Docker availability
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    Write-Host "[ERROR] Docker CLI not found. Please install and start Docker Desktop." -ForegroundColor Red
+    Write-Host "[error] docker CLI not found." -ForegroundColor Red
     exit 1
 }
-
-$dockerCheck = docker info 2>&1
+docker info *> $null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Docker daemon is not running. Please start Docker Desktop and retry." -ForegroundColor Red
+    Write-Host "[error] Docker daemon is not running." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "Starting Vault via Docker Compose..." -ForegroundColor Yellow
-docker compose up -d vault
+function VExec { docker exec -i -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root $Container vault @args }
 
-Write-Host "Waiting for Vault to become ready..." -ForegroundColor Yellow
-$maxWait = 30
-$waited = 0
+$running = docker ps --format "{{.Names}}" | Where-Object { $_ -eq $Container }
+if (-not $running) {
+    docker rm -f $Container *> $null
+    Write-Host "Starting $Container..."
+    docker run -d --name $Container --cap-add=IPC_LOCK -p 127.0.0.1:8200:8200 `
+        -e VAULT_DEV_ROOT_TOKEN_ID=root -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 $Image | Out-Null
+}
+
+Write-Host "Waiting for Vault..."
 $ready = $false
-while ($waited -lt $maxWait) {
-    docker compose exec -T -e VAULT_TOKEN=root vault vault status 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
-        $ready = $true
-        break
-    }
+for ($i = 0; $i -lt 30; $i++) {
+    VExec status *> $null
+    if ($LASTEXITCODE -eq 0) { $ready = $true; break }
     Start-Sleep -Seconds 1
-    $waited++
 }
-
 if (-not $ready) {
-    Write-Host "[ERROR] Vault failed to become healthy within $maxWait seconds." -ForegroundColor Red
+    Write-Host "[error] Vault did not become ready within 30s." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "Configuring AppRole authentication..." -ForegroundColor Yellow
-docker compose exec -T -e VAULT_TOKEN=root vault vault auth enable approle 2>$null
+VExec auth enable approle *> $null
+"path `"secret/data/core-defense`" {`n  capabilities = [`"read`"]`n}`n" | VExec policy write core-defense-policy - | Out-Null
+VExec write auth/approle/role/core-defense policies=core-defense-policy token_ttl=1h token_max_ttl=4h | Out-Null
+VExec kv put -mount=secret core-defense placeholder="replace-me" | Out-Null
 
-Write-Host "Creating CORE DEFENSE read-only policy..." -ForegroundColor Yellow
-$policy = @"
-path `"secret/data/core-defense`" {
-  capabilities = [`"read`"]
-}
-"@
-$policy | docker compose exec -T -e VAULT_TOKEN=root vault vault policy write core-defense-policy - 2>$null
+$roleId = (VExec read -field=role_id auth/approle/role/core-defense/role-id).Trim()
+$secretId = (VExec write -f -field=secret_id auth/approle/role/core-defense/secret-id).Trim()
 
-Write-Host "Creating CORE DEFENSE AppRole..." -ForegroundColor Yellow
-docker compose exec -T -e VAULT_TOKEN=root vault vault write auth/approle/role/core-defense policies=core-defense-policy token_ttl=1h token_max_ttl=4h 2>$null
-
-Write-Host "Seeding dummy secret..." -ForegroundColor Yellow
-docker compose exec -T -e VAULT_TOKEN=root vault vault kv put -mount=secret core-defense dummy="Replace me in Vault UI" 2>$null
-
-Write-Host "Retrieving Role ID and Secret ID..." -ForegroundColor Yellow
-$roleId = (docker compose exec -T -e VAULT_TOKEN=root vault vault read -field=role_id auth/approle/role/core-defense/role-id).Trim()
-$secretId = (docker compose exec -T -e VAULT_TOKEN=root vault vault write -f -field=secret_id auth/approle/role/core-defense/secret-id).Trim()
-
-Clear-Host
-Write-Host "======================================================" -ForegroundColor Green
-Write-Host "[OK] CORE DEFENSE LOCAL VAULT PROVISIONED SUCCESSFULLY" -ForegroundColor Green
-Write-Host "======================================================" -ForegroundColor Green
-Write-Host "Your local Vault is running at: http://127.0.0.1:8200"
-Write-Host "You can log into the Vault UI using the token: root"
 Write-Host ""
-Write-Host "Copy and paste these exact values into the CORE DEFENSE Setup Wizard:" -ForegroundColor Yellow
+Write-Host "Vault dev server: http://127.0.0.1:8200  (UI token: root)"
 Write-Host ""
-Write-Host "  Vault URL:         http://127.0.0.1:8200" -ForegroundColor Cyan
-Write-Host "  Vault AppRole ID:  $roleId" -ForegroundColor Cyan
-Write-Host "  Vault Secret ID:   $secretId" -ForegroundColor Cyan
+Write-Host "Add to .env:"
+Write-Host "  SECRETS_BACKEND=vault"
+Write-Host "  VAULT_ADDR=http://127.0.0.1:8200"
+Write-Host "  VAULT_ROLE_ID=$roleId"
+Write-Host "  VAULT_SECRET_ID=$secretId"
+Write-Host "  VAULT_SECRET_PATH=core-defense"
 Write-Host ""
-Write-Host "======================================================" -ForegroundColor Green
+Write-Host "Then store your keys under secret/core-defense in the UI and run: python neo_cli.py --check"

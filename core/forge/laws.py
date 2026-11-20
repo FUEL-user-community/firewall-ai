@@ -38,6 +38,7 @@ PROTECTED_EXACT_PATHS: Set[str] = {
     "core/safety/hitl.py",
     "core/safety/budget_guard.py",
     "core/safety/scrubber.py",
+    "core/safety/audit_log.py",
     "core/safety/command_filter.py",
     "core/panos/client.py",
     "core/panos/research.py",

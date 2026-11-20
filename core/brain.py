@@ -1,18 +1,15 @@
 import os
 import re
-import json
 import yaml
 import time
 import uuid
 import random
 import logging
-import inspect
 import warnings
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Generator
-from pydantic import BaseModel, Field
 
 # Specifically filter google.generativeai deprecation / future warnings during import
 with warnings.catch_warnings():
@@ -103,7 +100,7 @@ from core.pipeline.prompt_assembler import (
     get_ceiling_directive,
 )
 from core.pipeline.model_config import (
-    GEMINI_MODEL, PRICE_PER_M_INPUT, PRICE_PER_M_OUTPUT,
+    PRICE_PER_M_INPUT, PRICE_PER_M_OUTPUT,
     MAX_TURNS,
     classify_mode, get_gemini_model, get_thinking_level, get_generation_config, validate_model_id,
 )
@@ -232,6 +229,7 @@ class CoreBrain:
                 logger.error(f"[BRAIN] Invalid GEMINI_MODEL: {mid_err}")
             self.model_name = active_model_name
 
+            self._safety_settings = safety_settings
             model_kwargs = {
                 "model_name": active_model_name,
                 "tools": self.tools,
@@ -293,6 +291,25 @@ class CoreBrain:
         self._resident_memory: List[Dict[str, Any]] = []
         self._memory_lock = threading.Lock()
         register_active_brain(self)
+
+    def refresh_live_tools(self) -> int:
+        """Hot-reload ToolKeeper, ToolExecutor, and live Gemini FunctionDeclaration schema after `slot_forge`."""
+        self.keeper = self.keeper.__class__()
+        self.tools = self.keeper.get_tools("#core")
+        if hasattr(self, "tool_executor") and self.tool_executor is not None:
+            self.tool_executor.tools = self.tools
+            if hasattr(self.tool_executor, "tool_map"):
+                self.tool_executor.tool_map = {fn.__name__: fn for fn in self.tools}
+        if hasattr(self, "model") and self.model is not None and hasattr(self, "model_name") and self.model_name:
+            mkw = {
+                "model_name": self.model_name,
+                "tools": self.tools,
+                "system_instruction": str(SYSTEM_PROMPT),
+            }
+            if hasattr(self, "_safety_settings") and self._safety_settings:
+                mkw["safety_settings"] = self._safety_settings
+            self.model = genai.GenerativeModel(**mkw)
+        return len(self.tools)
 
     def reset_resident_session(self) -> None:
         """Clear in-memory resident conversation continuity."""

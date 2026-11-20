@@ -6,7 +6,7 @@ Hard-fails with actionable error messages if configuration is invalid.
 
 Usage:
     from core.utils.startup_validator import validate_startup
-    validate_startup()  # Call in server.py __main__ before anything else
+    validate_startup()  # Call before any firewall or model connection
 """
 
 import os
@@ -109,9 +109,9 @@ def probe_device_reachability(host: str, port: int = 443, timeout: float = 1.0) 
         with socket.create_connection((clean_host, port), timeout=timeout):
             latency = (time.time() - start) * 1000
             return {"reachable": True, "latency_ms": round(latency, 1), "status": "ONLINE"}
-    except (socket.timeout, OSError) as e:
+    except (socket.timeout, OSError):
         latency = (time.time() - start) * 1000
-        return {"reachable": False, "latency_ms": round(latency, 1), "status": f"UNREACHABLE"}
+        return {"reachable": False, "latency_ms": round(latency, 1), "status": "UNREACHABLE"}
     except Exception as e:
         latency = (time.time() - start) * 1000
         return {"reachable": False, "latency_ms": round(latency, 1), "status": f"ERROR: {e}"}
@@ -191,6 +191,7 @@ def get_diagnostic_matrix() -> dict:
         "tool_count": tool_count,
         "policy_mode": os.getenv("POLICY_MODE", "READ_ONLY").upper(),
         "circuit_breaker_limit": 30,
+        "forge_enabled": os.getenv("NEO_ENABLE_FORGE", "").strip().lower() in ("1", "true", "yes", "on"),
     }
 
 
@@ -198,7 +199,7 @@ def format_startup_banner(diag: dict) -> str:
     """Generates the pre-flight diagnostic banner with clean ASCII borders."""
     lines = [
         "+==========================================================================================+",
-        "|                        NEO // AUTONOMOUS PAN-OS CYBERSEC RESIDENT                        |",
+        "|                              NEO - PAN-OS CLI ASSISTANT                                  |",
         "|                                  PRE-FLIGHT DIAGNOSTICS                                  |",
         "+==========================================================================================+",
         "|  DEVICE INVENTORY (config/devices.yaml):                                                 |",
@@ -217,22 +218,22 @@ def format_startup_banner(diag: dict) -> str:
 
     drive_status = "CONFIGURED (Folder Linked)" if diag.get("drive_configured") else "UNCONFIGURED (Local Spool Only)"
     lines.append("|                                                                                          |")
-    lines.append("|  RESIDENT REASONING ENGINE:                                                              |")
-    llm_auth = "AUTHENTICATED (Sealed Vault)" if diag.get("gemini_authenticated") else "MISSING API KEY (.env required)"
-    lines.append(f"|    {('* Gemini Frontier Engine' + ' ' * 8 + '[' + llm_auth + ']'):<86}|")
+    lines.append("|  LLM ADVISOR:                                                                            |")
+    llm_auth = "KEY LOADED (sealed in-process)" if diag.get("gemini_authenticated") else "MISSING API KEY (.env required)"
+    lines.append(f"|    {('* Gemini API              ' + ' ' * 8 + '[' + llm_auth + ']'):<86}|")
     lines.append(f"|    {('* Knowledge Base (Drive)' + ' ' * 8 + '[' + drive_status + ']'):<86}|")
     lines.append("|                                                                                          |")
-    lines.append("|  DIAGNOSTIC & TELEMETRY ENGINE:                                                          |")
+    lines.append("|  TOOLS:                                                                                  |")
     t_cnt = diag.get("tool_count", 0)
-    lines.append(f"|    {f'* Operational Tool Catalog:    {t_cnt} Tools Verified':<86}|")
-    lines.append(f"|    {'* Investigation Pipeline:        On-Demand Dynamic Investigation':<86}|")
+    lines.append(f"|    {f'* Operational Tool Catalog:    {t_cnt} tools registered':<86}|")
+    lines.append(f"|    {'* Self-patching (forge):        ' + ('ENABLED (experimental)' if diag.get('forge_enabled') else 'disabled'):<86}|")
     lines.append("|                                                                                          |")
-    lines.append("|  SECURITY & GOVERNANCE:                                                                  |")
+    lines.append("|  SAFETY:                                                                                 |")
     pol_mode = diag.get("policy_mode", "READ_ONLY")
     mode_desc = "Live Connected" if diag.get("any_online") else "Offline"
-    lines.append(f"|    {f'* Operational Mode:            {mode_desc}':<86}|")
-    lines.append(f"|    {f'* Policy Enforcement Gate:      {pol_mode} (Enforced)':<86}|")
-    lines.append("|    * Circuit Breaker:              30 Max Turns / Loop Failsafe Active                   |")
+    lines.append(f"|    {f'* Firewall connectivity:       {mode_desc}':<86}|")
+    lines.append(f"|    {f'* Write policy (API + SSH):     {pol_mode}':<86}|")
+    lines.append("|    * Circuit breaker:             30 tool steps per question                             |")
     lines.append("+==========================================================================================+")
     return "\n".join(lines)
 

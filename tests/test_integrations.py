@@ -8,7 +8,6 @@ from core.integrations.secrets import (
     VaultSecretsProvider,
     AWSSecretsProvider,
     get_provider,
-    get_secret,
     reset_provider,
 )
 from core.integrations.drive_knowledge import query_knowledge_base, _extract_pdf_pages

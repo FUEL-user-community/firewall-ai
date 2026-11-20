@@ -8,7 +8,6 @@ these tests exist so that class of failure cannot hide behind green again.
 """
 
 import inspect
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest

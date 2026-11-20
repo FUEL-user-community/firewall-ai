@@ -299,7 +299,6 @@ class GCPSecretsProvider(SecretsProvider):
         logger.info(f"[SECRETS] GCP Secret Manager initialized for project: {self._project_id}")
 
     def get(self, key: str) -> str:
-        from google.cloud import secretmanager
         name = f"projects/{self._project_id}/secrets/{key}/versions/latest"
         try:
             response = self._client.access_secret_version(request={"name": name})

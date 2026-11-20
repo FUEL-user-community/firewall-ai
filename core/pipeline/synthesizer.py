@@ -8,7 +8,6 @@ and final text extraction.
 
 import re
 import logging
-from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -316,11 +315,11 @@ class ResponseSynthesizer:
 
                 logger.warning(f"[{trace_id}] [-] Brain returned complete silence (Finish: {finish_reason}).")
                 return (
-                    f"**Status:** Interrupted (Silent Response)\n\n"
-                    f"**Observation:** The Brain processed the inputs but generated no text output. "
-                    f"This can happen if a Tool Call was malformed internally or the model hit a safety filter.\n\n"
-                    f"**Recommendation:** Please retry your query. If it persists, checking specific documents "
-                    f"(e.g. 'Read pages 1-3') is more reliable than broad 'Investigate' commands."
+                    "**Status:** Interrupted (Silent Response)\n\n"
+                    "**Observation:** The Brain processed the inputs but generated no text output. "
+                    "This can happen if a Tool Call was malformed internally or the model hit a safety filter.\n\n"
+                    "**Recommendation:** Please retry your query. If it persists, checking specific documents "
+                    "(e.g. 'Read pages 1-3') is more reliable than broad 'Investigate' commands."
                 )
 
             final_text = response.text
@@ -330,9 +329,9 @@ class ResponseSynthesizer:
             if not final_text or not final_text.strip():
                 logger.warning(f"[{trace_id}] [-] response.text is empty or whitespace.")
                 return (
-                    f"**Status:** Interrupted (Empty Response)\n\n"
-                    f"**Observation:** The model completed its execution but generated no narrative text.\n\n"
-                    f"**Recommendation:** Please review the execution receipts above or re-run the diagnostic."
+                    "**Status:** Interrupted (Empty Response)\n\n"
+                    "**Observation:** The model completed its execution but generated no narrative text.\n\n"
+                    "**Recommendation:** Please review the execution receipts above or re-run the diagnostic."
                 )
 
             logger.info(f"[{trace_id}] [ARCHITECT] Investigation Complete.")

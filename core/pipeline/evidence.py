@@ -892,8 +892,6 @@ def annotate_claims(text: str, receipts: List[Dict[str, Any]], query: str = "") 
     in_reasoning = False
     in_facts = False
     fence_ips: List[str] = []
-    prev_table_header = False
-
     for idx, line in enumerate(lines):
         stripped = line.strip()
 

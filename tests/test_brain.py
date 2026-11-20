@@ -3,10 +3,8 @@ Tests for core/brain.py â€” model initialization, safety configuration,
 thread-safe singleton proxy, error sanitization, and investigation loop guards.
 """
 
-import json
 import os
 import threading
-import pytest
 from unittest.mock import MagicMock, patch
 from core.brain import CoreBrain, get_brain, cortex
 

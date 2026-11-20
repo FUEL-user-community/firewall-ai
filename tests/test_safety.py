@@ -55,7 +55,7 @@ def test_command_filter_blocks_xml_injection():
     assert CommandFilter.is_allowed("<show><system></system></show>")[0] is False
     assert CommandFilter.is_allowed("")[0] is False
     assert CommandFilter.is_allowed(None)[0] is False
-
+1
 
 # ─── 2. Terminal HITL Provider Tests ──────────────────────────────────
 
@@ -408,7 +408,7 @@ def test_scrubber_redacts_credentials_and_keys():
     sample = (
         "Server 192.168.1.1 responded.\n"
         "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----\n"
-        "Key: LUFRPT1BOWEwV3BqV2l4TE9y... (PAN-OS token)\n"
+        "Key: LUFRPTSyntheticFixtureTokenXXXX... (PAN-OS token)\n"
         "<phash>$1$xyz123$abcd</phash>\n"
         "<pre-shared-key>TopSecretPSK999</pre-shared-key>\n"
         "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\n"
@@ -420,7 +420,7 @@ def test_scrubber_redacts_credentials_and_keys():
     # Secrets must be masked
     assert "MIIEowIBAAKCAQEA0" not in scrubbed
     assert "[REDACTED_PRIVATE_KEY]" in scrubbed
-    assert "LUFRPT1BOWEwV3BqV2l4TE9y" not in scrubbed
+    assert "LUFRPTSyntheticFixtureTokenXXXX" not in scrubbed
     assert "[REDACTED_API_KEY]" in scrubbed
     assert "$1$xyz123$abcd" not in scrubbed
     assert "<phash>[REDACTED_phash]</phash>" in scrubbed
@@ -437,7 +437,6 @@ def test_scrubber_redacts_credentials_and_keys():
 
 def test_context_manager_bounds_and_deduplicates_drive_files():
     """Verify ContextManager deduplicates URIs and enforces MAX_FILES_PER_TURN cap."""
-    from unittest.mock import MagicMock
     from core.pipeline.context_manager import ContextManager
 
     cm = ContextManager()
