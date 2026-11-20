@@ -17,6 +17,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,11 +25,15 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from core.forge.state_store import SharedStateStore, get_shared_store
+from core.forge.state_store import SharedStateStore, get_shared_store, is_sqlite_persistence_enabled
 from core.integrations.gdrive_client import GoogleDriveClient
 from core.safety.scrubber import scrub
 
 logger = logging.getLogger(__name__)
+
+# Ephemeral RAM spool used when local disk/SQLite persistence is disabled
+_MEMORY_SPOOL: Dict[str, str] = {}
+_MEMORY_SPOOL_LOCK = threading.Lock()
 
 VALID_MOVES = frozenset({"ANOMALY", "WORKORDER", "PATCH", "SABOTAGE", "VERDICT", "AUTOPSY"})
 
@@ -233,12 +238,24 @@ class StigmergicBoard:
         drive_client: Optional[GoogleDriveClient] = None,
     ):
         self.store = store or get_shared_store()
-        self.spool_dir = Path(spool_dir) if spool_dir else (self.store.state_dir / "board_spool")
-        self.spool_dir.mkdir(parents=True, exist_ok=True)
+        if spool_dir is not None:
+            self.spool_dir: Optional[Path] = Path(spool_dir)
+            self.spool_dir.mkdir(parents=True, exist_ok=True)
+        elif store is not None or is_sqlite_persistence_enabled():
+            self.spool_dir = self.store.state_dir / "board_spool"
+            self.spool_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.spool_dir = None
+
         self.folder_id = (
             folder_id
             if folder_id is not None
-            else (os.getenv("DRIVE_BOARD_FOLDER_ID") or "").strip()
+            else (
+                os.getenv("DRIVE_BOARD_FOLDER_ID")
+                or os.getenv("KNOWLEDGE_BASE_FOLDER_ID")
+                or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+                or ""
+            ).strip()
         )
         self._drive_client = drive_client
 
@@ -289,18 +306,29 @@ class StigmergicBoard:
             extra_sections=extra_sections,
         )
 
-        # Always write immutable local spool copy atomically
-        spool_file = self.spool_dir / filename
-        if spool_file.exists():
-            # Collision within same second: append 4-hex digest suffix before .md
-            digest4 = hashlib.sha256(content.encode("utf-8")).hexdigest()[:4]
-            filename = filename[:-3] + f"-{digest4}.md"
+        # Store locally on disk only when spool_dir is enabled; otherwise keep in zero-disk RAM spool
+        if self.spool_dir is not None:
             spool_file = self.spool_dir / filename
-        spool_file.write_text(content, encoding="utf-8")
+            if spool_file.exists():
+                digest4 = hashlib.sha256(content.encode("utf-8")).hexdigest()[:4]
+                filename = filename[:-3] + f"-{digest4}.md"
+                spool_file = self.spool_dir / filename
+            spool_file.write_text(content, encoding="utf-8")
+            transport = "local_spool"
+        else:
+            with _MEMORY_SPOOL_LOCK:
+                if filename in _MEMORY_SPOOL:
+                    digest4 = hashlib.sha256(content.encode("utf-8")).hexdigest()[:4]
+                    filename = filename[:-3] + f"-{digest4}.md"
+                _MEMORY_SPOOL[filename] = content
+                # Bound RAM spool to 100 entries
+                if len(_MEMORY_SPOOL) > 100:
+                    oldest_key = next(iter(_MEMORY_SPOOL))
+                    _MEMORY_SPOOL.pop(oldest_key, None)
+            transport = "memory_spool"
 
         drive_id = None
         drive_url = None
-        transport = "local_spool"
         if self.folder_id:
             client = self._drive_client or GoogleDriveClient.get_instance(mode="readwrite")
             created = client.upload_markdown_immutable(
@@ -311,7 +339,7 @@ class StigmergicBoard:
             )
             drive_id = created.get("id")
             drive_url = created.get("webViewLink")
-            transport = "google_drive+local_spool"
+            transport = f"google_drive+{transport}"
 
         artifact_id = drive_id or f"local:{filename}"
         parsed = parse_board_markdown(filename, content, artifact_id=artifact_id)
@@ -341,7 +369,7 @@ class StigmergicBoard:
         only_unseen: bool = False,
         limit: int = 25,
     ) -> List[BoardArtifact]:
-        """Read immutable `.md` artifacts from Drive (if configured) + local spool."""
+        """Read immutable `.md` artifacts from Drive (if configured) + spool."""
         raw_entries: List[tuple[str, str, str]] = []  # (artifact_id, filename, content)
         seen_filenames = set()
 
@@ -357,27 +385,49 @@ class StigmergicBoard:
                         continue
                     if only_unseen and self.store.is_artifact_seen(fid):
                         continue
-                    cache_copy = self.spool_dir / fname
-                    if cache_copy.is_file():
-                        text = cache_copy.read_text(encoding="utf-8", errors="replace")
+                    if self.spool_dir is not None:
+                        cache_copy = self.spool_dir / fname
+                        if cache_copy.is_file():
+                            text = cache_copy.read_text(encoding="utf-8", errors="replace")
+                        else:
+                            raw_bytes = client.download_bytes(fid)
+                            text = raw_bytes.decode("utf-8", errors="replace")
+                            cache_copy.write_text(text, encoding="utf-8")
                     else:
-                        raw_bytes = client.download_bytes(fid)
-                        text = raw_bytes.decode("utf-8", errors="replace")
-                        cache_copy.write_text(text, encoding="utf-8")
+                        with _MEMORY_SPOOL_LOCK:
+                            cached_text = _MEMORY_SPOOL.get(fname)
+                        if cached_text is not None:
+                            text = cached_text
+                        else:
+                            raw_bytes = client.download_bytes(fid)
+                            text = raw_bytes.decode("utf-8", errors="replace")
+                            with _MEMORY_SPOOL_LOCK:
+                                _MEMORY_SPOOL[fname] = text
                     raw_entries.append((fid, fname, text))
                     seen_filenames.add(fname)
             except Exception as e:
-                logger.warning(f"[BOARD] Drive sync fallback to local spool: {e}")
+                logger.warning(f"[BOARD] Drive sync fallback to spool: {e}")
 
-        # 2. Scan local spool directory
-        for p in sorted(self.spool_dir.glob("*.md")):
-            if p.name in seen_filenames or not _FILENAME_RE.match(p.name):
-                continue
-            aid = f"local:{p.name}"
-            if only_unseen and self.store.is_artifact_seen(aid):
-                continue
-            text = p.read_text(encoding="utf-8", errors="replace")
-            raw_entries.append((aid, p.name, text))
+        # 2. Scan disk spool or zero-disk RAM spool
+        if self.spool_dir is not None:
+            for p in sorted(self.spool_dir.glob("*.md")):
+                if p.name in seen_filenames or not _FILENAME_RE.match(p.name):
+                    continue
+                aid = f"local:{p.name}"
+                if only_unseen and self.store.is_artifact_seen(aid):
+                    continue
+                text = p.read_text(encoding="utf-8", errors="replace")
+                raw_entries.append((aid, p.name, text))
+        else:
+            with _MEMORY_SPOOL_LOCK:
+                mem_items = sorted(_MEMORY_SPOOL.items(), key=lambda kv: kv[0])
+            for fname, text in mem_items:
+                if fname in seen_filenames or not _FILENAME_RE.match(fname):
+                    continue
+                aid = f"local:{fname}"
+                if only_unseen and self.store.is_artifact_seen(aid):
+                    continue
+                raw_entries.append((aid, fname, text))
 
         artifacts: List[BoardArtifact] = []
         for aid, fname, text in raw_entries:
@@ -472,8 +522,8 @@ class StigmergicBoard:
 
 def board_ops(
     action: str,
-    thread_id: str = "MAIN",
-    move_type: str = "ANOMALY",
+    thread_id: str = "",
+    move_type: str = "",
     slug: str = "note",
     summary: str = "",
     target_files: str = "",
@@ -534,12 +584,14 @@ def board_ops(
 
         t_list = [p.strip() for p in (target_files or "").split(",") if p.strip()]
         actor = os.getenv("NEO_SLOT_ID", "NEO_A").upper()
+        eff_thread = (thread_id or "").strip() or "MAIN"
+        eff_move = (move_type or "").strip() or "ANOMALY"
 
         if act == "dispatch_spark":
             if not summary.strip() or not t_list:
                 return "Error: 'dispatch_spark' requires non-empty 'summary' and 'target_files'."
             res = board.dispatch_spark_tournament(
-                thread_id=thread_id,
+                thread_id=eff_thread,
                 base_sha=base_sha,
                 problem_statement=summary,
                 target_files=t_list,
@@ -551,8 +603,8 @@ def board_ops(
                 return "Error: 'post' requires non-empty 'summary'."
             res = board.post_artifact(
                 actor=actor,
-                move_type=move_type,
-                thread_id=thread_id,
+                move_type=eff_move,
+                thread_id=eff_thread,
                 base_sha=base_sha,
                 slug=slug,
                 summary=summary,

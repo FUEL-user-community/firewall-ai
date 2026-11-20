@@ -95,10 +95,10 @@ _QUOTE_RE = re.compile(r'"([^"\n]+)"|“([^”\n]+)”|\'([a-zA-Z0-9_\-\.]{2,50}
 # needs no receipt. Everything else that reads as a statement must cite one.
 _RECOMMENDATION_RE = re.compile(
     r"^(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*|\*|_)?(?:(?:strictly|immediately|then|next|first|also|optionally)\s+)?"
-    r"(?:add|apply|attach|avoid|bind|check|commit|configure|consider|create|decrypt|delete|disable|enable|"
-    r"enforce|ensure|follow|install|isolate|limit|log|migrate|monitor|move|pin|re-?activate|re-?run|"
-    r"reinstate|remove|renew|replace|request|restrict|review|rotate|route|run|schedule|set|stage|strip|"
-    r"test|trigger|upgrade|use|validate|verify)\b",
+    r"(?:add|apply|attach|avoid|bind|block|check|commit|configure|consider|create|decrypt|delete|disable|drop|enable|"
+    r"enforce|ensure|follow|install|isolate|keep|limit|lock|log|migrate|monitor|move|pin|preserve|quarantine|re-?activate|re-?run|"
+    r"reinstate|remove|renew|replace|request|restrict|retain|revert|review|rotate|route|run|schedule|segregate|set|stage|strip|"
+    r"test|tighten|trigger|upgrade|use|validate|verify)\b",
     re.IGNORECASE,
 )
 _CAUSAL_CONJUNCTIONS = re.compile(
@@ -110,7 +110,7 @@ _STATUS_KEYWORD_RE = re.compile(
     re.IGNORECASE,
 )
 _INFERENCE_RE = re.compile(
-    r"\b(?:inference|general knowledge)\s*:|^(?:[-*+]\s+)?(?:\*\*|\*|_)?logic\s*\(",
+    r"\b(?:inference|general knowledge)\s*:|^(?:[-*+]\s+)?(?:\*\*|\*|_)?logic\s*(?:\(|:)",
     re.IGNORECASE,
 )
 _ASSERTIVE_VERBS_RE = re.compile(

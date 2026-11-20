@@ -179,8 +179,8 @@ class GetTelemetrySnapshotArgs(BaseModel):
 
 class BoardOpsArgs(BaseModel):
     action: str
-    thread_id: str = "MAIN"
-    move_type: str = "ANOMALY"
+    thread_id: str = ""
+    move_type: str = ""
     slug: str = "note"
     summary: str = ""
     target_files: str = ""

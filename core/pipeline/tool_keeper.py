@@ -345,15 +345,14 @@ class ToolKeeper:
         except Exception as e:
             logger.warning(f"[TOOLS] Drive Knowledge Base Init Error: {e}")
 
-        # Rule 6.5: Stigmergic Board & Dual-Slot Forge (loaded when '#forge' tray is summoned)
-        if active_tray == "#forge":
-            try:
-                from core.integrations.board_sync import board_ops
-                from core.forge.slot_mutator import slot_forge
-                tools.append(board_ops)
-                tools.append(slot_forge)
-            except Exception as e:
-                logger.warning(f"[TOOLS] Forge/Board Tools Init Error: {e}")
+        # Rule 6.5: Stigmergic Board & Forge (always mounted in #core so Turn 1 can sync/post without extra tray pivot)
+        try:
+            from core.integrations.board_sync import board_ops
+            from core.forge.slot_mutator import slot_forge
+            tools.append(board_ops)
+            tools.append(slot_forge)
+        except Exception as e:
+            logger.warning(f"[TOOLS] Forge/Board Tools Init Error: {e}")
 
 
         # Rule 7: Scan YAML Registry

@@ -450,8 +450,66 @@ def slot_forge(
     if os.getenv("NEO_PROBATION_SHADOW", "0").strip() in ("1", "true", "yes") and action != "status":
         return "ERROR: Security Policy Block - Candidate slot in PROBATION_SHADOW cannot self-mutate until promoted."
 
-    mutator = SlotMutator()
     act = (action or "").strip().lower()
+    is_zero_disk_standalone = (
+        os.getenv("NEO_SLOT_ID", "STANDALONE").strip().upper() == "STANDALONE"
+        and os.getenv("NEO_ENABLE_LOCAL_SLOTS", "0").strip().lower() not in ("1", "true", "yes")
+    )
+
+    if is_zero_disk_standalone:
+        try:
+            store = get_shared_store()
+            if act == "status":
+                staged = store.get_kv("staged_zero_disk_paths", default=[])
+                return (
+                    "--- FORGE STATUS (ZERO-DISK STANDALONE MODE) ---\n"
+                    "Runtime: STANDALONE (SQLite & local .slots/ worktrees disabled to preserve VM disk space).\n"
+                    f"Validated In-Memory Patches: {staged}\n"
+                    "Workflow: Validate candidate code via slot_forge(action='stage_diff'|'stage_file'), "
+                    "then persist verified diffs to Google Drive via board_ops(action='post', move_type='PATCH', ...)."
+                )
+            if act == "stage_file":
+                if not target_path or not content:
+                    return "Error: 'stage_file' requires both 'target_path' and 'content'."
+                clean_rel = validate_mutation_paths([target_path])[0]
+                if clean_rel.endswith(".py"):
+                    from core.forge.laws import validate_python_ast
+                    validate_python_ast(content, filename=clean_rel)
+                elif clean_rel.endswith((".yaml", ".yml")):
+                    from core.forge.laws import validate_yaml_content
+                    validate_yaml_content(content, rel_path=clean_rel)
+                staged = list(store.get_kv("staged_zero_disk_paths", default=[]))
+                if clean_rel not in staged:
+                    staged.append(clean_rel)
+                    store.set_kv("staged_zero_disk_paths", staged)
+                return (
+                    f"VALIDATED IN MEMORY (ZERO-DISK): '{clean_rel}' ({len(content)} chars) passed Constitutional & AST/YAML checks. "
+                    "Publish to Google Drive via board_ops(action='post', move_type='PATCH', ...)."
+                )
+            if act == "stage_diff":
+                if not unified_diff:
+                    return "Error: 'stage_diff' requires 'unified_diff'."
+                touched = extract_diff_paths(unified_diff)
+                staged = list(store.get_kv("staged_zero_disk_paths", default=[]))
+                for p in touched:
+                    if p not in staged:
+                        staged.append(p)
+                store.set_kv("staged_zero_disk_paths", staged)
+                return (
+                    f"VALIDATED DIFF IN MEMORY (ZERO-DISK): touched={touched} passed Constitutional path checks. "
+                    "Publish to Google Drive via board_ops(action='post', move_type='PATCH', unified_diff=...)."
+                )
+            if act in ("init", "verify_and_promote", "reset_inactive"):
+                return (
+                    f"ZERO-DISK MODE: '{act}' skipped to avoid local .slots/ worktree disk usage on VM. "
+                    "Use board_ops(action='post', move_type='PATCH', ...) to store verified patches in Google Drive."
+                )
+        except ConstitutionalError as ce:
+            return f"ERROR: Security Policy Block - {ce}"
+        except Exception as e:
+            return f"Error: slot_forge validation failed: {e}"
+
+    mutator = SlotMutator()
 
     try:
         if act == "status":

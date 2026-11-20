@@ -63,6 +63,7 @@ class SharedStateStore:
     def reset_instance(cls) -> None:
         with cls._instance_lock:
             cls._instance = None
+        InMemoryStateStore.reset_instance()
 
     def _ensure_hmac_seed(self) -> None:
         """Create a persistent 256-bit HMAC seed shared by Scrubber and ToxicXmlSanitizer."""
@@ -347,4 +348,136 @@ class SharedStateStore:
                 conn.close()
 
 
-get_shared_store = SharedStateStore.get_instance
+def is_sqlite_persistence_enabled() -> bool:
+    """
+    Return True only when running under `stem.py` (`NEO_SLOT_ID != STANDALONE`) or when
+    disk state persistence (`NEO_SHARED_STATE_DIR` / `NEO_PERSIST_*`) is explicitly requested.
+    Guarantees zero SQLite files are created on disk in default standalone `server.py` mode.
+    """
+    if os.getenv("NEO_SHARED_STATE_DIR", "").strip():
+        return True
+    if os.getenv("NEO_SLOT_ID", "STANDALONE").strip().upper() != "STANDALONE":
+        return True
+    for env_key in ("NEO_PERSIST_SQLITE", "NEO_PERSIST_BUDGET", "NEO_PERSIST_TRACES"):
+        if os.getenv(env_key, "0").strip().lower() in ("1", "true", "yes"):
+            return True
+    return False
+
+
+class InMemoryStateStore:
+    """Zero-disk RAM state store matching `SharedStateStore` for low-storage standalone VMs."""
+
+    _instance: Optional["InMemoryStateStore"] = None
+    _instance_lock = threading.Lock()
+
+    def __init__(self):
+        self.state_dir = resolve_shared_state_dir()
+        self._lock = threading.RLock()
+        self._budget: Dict[str, float] = {}
+        self._investigations: List[Dict[str, Any]] = []
+        self._seen_artifacts: set = set()
+        self._generations: List[Dict[str, Any]] = []
+        self._kv: Dict[str, Any] = {}
+
+    @classmethod
+    def get_instance(cls) -> "InMemoryStateStore":
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        with cls._instance_lock:
+            cls._instance = None
+
+    def add_daily_spend(self, delta_cost: float, day_utc: Optional[str] = None) -> float:
+        day_key = day_utc or SharedStateStore._today_utc()
+        safe_delta = max(0.0, float(delta_cost))
+        with self._lock:
+            self._budget[day_key] = self._budget.get(day_key, 0.0) + safe_delta
+            return self._budget[day_key]
+
+    def get_daily_spend(self, day_utc: Optional[str] = None) -> float:
+        day_key = day_utc or SharedStateStore._today_utc()
+        with self._lock:
+            return float(self._budget.get(day_key, 0.0))
+
+    def save_investigation(
+        self, trace_id: str, query: str, verdict: str, receipts: list, max_entries: int = 50
+    ) -> None:
+        entry = {
+            "trace_id": trace_id,
+            "query": query,
+            "verdict": verdict,
+            "receipts": json.loads(json.dumps(receipts or [], default=str)),
+            "timestamp": time.time(),
+        }
+        with self._lock:
+            self._investigations = [it for it in self._investigations if it["trace_id"] != trace_id]
+            self._investigations.append(entry)
+            self._investigations = self._investigations[-max(1, int(max_entries)) :]
+
+    def get_investigation(self, trace_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            if not self._investigations:
+                return None
+            if trace_id == "latest" or not trace_id:
+                return dict(self._investigations[-1])
+            for it in reversed(self._investigations):
+                if it["trace_id"] == trace_id:
+                    return dict(it)
+            return None
+
+    def is_artifact_seen(self, artifact_id: str) -> bool:
+        with self._lock:
+            return artifact_id in self._seen_artifacts
+
+    def mark_artifact_seen(
+        self,
+        artifact_id: str,
+        filename: str,
+        move_type: str,
+        actor: str,
+        thread_id: str,
+        base_sha: str,
+        created_ts: str,
+    ) -> None:
+        with self._lock:
+            self._seen_artifacts.add(artifact_id)
+
+    def record_generation(
+        self, slot: str, commit_sha: str, parent_sha: str, status: str, reason: str = ""
+    ) -> int:
+        with self._lock:
+            gen_id = len(self._generations) + 1
+            self._generations.append({
+                "gen_id": gen_id,
+                "slot": slot,
+                "commit_sha": commit_sha,
+                "parent_sha": parent_sha,
+                "status": status,
+                "reason": reason,
+                "created_at": time.time(),
+            })
+            return gen_id
+
+    def list_generations(self, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(reversed(self._generations[-max(1, int(limit)) :]))
+
+    def set_kv(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._kv[key] = json.loads(json.dumps(value, default=str))
+
+    def get_kv(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            return self._kv.get(key, default)
+
+
+def get_shared_store():
+    """Return SQLite `SharedStateStore` when persistence is enabled, else zero-disk `InMemoryStateStore`."""
+    if is_sqlite_persistence_enabled():
+        return SharedStateStore.get_instance()
+    return InMemoryStateStore.get_instance()

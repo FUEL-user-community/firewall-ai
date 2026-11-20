@@ -673,3 +673,63 @@ def test_server_internal_promote_lifts_probation_shadow_in_place(monkeypatch):
     assert r_prom.status_code == 200
     assert r_prom.json()["promoted"] is True
     assert os.environ.get("NEO_PROBATION_SHADOW") == "0"
+
+
+def test_core_tray_mounts_board_ops_and_slot_forge_with_zero_sqlite_disk_writes(tmp_path, monkeypatch):
+    from core.pipeline.tool_keeper import ToolKeeper
+
+    # Ensure standalone zero-disk defaults (no SQLite / no .slots)
+    monkeypatch.delenv("NEO_SHARED_STATE_DIR", raising=False)
+    monkeypatch.delenv("NEO_PERSIST_SQLITE", raising=False)
+    monkeypatch.delenv("NEO_PERSIST_BUDGET", raising=False)
+    monkeypatch.delenv("NEO_PERSIST_TRACES", raising=False)
+    monkeypatch.setenv("NEO_SLOT_ID", "STANDALONE")
+    monkeypatch.setenv("DRIVE_BOARD_FOLDER_ID", "")
+    monkeypatch.setenv("KNOWLEDGE_BASE_FOLDER_ID", "")
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "")
+    SharedStateStore.reset_instance()
+
+    # 1. Both board_ops and slot_forge are always mounted in #core
+    core_names = [t.__name__ for t in ToolKeeper().get_tools("#core")]
+    assert "board_ops" in core_names
+    assert "slot_forge" in core_names
+
+    # 2. Executing board_ops and slot_forge in standalone mode writes ZERO .sqlite or .slots files
+    post_res = board_ops(
+        action="post",
+        move_type="WORKORDER",
+        thread_id="HOME",
+        slug="baseline-check",
+        summary="Completed initial home baseline.",
+    )
+    assert "BOARD ARTIFACT PUBLISHED:" in post_res
+    assert "transport=memory_spool" in post_res
+
+    sync_res = board_ops(action="sync", thread_id="HOME")
+    assert "baseline-check" in sync_res
+
+    forge_res = slot_forge(
+        action="stage_file",
+        target_path="core/panos/sample_zero_disk.py",
+        content="def helper() -> int:\n    return 42\n",
+    )
+    assert "VALIDATED IN MEMORY (ZERO-DISK)" in forge_res
+    assert not Path(".state/shared/nucleus_state.sqlite").exists()
+    assert not Path(".slots").exists()
+
+
+def test_evidence_referee_accepts_bare_logic_colon_and_revert_segregate_verbs():
+    from core.pipeline.evidence import annotate_claims
+
+    receipts = [
+        {"tool": "system_info", "status": "success", "raw_output": "ip-address: 192.168.1.254\n"},
+    ]
+    sample_report = (
+        "#### Control Plane Adjacency Risk\n"
+        "Logic: Traffic not matching custom rules is handled safely by default inter-zone drop behavior.\n"
+        "1. Revert interzone-default to its native deny state after staging explicit DNS allow rules.\n"
+        "2. Segregate the 192.168.1.254 Management IP or restrict permitted-ip allowlists.\n"
+    )
+    annotated, stats = annotate_claims(sample_report, receipts, query="")
+    assert "[UNCITED]" not in annotated
+    assert stats["uncited"] == 0
