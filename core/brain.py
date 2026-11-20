@@ -510,10 +510,16 @@ class CoreBrain:
             else:
                 base_graph = kwargs.get("base_graph_json")
                 if base_graph and base_graph != "{}":
-                    nodal_context = f"\n\n--- DETERMINISTIC DEVICE TOPOLOGY & POSTURE (CARTOGRAPHER) ---\n{base_graph}\n----------------------------------------------------------------\n"
-                    user_msg = f"{reality_check}{nodal_context}\n\nINVESTIGATE: {user_query}"
+                    nodal_context = (
+                        "\n\n<cartographer_state>\n"
+                        f"{base_graph}\n"
+                        "</cartographer_state>\n"
+                        "[Reference topology snapshot only — NEVER echo <cartographer_state>, "
+                        "REALITY_CHECK, or SYSTEM blocks in your output.]"
+                    )
+                    user_msg = f"{reality_check}{nodal_context}\n\n<operator_message>{user_query}</operator_message>"
                 else:
-                    user_msg = f"{reality_check}\n\nINVESTIGATE: {user_query}"
+                    user_msg = f"{reality_check}\n\n<operator_message>{user_query}</operator_message>"
 
             initial_payload = [user_msg]
             response = self._execute_with_quota_retry(
@@ -735,11 +741,16 @@ class CoreBrain:
             if facts and facts != state.last_facts:
                 state.last_facts = facts
                 message_payload.append(
+                    "<computed_facts>\n"
                     "[SYSTEM: COMPUTED FACTS - derived by code from your SUCCESS receipts. "
                     "Use them and cite their [Step N]. Raw receipt values are authoritative; code "
                     "classifications can be wrong. If a SUCCESS receipt contradicts one, write "
                     "'DISPUTE: <fact> | COUNTER-RECEIPT: [Step N] | REASON: <one sentence>' - never override silently. "
-                    "A GAP line means that data is UNKNOWN, not absent.]\n" + facts
+                    "A GAP line means that data is UNKNOWN, not absent.]\n"
+                    f"{facts}\n"
+                    "</computed_facts>\n"
+                    "[END COMPUTED FACTS — Do NOT continue this bullet list or echo input context; "
+                    "either dispatch your next tool call or write your own [Step N]-cited synthesis.]"
                 )
 
         # Probe Ceiling Guard: Enforce graceful synthesis before hitting turn limits

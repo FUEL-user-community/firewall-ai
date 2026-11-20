@@ -118,3 +118,83 @@ def test_terminal_synthesis_guard_passes_when_report_structured():
     assert res is None
     assert not mock_chat.send_message.called
 
+
+def test_terminal_synthesis_guard_catches_prompt_echo_and_uncited_non_deep_output():
+    """Verify prompt-echo regurgitation (e.g. Cartographer JSON dump on 'your turn') is rejected and re-prompted."""
+    from core.pipeline.synthesizer import strip_prompt_echo
+
+    synth = ResponseSynthesizer()
+    mock_chat = mock.MagicMock()
+    mock_chat.history = ["REALITY_CHECK: Active mounted tools...\n<operator_message>your turn</operator_message>"]
+    mock_terminal_resp = mock.MagicMock()
+    mock_terminal_resp.text = "Verified MGT subnet overlap on ethernet1/2 (192.168.1.1/24) and interzone-default allow [Steps 2, 4]."
+    mock_chat.send_message.return_value = mock_terminal_resp
+
+    # 1. Echoed Cartographer JSON / SYSTEM COGNITIVE BOUNDS on open prompt ('your turn') MUST trigger retry
+    echo_resp = mock.MagicMock()
+    echo_resp.text = (
+        "[SYSTEM COGNITIVE BOUNDS: Execute with HIGH reasoning depth.]\n\n"
+        "--- DETERMINISTIC DEVICE TOPOLOGY & POSTURE (CARTOGRAPHER) ---\n"
+        '{"nodes": [{"id": "firewall", "label": "HQ Perimeter Firewall"}]}\n'
+        "----------------------------------------------------------------\n\n"
+        "INVESTIGATE: your turn"
+    )
+    receipts = [{"tool": "get_live_config", "status": "success"}]
+    res_echo = synth.check_terminal_synthesis_guard(
+        turn=1,
+        tool_parts=[],
+        response=echo_resp,
+        chat=mock_chat,
+        base_config=mock.MagicMock(),
+        history=mock_chat.history,
+        trace_id="echo-trace",
+        receipts=receipts,
+        target_mode="default",
+    )
+    assert res_echo == mock_terminal_resp
+    assert mock_chat.send_message.called
+    sent_prompt = mock_chat.send_message.call_args.args[0]
+    assert "echoed raw input context" in sent_prompt
+
+    # 2. Model mimicking/echoing code-owned '### Device Facts' banner also triggers retry
+    mock_chat.send_message.reset_mock()
+    facts_echo_resp = mock.MagicMock()
+    facts_echo_resp.text = (
+        "### Device Facts (computed by code from receipts, not written by the model)\n"
+        "- Hardware bottleneck flag: (GAP - no telemetry receipt available)"
+    )
+    res_facts_echo = synth.check_terminal_synthesis_guard(
+        turn=1,
+        tool_parts=[],
+        response=facts_echo_resp,
+        chat=mock_chat,
+        base_config=mock.MagicMock(),
+        history=mock_chat.history,
+        trace_id="facts-echo-trace",
+        receipts=receipts,
+        target_mode="default",
+    )
+    assert res_facts_echo == mock_terminal_resp
+    assert mock_chat.send_message.called
+
+    # 3. Clean [Step N]-cited non-echo synthesis passes without re-prompting
+    mock_chat.send_message.reset_mock()
+    res_clean = synth.check_terminal_synthesis_guard(
+        turn=1,
+        tool_parts=[],
+        response=mock_terminal_resp,
+        chat=mock_chat,
+        base_config=mock.MagicMock(),
+        history=mock_chat.history,
+        trace_id="clean-trace",
+        receipts=receipts,
+        target_mode="default",
+    )
+    assert res_clean is None
+    assert not mock_chat.send_message.called
+
+    # 4. Belt-and-suspenders strip_prompt_echo removes any residual echoed wrappers
+    cleaned = strip_prompt_echo("Real finding [Step 1].\n<cartographer_state>{\"nodes\":[]}</cartographer_state>")
+    assert cleaned == "Real finding [Step 1]."
+
+
