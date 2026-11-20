@@ -1029,3 +1029,21 @@ def capture_pcap(source_ip: str = "10.0.0.1", dest_ip: str = "8.8.8.8", duration
                 client.execute_op("<clear><debug><dataplane><packet-diag><filter><match><all/></match></filter></packet-diag></dataplane></debug></clear>")
             except Exception as e:
                 logger.debug(f"[PCAP Engine] Cleanup failed: {e}")
+
+
+def map_home_topology(target_device: Optional[str] = None) -> str:
+    """
+    Compile the physical and logical topology graph of the firewall (interfaces, subnets,
+    zones, virtual-wires, management plane overlap, license entitlements, active admin
+    sessions, and rulebase summary) on demand via Cartographer.
+
+    Args:
+        target_device (str): Optional fleet device alias; omit for default home appliance.
+    """
+    try:
+        from core.panos.cartographer import Cartographer
+        eff_dev = None if target_device in ("", "default", "all", None) else str(target_device).strip()
+        return Cartographer(target_device=eff_dev).build_graph()
+    except Exception as e:
+        logger.error(f"[Cartographer Tool] Topology compile failed: {e}")
+        return f"Error compiling home topology: {e}"

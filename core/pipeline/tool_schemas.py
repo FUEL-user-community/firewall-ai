@@ -177,6 +177,10 @@ class GetTelemetrySnapshotArgs(BaseModel):
     target_device: Optional[str] = None
 
 
+class MapHomeTopologyArgs(BaseModel):
+    target_device: Optional[str] = None
+
+
 class BoardOpsArgs(BaseModel):
     action: str
     thread_id: str = ""
@@ -228,6 +232,7 @@ TOOL_SCHEMAS = {
     "get_live_config": GetLiveConfigArgs,
     "execute_log_query": ExecuteLogQueryArgs,
     "execute_operational_command": ExecuteOperationalCommandArgs,
+    "map_home_topology": MapHomeTopologyArgs,
     "board_ops": BoardOpsArgs,
     "slot_forge": SlotForgeArgs,
 }

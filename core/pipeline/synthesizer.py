@@ -69,6 +69,7 @@ def enforce_range_schema(raw_text: str, trace_id: str = "") -> str:
 _ECHO_SENTINELS = (
     "DETERMINISTIC DEVICE TOPOLOGY",
     "<cartographer_state>",
+    "<resident_session_memory>",
     "[SYSTEM COGNITIVE BOUNDS:",
     "REALITY_CHECK:",
     "[SYSTEM: COMPUTED FACTS",
@@ -95,6 +96,7 @@ def strip_prompt_echo(text: str) -> str:
         return ""
     out = text
     out = re.sub(r"<cartographer_state>.*?</cartographer_state>", "", out, flags=re.DOTALL | re.IGNORECASE)
+    out = re.sub(r"<resident_session_memory>.*?</resident_session_memory>", "", out, flags=re.DOTALL | re.IGNORECASE)
     out = re.sub(r"<computed_facts>.*?</computed_facts>", "", out, flags=re.DOTALL | re.IGNORECASE)
     out = re.sub(r"<operator_message>.*?</operator_message>", "", out, flags=re.DOTALL | re.IGNORECASE)
     out = re.sub(
@@ -119,13 +121,35 @@ class ResponseSynthesizer:
     - Final text extraction
     """
 
-    def check_first_turn_guard(self, turn, tool_parts, chat, base_config, trace_id):
+    def check_first_turn_guard(
+        self,
+        turn,
+        tool_parts,
+        chat,
+        base_config,
+        trace_id,
+        response=None,
+        history=None,
+        target_mode="default",
+    ):
         """
-        Turn 0 guard: if the agent returned text without tool calls,
-        force it to execute a tool. Returns new response or None.
+        Turn 0 guard: on cold starts or strict forensic/range runs, force at least one tool call.
+        On ongoing resident sessions (<resident_session_memory> present), permit direct conversational follow-ups.
         """
         if turn != 0 or tool_parts:
             return None
+
+        if target_mode not in ("investigate", "range") and response is not None:
+            chat_hist = getattr(chat, "history", None)
+            combined_hist = list(history or []) + (list(chat_hist) if isinstance(chat_hist, (list, tuple)) else [])
+            has_session_mem = any("<resident_session_memory>" in str(h) for h in combined_hist)
+            if has_session_mem:
+                try:
+                    txt = (response.text or "").strip() if isinstance(getattr(response, "text", None), str) else ""
+                except (ValueError, AttributeError):
+                    txt = ""
+                if len(txt) >= 15 and not _has_prompt_echo(txt):
+                    return None
 
         logger.warning(f"[{trace_id}] [GUARD] Agent returned text without tool calls on Turn 1. Initiating retry...")
         retry_prompt = (
@@ -255,9 +279,37 @@ class ResponseSynthesizer:
             is_deep_investigation = True
 
         has_echo = _has_prompt_echo(clean_text)
+
+        # Cybersec Resident modes ('default', 'diagnostic', 'resident'):
+        # Never force SOC compliance report headers—pass any clean non-echo output >= 15 chars.
+        if target_mode != "investigate":
+            if len(clean_text) >= 15 and not has_echo:
+                return None
+            reason_tag = "prompt/context echo detected" if has_echo else f"empty/silent resident turn ({len(clean_text)} chars)"
+            logger.warning(
+                f"[{trace_id}] [GUARD] Tool execution concluded ({len(receipt_list)} steps), {reason_tag}. Requesting clean resident synthesis..."
+            )
+            echo_warning = (
+                "CRITICAL: Your previous turn echoed raw input context/JSON instead of answering. "
+                "Output ZERO raw JSON/XML wrappers and ZERO echoed system headers.\n"
+                if has_echo
+                else ""
+            )
+            resident_retry = (
+                f"[SYSTEM: TOOL EXECUTION COMPLETED ({len(receipt_list)} steps recorded).\n"
+                f"{echo_warning}"
+                "Tool calling is now DISABLED. Respond directly in your Cybersec Resident voice "
+                "grounded in your [Step N] receipts—concise, technical, no corporate report templates.]"
+            )
+            return chat.send_message(
+                resident_retry,
+                generation_config=base_config,
+                tool_config={"function_calling_config": {"mode": "NONE"}},
+            )
+
+        # Strict Forensic Audit mode ('investigate'): enforce structured incident report
         has_receipt_anchor = bool(re.search(r"\[Steps?\s+\d+", clean_text, re.IGNORECASE))
 
-        # Never permit echoed input wrappers/JSON/Device-Facts headers; permit clean concise or [Step N]-anchored outputs
         if not has_echo:
             if not is_deep_investigation and len(clean_text) >= 30:
                 return None
@@ -381,7 +433,16 @@ class ResponseSynthesizer:
         Returns a new response if any guard fired, None otherwise.
         """
         # First-turn guard
-        result = self.check_first_turn_guard(turn, tool_parts, chat, base_config, trace_id)
+        result = self.check_first_turn_guard(
+            turn,
+            tool_parts,
+            chat,
+            base_config,
+            trace_id,
+            response=response,
+            history=history,
+            target_mode=target_mode,
+        )
         if result:
             return result
 

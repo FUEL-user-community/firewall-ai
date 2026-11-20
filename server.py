@@ -431,12 +431,13 @@ def _create_sse_investigation_stream(
             for pre_msg in pre_status_messages:
                 yield f"data: {json.dumps({'type': 'status', 'content': pre_msg})}\n\n"
 
-            if target_mode == "advisory":
-                base_graph_json = "{}"
-            else:
+            if target_mode == "range":
                 from core.panos.cartographer import Cartographer
                 cartographer = Cartographer(target_device=target_device)
                 base_graph_json = cartographer.build_graph()
+            else:
+                # Cartographer is now a callable tool (map_home_topology) rather than pre-dumped on every chat message
+                base_graph_json = "{}"
 
             loop = asyncio.get_running_loop()
             result_future = loop.run_in_executor(
@@ -534,7 +535,7 @@ async def chat(payload: ChatRequest, request: Request):
     target_device = (payload.device or "default").strip()
     effective_device = None if target_device in ("all", "default", "") else target_device
     target_mode = (payload.mode or "default").strip()
-    pre_msgs = [] if target_mode == "advisory" else ["Cartographer compiling nodal graph..."]
+    pre_msgs = []
 
     return _create_sse_investigation_stream(
         request=request,
@@ -545,6 +546,15 @@ async def chat(payload: ChatRequest, request: Request):
         error_message="Investigation failed. Please check server logs.",
         pre_status_messages=pre_msgs,
     )
+
+
+@app.post("/api/chat/reset")
+async def reset_chat_session():
+    """Clear the Cybersec Resident rolling session memory."""
+    brain = get_brain()
+    if hasattr(brain, "reset_resident_session"):
+        brain.reset_resident_session()
+    return JSONResponse(content={"success": True, "message": "Resident session memory cleared."})
 
 
 @app.get("/api/telemetry")

@@ -714,6 +714,7 @@ def test_core_tray_mounts_board_ops_and_slot_forge_with_zero_sqlite_disk_writes(
         content="def helper() -> int:\n    return 42\n",
     )
     assert "VALIDATED IN MEMORY (ZERO-DISK)" in forge_res
+    slot_forge(action="reset_inactive")
     assert not Path(".state/shared/nucleus_state.sqlite").exists()
     assert not Path(".slots").exists()
 
@@ -733,3 +734,117 @@ def test_evidence_referee_accepts_bare_logic_colon_and_revert_segregate_verbs():
     annotated, stats = annotate_claims(sample_report, receipts, query="")
     assert "[UNCITED]" not in annotated
     assert stats["uncited"] == 0
+
+
+def test_map_home_topology_is_callable_core_tool(monkeypatch):
+    from core.panos.ops import map_home_topology
+    from core.pipeline.tool_keeper import ToolKeeper
+
+    core_names = [t.__name__ for t in ToolKeeper().get_tools("#core")]
+    assert "map_home_topology" in core_names
+    assert PolicyEngine(mode="READ_ONLY").check("map_home_topology") is True
+
+    monkeypatch.setattr(
+        "core.panos.cartographer.Cartographer.build_graph",
+        lambda self: '{"nodes":[{"id":"firewall"}],"edges":[]}',
+    )
+    out = map_home_topology()
+    assert '"id":"firewall"' in out
+
+
+def test_cybersec_resident_memory_continuity_no_device_facts_wrapper_and_no_keyword_hijack():
+    from core.brain import CoreBrain
+
+    mock_model = MagicMock()
+    captured_initial_prompts = []
+
+    # Turn 1 ('system health' — previously hijacked by deterministic workflow):
+    # Calls system_info -> replies in natural Cybersec Resident voice
+    part_fc = MagicMock()
+    part_fc.function_call.name = "system_info"
+    part_fc.function_call.args = {}
+    part_fc.text = None
+    resp_t1_0 = MagicMock(parts=[part_fc], text="")
+
+    part_txt1 = MagicMock()
+    part_txt1.function_call = None
+    part_txt1.text = "Checked chassis directly [Step 1]: PA-VM on 10.0.12-h3 is up, next I want to inspect core/panos/ops.py."
+    resp_t1_1 = MagicMock(parts=[part_txt1], text=part_txt1.text)
+
+    # Turn 2 (conversational follow-up with <resident_session_memory> present):
+    # Replies directly from session memory without needing a redundant CLI call
+    part_txt2 = MagicMock()
+    part_txt2.function_call = None
+    part_txt2.text = "Because ops.py has unwired capture_pcap and apply_dynamic_tag helpers I can wire into ToolKeeper."
+    resp_t2_0 = MagicMock(parts=[part_txt2], text=part_txt2.text)
+
+    call_idx = [0]
+
+    def make_chat():
+        chat_obj = MagicMock()
+        chat_obj.history = []
+
+        def send_msg(payload, **kwargs):
+            chat_obj.history.append(payload)
+            idx = call_idx[0]
+            call_idx[0] += 1
+            if idx == 0:
+                captured_initial_prompts.append(str(payload))
+                return resp_t1_0
+            if idx == 1:
+                return resp_t1_1
+            captured_initial_prompts.append(str(payload))
+            return resp_t2_0
+
+        chat_obj.send_message.side_effect = send_msg
+        return chat_obj
+
+    mock_model.start_chat.side_effect = make_chat
+
+    def system_info(**kwargs):
+        return "hostname: firewall-a\nsw-version: 10.0.12-h3\n"
+
+    brain = CoreBrain(model=mock_model, tools=[system_info])
+    brain.api_key = "mock-key"
+
+    # 1. 'system health' runs through Resident loop (not deterministic workflow) and has NO '### Device Facts' header!
+    out1 = brain.investigate("Check system health", target_mode="diagnostic")
+    assert "### Device Facts" not in out1
+    assert "Checked chassis directly [Step 1]" in out1
+
+    # 2. Second message inherits <resident_session_memory> from Turn 1 and answers without forced CLI essay!
+    out2 = brain.investigate("Why inspect ops.py next?", target_mode="diagnostic")
+    assert "<resident_session_memory>" in captured_initial_prompts[1]
+    assert "Checked chassis directly" in captured_initial_prompts[1]
+    assert "capture_pcap" in out2
+    assert "### Device Facts" not in out2
+
+    # 3. '/reset' clears resident memory
+    reset_msg = brain.investigate("/reset", target_mode="diagnostic")
+    assert "cleared" in reset_msg.lower()
+    assert brain._format_resident_memory() == ""
+
+
+def test_board_ops_post_degrades_gracefully_when_drive_readonly(monkeypatch):
+    monkeypatch.delenv("NEO_SHARED_STATE_DIR", raising=False)
+    monkeypatch.setenv("NEO_SLOT_ID", "STANDALONE")
+    monkeypatch.setenv("KNOWLEDGE_BASE_FOLDER_ID", "readonly_folder_123")
+    SharedStateStore.reset_instance()
+
+    bad_client = MagicMock()
+    bad_client.upload_markdown_immutable.side_effect = PermissionError("HttpError 403: insufficientParentPermissions")
+    monkeypatch.setattr(
+        "core.integrations.board_sync.GoogleDriveClient.get_instance",
+        lambda mode="readwrite": bad_client,
+    )
+
+    out = board_ops(
+        action="post",
+        move_type="ANOMALY",
+        thread_id="T-HOME",
+        slug="mgt-overlap",
+        summary="MGT shares L2 with ethernet1/2.",
+    )
+    assert "BOARD ARTIFACT PUBLISHED:" in out
+    assert "drive_readonly_fallback" in out
+    assert classify_outcome(out) == "success"

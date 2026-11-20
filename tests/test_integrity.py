@@ -35,6 +35,7 @@ CONTRACT_SAMPLES = {
     "test_routing_fib": {"ip": "8.8.8.8"},
     "test_pbf_policy": {"source": "10.0.0.1", "destination": "8.8.8.8"},
     "get_telemetry_snapshot": {},
+    "map_home_topology": {},
     "get_live_config": {"xpath": "/config/devices"},
     "execute_log_query": {"log_type": "traffic"},
     "execute_operational_command": {"cmd": "show system info"},

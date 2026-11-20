@@ -319,11 +319,12 @@ class ToolKeeper:
         except Exception as e:
             logger.warning(f"[TOOLS] Policy/Routing Math Init Error: {e}")
 
-        # Rule 4: Fleet Inventory & Telemetry
+        # Rule 4: Fleet Inventory, Topology & Telemetry
         try:
-            from core.panos.ops import get_device_inventory, get_telemetry_snapshot
+            from core.panos.ops import get_device_inventory, get_telemetry_snapshot, map_home_topology
             tools.append(get_device_inventory)
             tools.append(get_telemetry_snapshot)
+            tools.append(map_home_topology)
             tools.append(execute_operational_command)
         except Exception as e:
             logger.warning(f"[TOOLS] Device Inventory/Telemetry Init Error: {e}")
@@ -405,9 +406,10 @@ class ToolKeeper:
             logger.warning(f"[TOOLS] Policy/Routing Math Init Error: {e}")
 
         try:
-            from core.panos.ops import get_device_inventory, get_telemetry_snapshot
+            from core.panos.ops import get_device_inventory, get_telemetry_snapshot, map_home_topology
             tools.append(get_device_inventory)
             tools.append(get_telemetry_snapshot)
+            tools.append(map_home_topology)
             tools.append(execute_operational_command)
         except Exception as e:
             logger.warning(f"[TOOLS] Device Inventory/Telemetry Init Error: {e}")

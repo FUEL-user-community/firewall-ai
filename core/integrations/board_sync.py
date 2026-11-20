@@ -330,16 +330,20 @@ class StigmergicBoard:
         drive_id = None
         drive_url = None
         if self.folder_id:
-            client = self._drive_client or GoogleDriveClient.get_instance(mode="readwrite")
-            created = client.upload_markdown_immutable(
-                filename=filename,
-                content=content,
-                folder_id=self.folder_id,
-                strict_parent=True,
-            )
-            drive_id = created.get("id")
-            drive_url = created.get("webViewLink")
-            transport = f"google_drive+{transport}"
+            try:
+                client = self._drive_client or GoogleDriveClient.get_instance(mode="readwrite")
+                created = client.upload_markdown_immutable(
+                    filename=filename,
+                    content=content,
+                    folder_id=self.folder_id,
+                    strict_parent=True,
+                )
+                drive_id = created.get("id")
+                drive_url = created.get("webViewLink")
+                transport = f"google_drive+{transport}"
+            except Exception as drive_err:
+                logger.warning(f"[BOARD] Drive upload unavailable (readonly/quota fallback to {transport}): {drive_err}")
+                transport = f"{transport} (drive_readonly_fallback)"
 
         artifact_id = drive_id or f"local:{filename}"
         parsed = parse_board_markdown(filename, content, artifact_id=artifact_id)

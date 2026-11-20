@@ -10,10 +10,13 @@ Manages `.slots/a` and `.slots/b` candidate staging:
   cutover request to `SharedStateStore` for `stem.py` zero-drop promotion.
 """
 
+import importlib
 import logging
 import os
 import shutil
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +29,10 @@ from core.forge.laws import (
 from core.forge.state_store import SharedStateStore, get_shared_store
 
 logger = logging.getLogger(__name__)
+
+_LIVE_PATCH_LOCK = threading.RLock()
+_ZERO_DISK_STAGED_FILES: Dict[str, str] = {}
+_ZERO_DISK_STAGED_DIFFS: List[str] = []
 
 _SYNC_EXCLUDE_DIRS = frozenset(
     {
@@ -459,51 +466,180 @@ def slot_forge(
     if is_zero_disk_standalone:
         try:
             store = get_shared_store()
+            repo_root = Path(__file__).resolve().parent.parent.parent
+            from core.forge.laws import validate_python_ast, validate_yaml_content
+
             if act == "status":
-                staged = store.get_kv("staged_zero_disk_paths", default=[])
+                with _LIVE_PATCH_LOCK:
+                    staged = sorted(
+                        set(_ZERO_DISK_STAGED_FILES.keys())
+                        | {p for d in _ZERO_DISK_STAGED_DIFFS for p in extract_diff_paths(d)}
+                    )
                 return (
-                    "--- FORGE STATUS (ZERO-DISK STANDALONE MODE) ---\n"
-                    "Runtime: STANDALONE (SQLite & local .slots/ worktrees disabled to preserve VM disk space).\n"
-                    f"Validated In-Memory Patches: {staged}\n"
-                    "Workflow: Validate candidate code via slot_forge(action='stage_diff'|'stage_file'), "
-                    "then persist verified diffs to Google Drive via board_ops(action='post', move_type='PATCH', ...)."
+                    "--- FORGE STATUS (ZERO-DISK IN-PLACE RESIDENT MODE) ---\n"
+                    "Runtime: STANDALONE (0-clone in-place patching with RAM byte rollback + pytest gate).\n"
+                    f"Staged In-Memory Buffers: {staged}\n"
+                    "Workflow: Stage edits via slot_forge(action='stage_file'|'stage_diff'), "
+                    "then apply & hot-reload live via slot_forge(action='verify_and_promote')."
                 )
+            if act == "reset_inactive":
+                with _LIVE_PATCH_LOCK:
+                    _ZERO_DISK_STAGED_FILES.clear()
+                    _ZERO_DISK_STAGED_DIFFS.clear()
+                    store.set_kv("staged_zero_disk_paths", [])
+                return "IN-MEMORY STAGED BUFFERS CLEARED."
             if act == "stage_file":
                 if not target_path or not content:
                     return "Error: 'stage_file' requires both 'target_path' and 'content'."
                 clean_rel = validate_mutation_paths([target_path])[0]
                 if clean_rel.endswith(".py"):
-                    from core.forge.laws import validate_python_ast
                     validate_python_ast(content, filename=clean_rel)
                 elif clean_rel.endswith((".yaml", ".yml")):
-                    from core.forge.laws import validate_yaml_content
                     validate_yaml_content(content, rel_path=clean_rel)
-                staged = list(store.get_kv("staged_zero_disk_paths", default=[]))
-                if clean_rel not in staged:
-                    staged.append(clean_rel)
-                    store.set_kv("staged_zero_disk_paths", staged)
+                with _LIVE_PATCH_LOCK:
+                    _ZERO_DISK_STAGED_FILES[clean_rel] = content
+                    staged = list(store.get_kv("staged_zero_disk_paths", default=[]))
+                    if clean_rel not in staged:
+                        staged.append(clean_rel)
+                        store.set_kv("staged_zero_disk_paths", staged)
                 return (
                     f"VALIDATED IN MEMORY (ZERO-DISK): '{clean_rel}' ({len(content)} chars) passed Constitutional & AST/YAML checks. "
-                    "Publish to Google Drive via board_ops(action='post', move_type='PATCH', ...)."
+                    "Call slot_forge(action='verify_and_promote') to test with pytest and hot-reload live, or board_ops(action='post', move_type='PATCH') to log."
                 )
             if act == "stage_diff":
                 if not unified_diff:
                     return "Error: 'stage_diff' requires 'unified_diff'."
                 touched = extract_diff_paths(unified_diff)
-                staged = list(store.get_kv("staged_zero_disk_paths", default=[]))
-                for p in touched:
-                    if p not in staged:
-                        staged.append(p)
-                store.set_kv("staged_zero_disk_paths", staged)
+                with _LIVE_PATCH_LOCK:
+                    _ZERO_DISK_STAGED_DIFFS.append(unified_diff)
+                    staged = list(store.get_kv("staged_zero_disk_paths", default=[]))
+                    for p in touched:
+                        if p not in staged:
+                            staged.append(p)
+                    store.set_kv("staged_zero_disk_paths", staged)
                 return (
                     f"VALIDATED DIFF IN MEMORY (ZERO-DISK): touched={touched} passed Constitutional path checks. "
-                    "Publish to Google Drive via board_ops(action='post', move_type='PATCH', unified_diff=...)."
+                    "Call slot_forge(action='verify_and_promote') to apply, run pytest, and hot-reload live."
                 )
-            if act in ("init", "verify_and_promote", "reset_inactive"):
-                return (
-                    f"ZERO-DISK MODE: '{act}' skipped to avoid local .slots/ worktree disk usage on VM. "
-                    "Use board_ops(action='post', move_type='PATCH', ...) to store verified patches in Google Drive."
-                )
+            if act == "init":
+                return "ZERO-DISK IN-PLACE MODE ACTIVE: No .slots/ initialization needed; stage edits directly."
+            if act == "verify_and_promote":
+                with _LIVE_PATCH_LOCK:
+                    if not _ZERO_DISK_STAGED_FILES and not _ZERO_DISK_STAGED_DIFFS:
+                        return "Error: No staged file or diff buffers in memory. Call 'stage_file' or 'stage_diff' first."
+                    diff_paths = [p for d in _ZERO_DISK_STAGED_DIFFS for p in extract_diff_paths(d)]
+                    all_touched = sorted(set(_ZERO_DISK_STAGED_FILES.keys()) | set(diff_paths))
+                    validate_mutation_paths(all_touched)
+
+                    # 1. Snapshot exact original file bytes in RAM for guaranteed <5ms rollback
+                    backups: Dict[Path, Optional[bytes]] = {}
+                    for rel in all_touched:
+                        fp = (repo_root / rel).resolve()
+                        backups[fp] = fp.read_bytes() if fp.is_file() else None
+                    env_fp = repo_root / ".env"
+                    orig_env_bytes = env_fp.read_bytes() if env_fp.is_file() else None
+
+                    def _restore_backups() -> None:
+                        for fp, raw in backups.items():
+                            if raw is None:
+                                if fp.exists():
+                                    fp.unlink()
+                            else:
+                                fp.parent.mkdir(parents=True, exist_ok=True)
+                                fp.write_bytes(raw)
+                        if orig_env_bytes is not None:
+                            env_fp.write_bytes(orig_env_bytes)
+
+                    try:
+                        # 2. Apply staged full-file writes
+                        for rel, new_txt in _ZERO_DISK_STAGED_FILES.items():
+                            fp = (repo_root / rel).resolve()
+                            fp.parent.mkdir(parents=True, exist_ok=True)
+                            fp.write_text(new_txt, encoding="utf-8")
+
+                        # 3. Apply staged unified diffs via git apply
+                        for udiff in _ZERO_DISK_STAGED_DIFFS:
+                            patch_text = udiff if udiff.endswith("\n") else udiff + "\n"
+                            cp_git = subprocess.run(
+                                ["git", "apply", "--whitespace=nowarn", "-"],
+                                input=patch_text,
+                                cwd=str(repo_root),
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
+                            if cp_git.returncode != 0:
+                                raise RuntimeError(f"git apply failed: {(cp_git.stderr or cp_git.stdout).strip()}")
+
+                        # 4. Re-validate every touched file post-patch through Constitutional AST/YAML gates
+                        for rel in all_touched:
+                            fp = (repo_root / rel).resolve()
+                            if fp.is_file():
+                                txt = fp.read_text(encoding="utf-8")
+                                if rel.endswith(".py"):
+                                    validate_python_ast(txt, filename=rel)
+                                elif rel.endswith((".yaml", ".yml")):
+                                    validate_yaml_content(txt, rel_path=rel)
+
+                        if "config/prompts.yaml" in all_touched:
+                            new_sha = seal_slot_prompts_sha(repo_root)
+                            if new_sha:
+                                os.environ["PROMPTS_YAML_SHA"] = new_sha
+
+                        # 5. Run targeted pytest verification gate
+                        env_test = os.environ.copy()
+                        env_test["NEO_PROBATION_SHADOW"] = "1"
+                        cp_test = subprocess.run(
+                            [sys.executable, "-m", "pytest", "-q", "tests/test_integrity.py", "tests/test_pipeline.py"],
+                            cwd=str(repo_root),
+                            env=env_test,
+                            capture_output=True,
+                            text=True,
+                            timeout=45,
+                        )
+                        out_tail = ((cp_test.stdout or "") + "\n" + (cp_test.stderr or "")).strip()[-900:]
+                        if cp_test.returncode != 0:
+                            _restore_backups()
+                            return (
+                                f"Error: In-place patch REJECTED by pytest (exact original files restored). "
+                                f"Details:\n{out_tail}"
+                            )
+                    except Exception as apply_err:
+                        _restore_backups()
+                        if isinstance(apply_err, ConstitutionalError):
+                            raise
+                        return f"Error: In-place patch failed and was rolled back cleanly: {apply_err}"
+
+                    # 6. Pytest passed -> Clear buffers and hot-reload modified modules/trays in-process!
+                    _ZERO_DISK_STAGED_FILES.clear()
+                    _ZERO_DISK_STAGED_DIFFS.clear()
+                    store.set_kv("staged_zero_disk_paths", [])
+                    for rel in all_touched:
+                        if rel.endswith(".py") and rel.startswith("core/"):
+                            mod_name = rel[:-3].replace("/", ".")
+                            if mod_name in sys.modules:
+                                try:
+                                    importlib.reload(sys.modules[mod_name])
+                                except Exception as rel_err:
+                                    logger.warning(f"[FORGE] Module reload warning for {mod_name}: {rel_err}")
+                    try:
+                        from core.pipeline.prompt_assembler import reset_system_prompt_cache
+                        reset_system_prompt_cache()
+                    except Exception:
+                        pass
+                    try:
+                        import server as _srv
+                        if getattr(_srv, "_brain", None) is not None:
+                            _srv._brain.keeper = _srv._brain.keeper.__class__()
+                            _srv._brain.tools = _srv._brain.keeper.get_tools("#core")
+                    except Exception:
+                        pass
+
+                    last_summary = out_tail.splitlines()[-1] if out_tail else "passed"
+                    return (
+                        f"IN-PLACE UPGRADE PROMOTED LIVE: touched={all_touched} | pytest={last_summary} | "
+                        "modules & ToolKeeper hot-reloaded."
+                    )
         except ConstitutionalError as ce:
             return f"ERROR: Security Policy Block - {ce}"
         except Exception as e:

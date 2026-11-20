@@ -48,6 +48,7 @@ class PolicyEngine:
         "execute_log_query",
         "audit_user_id",
         "get_telemetry_snapshot",
+        "map_home_topology",
         "get_device_inventory",
         "execute_live_app_analytics",
         "execute_operational_command",

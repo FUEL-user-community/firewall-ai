@@ -168,6 +168,7 @@ _SIM_TOOLS = {
 _CONFIG_TOOLS = {
     "get_live_config",
     "fetch_running_config_xml",
+    "map_home_topology",
     "query_knowledge_base",
     "inspect_own_harness",
     "board_ops",

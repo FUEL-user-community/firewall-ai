@@ -277,6 +277,58 @@ class CoreBrain:
         else:
             self.budget_guard = None
 
+        # Continuous Cybersec Resident rolling session memory (RAM-only, bounded to 10 turns)
+        self._resident_memory: List[Dict[str, Any]] = []
+        self._memory_lock = threading.Lock()
+
+    def reset_resident_session(self) -> None:
+        """Clear in-memory resident conversation continuity."""
+        with self._memory_lock:
+            self._resident_memory.clear()
+        logger.info("[RESIDENT] Session memory cleared.")
+
+    def _format_resident_memory(self) -> str:
+        """Render bounded rolling resident memory without raw multi-KB tool blobs."""
+        with self._memory_lock:
+            if not self._resident_memory:
+                return ""
+            items = list(self._resident_memory[-10:])
+        lines = ["<resident_session_memory>"]
+        for idx, turn_rec in enumerate(items, 1):
+            op_q = str(turn_rec.get("operator", "")).strip()
+            tools_used = ", ".join(turn_rec.get("tools", [])) or "none"
+            reply_snip = str(turn_rec.get("reply", "")).strip()
+            lines.append(
+                f"[Exchange {idx}]\n"
+                f"Operator: {op_q}\n"
+                f"Tools Executed: {tools_used}\n"
+                f"Your Prior Response: {reply_snip}"
+            )
+        lines.append("</resident_session_memory>")
+        lines.append(
+            "[Continue naturally from <resident_session_memory>; do NOT re-run identical baseline "
+            "checks already answered above unless verifying a change, and NEVER echo <resident_session_memory>.]"
+        )
+        return "\n\n".join(lines)
+
+    def _record_resident_turn(self, query: str, receipts: list, reply: str) -> None:
+        """Append a compact turn digest to the rolling resident session buffer."""
+        tool_summaries = [
+            f"{r.get('tool', 'unknown')}:{r.get('status', 'ok')}"
+            for r in (receipts or [])[:12]
+        ]
+        clean_reply = (reply or "").strip()
+        if len(clean_reply) > 1200:
+            clean_reply = clean_reply[:1197] + "..."
+        with self._memory_lock:
+            self._resident_memory.append({
+                "operator": (query or "")[:400],
+                "tools": tool_summaries,
+                "reply": clean_reply,
+            })
+            if len(self._resident_memory) > 10:
+                self._resident_memory = self._resident_memory[-10:]
+
     def set_usage_callback(self, callback):
         """Sets the function to call with token usage stats."""
         self.usage_tracker.set_callback(callback)
@@ -309,76 +361,6 @@ class CoreBrain:
     def _resolve_target_device(self, user_query: str, explicit_device: Optional[str] = None) -> Optional[str]:
         """Resolves target device alias from explicit parameter or query text."""
         return resolve_target_device(user_query, explicit_device)
-
-
-    def _create_workflow_tool_bridge(self) -> Callable[[str, dict], str]:
-        """Creates a signature-safe tool dispatch bridge for deterministic workflows."""
-        def _exec_workflow_tool(tname: str, targs: dict) -> str:
-            matching_tool = next((t for t in self.tools if getattr(t, '__name__', '') == tname), None)
-            if matching_tool:
-                try:
-                    sig = inspect.signature(matching_tool)
-                    valid_args = {k: v for k, v in targs.items() if k in sig.parameters}
-                    return str(matching_tool(**valid_args))
-                except Exception as ex:
-                    return f"Error executing {tname}: {ex}"
-            try:
-                from core.panos.ops import execute_operational_command
-                target_dev = targs.get("target_device")
-                return execute_operational_command(tname, target_device=target_dev)
-            except Exception as ex:
-                return f"Error executing {tname}: {ex}"
-        return _exec_workflow_tool
-
-    def _try_deterministic_workflow(
-        self,
-        user_query: str,
-        reality_check: str,
-        chat: Any,
-        **kwargs
-    ) -> Optional[str]:
-        """Bypasses agentic loop for deterministic health check queries."""
-        if run_health_check is None:
-            return None
-
-        health_keywords = ["firewall health", "system health", "hardware status", "health check"]
-        if not any(k in user_query.lower() for k in health_keywords):
-            return None
-
-        trace_id = kwargs.get("trace_id", "workflow")
-        logger.info(f"[{trace_id}] [WORKFLOW] Routing to deterministic health check")
-        try:
-            effective_device = self._resolve_target_device(user_query, kwargs.get("target_device"))
-            tool_bridge = self._create_workflow_tool_bridge()
-
-            health_summary = run_health_check(
-                tool_executor=tool_bridge,
-                target_device=effective_device
-            )
-            synthesis_prompt = f"{reality_check}\n\nSYNTHESIZE this health check report for the user:\n{health_summary}"
-            base_config = kwargs.get("base_config") or get_generation_config()
-            response = self._execute_with_quota_retry(
-                lambda: chat.send_message(
-                    synthesis_prompt,
-                    generation_config=base_config,
-                    request_options={"timeout": DEFAULT_REQUEST_TIMEOUT}
-                ),
-                operation_name="health check synthesis"
-            )
-            try:
-                resp_text = getattr(response, 'text', None)
-                if isinstance(resp_text, str) and resp_text:
-                    return resp_text
-                elif getattr(response, 'parts', None) and hasattr(response.parts[0], 'text'):
-                    part_text = response.parts[0].text
-                    if isinstance(part_text, str):
-                        return part_text
-                return health_summary
-            except (ValueError, AttributeError):
-                return health_summary
-        except Exception as wf_err:
-            logger.warning(f"[{trace_id}] [WORKFLOW] Health check failed: {wf_err}. Falling back to agentic loop.")
-            return None
 
     def _init_investigation_state(
         self,
@@ -508,18 +490,22 @@ class CoreBrain:
                 range_instructions = load_range_prompt().format(user_query=user_query, base_graph_json=base_graph)
                 user_msg = f"{reality_check}\n\n{range_instructions}"
             else:
+                parts_out = [reality_check]
+                if state.target_mode not in ("range", "investigate"):
+                    session_mem = self._format_resident_memory()
+                    if session_mem:
+                        parts_out.append(session_mem)
                 base_graph = kwargs.get("base_graph_json")
                 if base_graph and base_graph != "{}":
-                    nodal_context = (
-                        "\n\n<cartographer_state>\n"
+                    parts_out.append(
+                        "<cartographer_state>\n"
                         f"{base_graph}\n"
                         "</cartographer_state>\n"
                         "[Reference topology snapshot only — NEVER echo <cartographer_state>, "
                         "REALITY_CHECK, or SYSTEM blocks in your output.]"
                     )
-                    user_msg = f"{reality_check}{nodal_context}\n\n<operator_message>{user_query}</operator_message>"
-                else:
-                    user_msg = f"{reality_check}\n\n<operator_message>{user_query}</operator_message>"
+                parts_out.append(f"<operator_message>{user_query}</operator_message>")
+                user_msg = "\n\n".join(parts_out)
 
             initial_payload = [user_msg]
             response = self._execute_with_quota_retry(
@@ -735,8 +721,8 @@ class CoreBrain:
         if pivot_directive:
             message_payload.append(pivot_directive)
 
-        # Code-owned facts: re-sent only when new receipts change them.
-        if state.target_mode != "range":
+        # Code-owned facts: injected only in strict forensic 'investigate' mode
+        if state.target_mode == "investigate":
             facts = render_facts(state.receipts, query=state.user_query)
             if facts and facts != state.last_facts:
                 state.last_facts = facts
@@ -799,24 +785,26 @@ class CoreBrain:
         turn: int,
         **kwargs
     ) -> str:
-        """Generates the final structured investigation report."""
-        state.emit("Building your report...")
-        final_text = self.synthesizer.synthesize_final(response, state.trace_id)
+        """Generates the final output and updates resident session continuity."""
+        state.emit("Finalizing response...")
+        final_text = self.synthesizer.synthesize_final(response, state.trace_id, target_mode=state.target_mode)
 
         # Enforce strict JSON schema for range simulation mode
         if state.target_mode == "range":
             final_text = self._enforce_range_schema(final_text, trace_id=state.trace_id)
-        elif state.target_mode == "advisory":
-            # Advisory mode emits conversational strategic guidance without forcing Device Facts banner
-            pass
-        else:
-            # Code owns the facts and marks every claim not backed by a SUCCESS receipt.
+        elif state.target_mode == "investigate":
+            # Strict forensic audit mode: prepend Device Facts banner and run claim referee
             try:
                 evidence_context = f"{state.user_query}\n{kwargs.get('base_graph_json', '')}"
                 final_text, ev_stats = apply_evidence(final_text, state.receipts, evidence_context)
                 logger.info(f"[{state.trace_id}] [EVIDENCE] {ev_stats}")
             except Exception as ev_err:
                 logger.warning(f"[{state.trace_id}] [EVIDENCE] Annotation skipped: {ev_err}")
+        elif state.target_mode != "advisory":
+            # Cybersec Resident mode ('default', 'diagnostic', 'resident'):
+            # Speak directly without bolting Device Facts CLI headers onto every turn,
+            # and record the exchange in the rolling resident session buffer.
+            self._record_resident_turn(state.user_query, state.receipts, final_text)
 
         state.emit_chunk(final_text)
         return final_text
@@ -847,21 +835,15 @@ class CoreBrain:
         **kwargs
     ) -> Any:
         """
-        Execute an agentic investigation loop with dynamic tool partitioning.
-
-        Args:
-            user_query: The natural language investigation prompt or command.
-            temperature: Optional generation temperature override.
-            user_id: User identifier for audit logging.
-            status_callback: Optional callable for streaming real-time status updates.
-            target_mode: Specialized execution mode (e.g. 'range' for attack graph simulation).
-            abort_event: Optional threading.Event for graceful mid-flight cancellation.
-            chunk_callback: Optional callable receiving streaming text tokens.
-            **kwargs: Additional runtime arguments (e.g. base_graph_json).
-
-        Returns:
-            Structured investigation findings or partial report upon early termination.
+        Execute an agentic resident/investigation loop with dynamic tool partitioning.
         """
+        if (user_query or "").strip().lower() in ("/reset", "reset session"):
+            self.reset_resident_session()
+            msg = "Resident session memory cleared."
+            if return_details:
+                return {"verdict": msg, "receipts": [], "trace_id": "reset"}
+            return msg
+
         if not self.api_key and not self.model:
             err = "Error: Offline Mode (No API Key or Model configured)."
             if return_details:
@@ -887,15 +869,7 @@ class CoreBrain:
         reality_check = self._build_reality_prompt(user_query, state)
         chat = self.model.start_chat()
 
-        # 2. Deterministic Workflow Routing (zero-hallucination bypass)
-        workflow_report = self._try_deterministic_workflow(
-            user_query, reality_check, chat, trace_id=state.trace_id, base_config=state.base_config, **kwargs
-        )
-        if workflow_report:
-            state.emit_chunk(workflow_report)
-            return _wrap_return(workflow_report)
-
-        # 3. Initial Prompt Turn with Circuit Breaker Protection
+        # 2. Initial Prompt Turn with Circuit Breaker Protection (deterministic keyword hijacking retired)
         response, err = self._execute_initial_turn(chat, user_query, reality_check, state, **kwargs)
         if err:
             return _wrap_return(err)
