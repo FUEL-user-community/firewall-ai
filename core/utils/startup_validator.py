@@ -148,9 +148,19 @@ def get_diagnostic_matrix() -> dict:
                 any_online = True
             fleet_results["default"] = probe
 
-    # LLM engine check
+    # LLM engine check (supports both pre-purge os.environ and post-purge sealed vault)
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not gemini_key:
+        try:
+            from core.integrations.secrets import get_secret
+            gemini_key = get_secret("gemini_api_key").strip()
+        except Exception:
+            gemini_key = ""
     gemini_ok = bool(gemini_key and gemini_key != "your-gemini-api-key-here")
+
+    drive_configured = bool(
+        (os.getenv("KNOWLEDGE_BASE_FOLDER_ID") or os.getenv("GOOGLE_DRIVE_FOLDER_ID") or "").strip()
+    )
 
     # Inspection tool count check
     playbook_count = 0
@@ -169,6 +179,7 @@ def get_diagnostic_matrix() -> dict:
         "any_online": any_online,
         "fleet": fleet_results,
         "gemini_authenticated": gemini_ok,
+        "drive_configured": drive_configured,
         "playbook_count": playbook_count,
         "tool_count": tool_count,
         "policy_mode": os.getenv("POLICY_MODE", "READ_ONLY").upper(),
@@ -180,7 +191,7 @@ def format_startup_banner(diag: dict) -> str:
     """Generates the pre-flight diagnostic banner with clean ASCII borders."""
     lines = [
         "+==========================================================================================+",
-        "|                        CORE DEFENSE — NETWORK DEFENSE ASSISTANT                          |",
+        "|                        NEO // AUTONOMOUS PAN-OS CYBERSEC RESIDENT                        |",
         "|                                  PRE-FLIGHT DIAGNOSTICS                                  |",
         "+==========================================================================================+",
         "|  DEVICE INVENTORY (config/devices.yaml):                                                 |",
@@ -190,18 +201,19 @@ def format_startup_banner(diag: dict) -> str:
     if fleet:
         for name, p in fleet.items():
             ip_str = p.get("ip", "no-ip")
-            status_str = f"ONLINE ({p.get('latency_ms', 0)}ms)" if p.get("reachable") else "OFFLINE (Emulation Ready)"
+            status_str = f"ONLINE ({p.get('latency_ms', 0)}ms)" if p.get("reachable") else "OFFLINE"
             default_tag = " - Default" if p.get("default") else ""
             line_content = f"* {name:<10} ({ip_str:<15}) [{status_str}{default_tag}]"
             lines.append(f"|    {line_content:<86}|")
     else:
         lines.append(f"|    {'* (No devices configured in devices.yaml — Standalone Mode)':<86}|")
 
+    drive_status = "CONFIGURED (Folder Linked)" if diag.get("drive_configured") else "UNCONFIGURED (Local Spool Only)"
     lines.append("|                                                                                          |")
-    lines.append("|  LLM REASONING ENGINE:                                                                   |")
-    llm_auth = "AUTHENTICATED - Thinking: High" if diag.get("gemini_authenticated") else "MISSING API KEY (.env required)"
-    lines.append(f"|    {('* Gemini Pro / Flash' + ' ' * 12 + '[' + llm_auth + ']'):<86}|")
-    lines.append("|    * Knowledge Base (Drive)        [READY - Fallback RAG Configured]                     |")
+    lines.append("|  RESIDENT REASONING ENGINE:                                                              |")
+    llm_auth = "AUTHENTICATED (Sealed Vault)" if diag.get("gemini_authenticated") else "MISSING API KEY (.env required)"
+    lines.append(f"|    {('* Gemini Frontier Engine' + ' ' * 8 + '[' + llm_auth + ']'):<86}|")
+    lines.append(f"|    {('* Knowledge Base (Drive)' + ' ' * 8 + '[' + drive_status + ']'):<86}|")
     lines.append("|                                                                                          |")
     lines.append("|  DIAGNOSTIC & TELEMETRY ENGINE:                                                          |")
     t_cnt = diag.get("tool_count", 0)

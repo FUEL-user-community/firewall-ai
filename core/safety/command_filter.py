@@ -24,6 +24,17 @@ class CommandFilter:
         "find command ",
         "ping ",
         "traceroute ",
+        "view-pcap filter-pcap ",
+    )
+
+    # Operational state-clearing commands permitted ONLY when PolicyEngine is actively elevated to READ_WRITE
+    ELEVATED_WRITE_PREFIXES = (
+        "clear counter interface ",
+        "clear session id ",
+        "request wildfire upload-log",
+    )
+    ELEVATED_WRITE_EXACT = (
+        "clear user-cache",
     )
 
     ALLOWED_EXACT = (
@@ -83,6 +94,22 @@ class CommandFilter:
         if '<' in cmd_lower or '>' in cmd_lower:
             logger.warning(f"[CMDFILTER] BLOCKED XML in command: {cmd_clean[:80]}")
             return False, "Commands must not contain XML tags."
+
+        # Permit vetted operational clear/upload commands ONLY when PolicyEngine is elevated to READ_WRITE
+        if cmd_lower in cls.ELEVATED_WRITE_EXACT or any(cmd_lower.startswith(p) for p in cls.ELEVATED_WRITE_PREFIXES):
+            try:
+                import os
+                from core.brain import get_active_brain
+                from core.safety.policy_engine import PolicyEngine
+                active_brain = get_active_brain()
+                pol = getattr(active_brain, "policy", None) or PolicyEngine()
+                if os.getenv("POLICY_MODE", "").strip().upper() == "READ_WRITE" or pol.mode == "READ_WRITE":
+                    logger.info(f"[CMDFILTER] ALLOWED (elevated READ_WRITE op): {cmd_clean[:80]}")
+                    return True, "Allowed under READ_WRITE policy"
+            except Exception:
+                pass
+            logger.warning(f"[CMDFILTER] BLOCKED write-tier op in READ_ONLY mode: {cmd_clean[:80]}")
+            return False, "Write-tier operational command requires PolicyEngine READ_WRITE mode."
 
         # Check explicit blocks with word boundaries first
         for pattern in cls.BLOCKED_PATTERNS:

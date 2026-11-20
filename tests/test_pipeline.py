@@ -16,7 +16,7 @@ from core.pipeline.tool_schemas import (
     TOOL_SCHEMAS,
 )
 from core.pipeline.tool_executor import ToolExecutor
-from core.pipeline.prompt_assembler import load_system_prompt, load_range_prompt
+from core.pipeline.prompt_assembler import load_system_prompt
 
 
 # ─── 1. Tool Keeper Tests ─────────────────────────────────────────────
@@ -345,14 +345,6 @@ def test_tool_schemas_preserve_target_device():
     for tool_name, schema in TOOL_SCHEMAS.items():
         fields = schema.model_fields
         assert "target_device" in fields, f"Schema for '{tool_name}' is missing target_device"
-
-
-def test_load_range_prompt():
-    """Verify load_range_prompt loads valid YAML directives for the range simulator."""
-    prompt = load_range_prompt(persona="neo")
-    assert isinstance(prompt, str)
-    assert len(prompt) > 0
-    assert "RANGE SIMULATION MISSION" in prompt
 
 
 def test_execute_log_query_schema():

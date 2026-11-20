@@ -23,7 +23,7 @@ with warnings.catch_warnings():
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
 
 # Gemini Flash — lightweight fast tier.
-FLASH_MODEL = os.getenv("FLASH_MODEL", "gemini-3.6-flash")
+FLASH_MODEL = os.getenv("FLASH_MODEL", "gemini-2.5-flash")
 
 # =============================================================================
 # Financial Telemetry (Pricing per 1M tokens)
@@ -76,58 +76,40 @@ _IP_PATTERN = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 # Max turns for the agentic loop
 MAX_TURNS = 14
 
-# Probe budget for Range simulation (allows multi-hop traversal before forced synthesis)
-RANGE_PROBE_LIMIT = 7
-
 
 def classify_mode(query: str, target_mode: str = "default") -> str:
     """
-    Returns 'range', 'advisory', 'investigate', or 'diagnostic' based on target_mode and query intent.
-    Routes incident diagnostics and traffic drops to high reasoning ('investigate'),
-    attack range queries to 'range', architectural advice to 'advisory',
-    and baseline health sweeps to 'diagnostic'.
-
-    Counter-logic: explicit target_mode overrides regex inference.
+    Returns 'advisory', 'investigate', or 'diagnostic' based on target_mode and query intent.
+    Explicit caller target_mode ('diagnostic', 'resident', 'investigate', 'advisory') always wins;
+    keyword regexes run ONLY when target_mode is 'default' or unset.
     """
-    if target_mode == "range":
-        return "range"
-    if target_mode == "advisory":
-        return "advisory"
+    explicit = (target_mode or "default").strip().lower()
+    if explicit == "resident":
+        return "diagnostic"
+    if explicit in ("diagnostic", "investigate", "advisory"):
+        return explicit
     if not query or not isinstance(query, str):
         return "diagnostic"
 
-    # Direct incident keyword match with word boundaries
     if _INVESTIGATION_PATTERN.search(query):
         return "investigate"
 
-    # Structural match: IPv4 pattern + directional intent with word boundaries
     if _IP_PATTERN.search(query) and _DIRECTIONAL_PATTERN.search(query):
         return "investigate"
 
     return "diagnostic"
 
 
-
 def get_thinking_level(mode: str) -> str:
     """Returns the thinking_level for the given mode."""
-    if mode == "range":
-        return THINKING_LEVEL_RANGE
-    if mode == "investigate":
+    if mode in ("investigate", "advisory"):
         return THINKING_LEVEL_INVESTIGATE
-    if mode == "advisory":
-        return THINKING_LEVEL_ADVISORY
     return THINKING_LEVEL_DIAGNOSTIC
 
 
 def get_generation_config(target_mode: str = "default") -> genai.types.GenerationConfig:
-    """
-    Returns GenerationConfig compliant with Gemini 3.8 Flash specifications.
-    Deprecated sampling parameters (temperature, top_p, top_k) stripped per Google TechDocs.
-    """
-    config_kwargs = {
-        "max_output_tokens": 16384
-    }
-    return genai.types.GenerationConfig(**config_kwargs)
+    """Returns GenerationConfig with full output token budget."""
+    return genai.types.GenerationConfig(max_output_tokens=16384)
 
 
 

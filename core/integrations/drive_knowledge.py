@@ -114,10 +114,10 @@ def _query_or_walk_drive(service, folder_id: str, target: str = None) -> list:
 
 
 def _init_drive_service():
-    """Initializes the Google Drive API service via unified thread-safe GoogleDriveClient."""
+    """Initializes the Google Drive API service via unified thread-safe GoogleDriveClient singleton."""
     try:
         from core.integrations.gdrive_client import GoogleDriveClient
-        client = GoogleDriveClient(mode="readonly")
+        client = GoogleDriveClient.get_instance(mode="readonly")
         return client.get_service()
     except Exception as e:
         logger.error(f"[DRIVE-RAG] Failed to initialize Drive service: {e}")

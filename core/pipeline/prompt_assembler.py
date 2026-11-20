@@ -142,21 +142,6 @@ def load_system_prompt(persona: str = "neo") -> str:
 
     return "\n\n".join(assembled)
 
-def load_range_prompt(persona: str = "neo") -> str:
-    """
-    Loads the Range Simulation specific prompt extensions dynamically.
-    """
-    range_path = _PROMPTS_PATH.parent / "range_prompts.yaml"
-    if not range_path.exists():
-        raise FileNotFoundError(f"CRITICAL: {range_path} is missing.")
-        
-    with open(range_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-        
-    if persona not in data or "range_simulation" not in data[persona]:
-        raise KeyError(f"CRITICAL: 'range_simulation' not found for persona '{persona}' in {range_path}.")
-        
-    return data[persona]["range_simulation"].strip()
 
 # Lazy-loaded system prompt — avoids crash at import time if prompts.yaml is missing.
 _SYSTEM_PROMPT_CACHE = None
@@ -339,7 +324,7 @@ def build_reality_prompt(
             f"REALITY_CHECK: Active mounted tools: [{manifest_str}].\n"
             "Verify tool names against this list before every call. Additional specialized trays "
             "('#sys', '#net', '#sec', '#vpn', '#ops', '#troubleshoot', '#ha', '#routing', '#l2', "
-            "'#user-id', '#forge') can be mounted via summon_toolkit(tray='...').\n\n"
+            "'#user-id') can be mounted via summon_toolkit(tray='...').\n\n"
             f"{fleet}"
         )
 
@@ -350,24 +335,16 @@ def build_reality_prompt(
     return reality_check
 
 
-def get_ceiling_directive(target_mode: str, turn: int, outward_receipts_count: int, range_probe_limit: int = 7) -> str:
+def get_ceiling_directive(target_mode: str, turn: int, outward_receipts_count: int) -> str:
     """
     Returns forced terminal synthesis directive if turn or evidence ceilings are reached.
-    Guarantees graceful report emission before reaching hard agent loop boundaries.
     """
-    if target_mode == "range" and turn >= range_probe_limit - 1:
+    if outward_receipts_count >= 14:
         return (
-            f"\n\n[SYSTEM: SIMULATION PROBE BUDGET REACHED (Turn {turn+1} of {range_probe_limit})]\n"
-            "You have comprehensive empirical telemetry across candidate ingress, lateral, and policy boundaries.\n"
-            "Do NOT execute any further tool calls.\n"
-            "Proceed directly to Step 3 (TOPOLOGY SYNTHESIS) and emit your terminal pure JSON payload NOW."
-        )
-    elif target_mode != "range" and outward_receipts_count >= 14:
-        return (
-            f"\n\n[SYSTEM: TRIAD EVIDENCE CEILING REACHED ({outward_receipts_count} outward tools executed)]\n"
+            f"\n\n[SYSTEM: EVIDENCE CEILING REACHED ({outward_receipts_count} outward tools executed)]\n"
             "You have sufficient empirical telemetry across candidate ingress, lateral, and policy boundaries.\n"
             "Do NOT execute any further tool calls.\n"
-            "Proceed directly to SYNTHESIS and emit your final executive diagnostic report NOW."
+            "Synthesize your findings directly NOW."
         )
     return None
 

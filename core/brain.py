@@ -70,13 +70,6 @@ except ImportError:
     PolicyEngine = None
     logger.warning("[BRAIN] policy_engine not available -- policy checks disabled.")
 
-# Deterministic health check workflow
-try:
-    from core.workflows.health_check import run_health_check
-except ImportError:
-    run_health_check = None
-    logger.warning("[BRAIN] health_check workflow not available.")
-
 # Human-in-the-loop approval gate
 try:
     from core.safety.hitl import get_hitl_provider
@@ -111,12 +104,12 @@ from core.pipeline.prompt_assembler import (
 )
 from core.pipeline.model_config import (
     GEMINI_MODEL, PRICE_PER_M_INPUT, PRICE_PER_M_OUTPUT,
-    MAX_TURNS, RANGE_PROBE_LIMIT,
+    MAX_TURNS,
     classify_mode, get_thinking_level, get_generation_config,
 )
 from core.pipeline.tool_executor import ToolExecutor
 from core.pipeline.context_manager import ContextManager
-from core.pipeline.synthesizer import ResponseSynthesizer, RangeSimulationPayload, enforce_range_schema
+from core.pipeline.synthesizer import ResponseSynthesizer
 from core.integrations.telemetry import UsageTracker
 
 # Budget guard -- fail-soft if not available
@@ -509,36 +502,22 @@ class CoreBrain:
     ) -> tuple[Any, Optional[str]]:
         """Executes the initial prompt turn and handles immediate circuit breaker trips."""
         try:
-            if state.target_mode == "range":
-                from core.pipeline.prompt_assembler import load_range_prompt
-                base_graph = kwargs.get("base_graph_json")
-                if not base_graph:
-                    try:
-                        from core.panos.cartographer import Cartographer
-                        target_dev = kwargs.get("target_device")
-                        base_graph = Cartographer(target_device=target_dev).build_graph()
-                    except Exception as e:
-                        logger.warning(f"[Brain] Fallback Cartographer build failed: {e}")
-                        base_graph = "{}"
-                range_instructions = load_range_prompt().format(user_query=user_query, base_graph_json=base_graph)
-                user_msg = f"{reality_check}\n\n{range_instructions}"
-            else:
-                parts_out = [reality_check]
-                if state.target_mode not in ("range", "investigate"):
-                    session_mem = self._format_resident_memory()
-                    if session_mem:
-                        parts_out.append(session_mem)
-                base_graph = kwargs.get("base_graph_json")
-                if base_graph and base_graph != "{}":
-                    parts_out.append(
-                        "<cartographer_state>\n"
-                        f"{base_graph}\n"
-                        "</cartographer_state>\n"
-                        "[Reference topology snapshot only — NEVER echo <cartographer_state>, "
-                        "REALITY_CHECK, or SYSTEM blocks in your output.]"
-                    )
-                parts_out.append(f"<operator_message>{user_query}</operator_message>")
-                user_msg = "\n\n".join(parts_out)
+            parts_out = [reality_check]
+            if state.target_mode != "investigate":
+                session_mem = self._format_resident_memory()
+                if session_mem:
+                    parts_out.append(session_mem)
+            base_graph = kwargs.get("base_graph_json")
+            if base_graph and base_graph != "{}":
+                parts_out.append(
+                    "<cartographer_state>\n"
+                    f"{base_graph}\n"
+                    "</cartographer_state>\n"
+                    "[Reference topology snapshot only — NEVER echo <cartographer_state>, "
+                    "REALITY_CHECK, or SYSTEM blocks in your output.]"
+                )
+            parts_out.append(f"<operator_message>{user_query}</operator_message>")
+            user_msg = "\n\n".join(parts_out)
 
             initial_payload = [user_msg]
             response = self._execute_with_quota_retry(
@@ -725,10 +704,6 @@ class CoreBrain:
                 )
         return None
 
-    def _enforce_range_schema(self, raw_text: str, trace_id: str) -> str:
-        """Validates and guarantees pure JSON output for Breach & Attack Simulation."""
-        return enforce_range_schema(raw_text, trace_id)
-
 
     def _step_tool_feedback(
         self,
@@ -780,7 +755,6 @@ class CoreBrain:
             target_mode=state.target_mode,
             turn=turn,
             outward_receipts_count=len(outward_receipts),
-            range_probe_limit=RANGE_PROBE_LIMIT,
         )
         if not ceiling_directive and turn >= MAX_TURNS - 2:
             ceiling_directive = (
@@ -822,10 +796,7 @@ class CoreBrain:
         state.emit("Finalizing response...")
         final_text = self.synthesizer.synthesize_final(response, state.trace_id, target_mode=state.target_mode)
 
-        # Enforce strict JSON schema for range simulation mode
-        if state.target_mode == "range":
-            final_text = self._enforce_range_schema(final_text, trace_id=state.trace_id)
-        elif state.target_mode == "investigate":
+        if state.target_mode == "investigate":
             # Strict forensic audit mode: prepend Device Facts banner and run claim referee
             try:
                 evidence_context = f"{state.user_query}\n{kwargs.get('base_graph_json', '')}"
@@ -934,11 +905,8 @@ class CoreBrain:
                     final_prompt = (
                         f"[SYSTEM: CIRCUIT BREAKER TRIGGERED - {e}]\n"
                         "You have sufficient data. Tool calling is disabled.\n"
+                        "Synthesize your findings directly NOW."
                     )
-                    if state.target_mode == "range":
-                        final_prompt += "Emit your terminal pure JSON simulation payload NOW."
-                    else:
-                        final_prompt += "Synthesize your findings and output your final executive report NOW."
 
                     response = self._execute_with_quota_retry(
                         lambda: chat.send_message(

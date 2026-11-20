@@ -244,10 +244,10 @@ def generate_incident_markdown(
 
 
 def _init_drive_write_service():
-    """Initializes Google Drive API with write permissions via unified GoogleDriveClient."""
+    """Initializes Google Drive API with write permissions via unified GoogleDriveClient singleton."""
     try:
         from core.integrations.gdrive_client import GoogleDriveClient
-        client = GoogleDriveClient(mode="readwrite")
+        client = GoogleDriveClient.get_instance(mode="readwrite")
         return client.get_service()
     except Exception as e:
         logger.warning(f"[EXPORT-GDOC] Google Drive write service not available: {e}")

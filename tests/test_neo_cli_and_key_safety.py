@@ -120,6 +120,7 @@ def test_registered_secrets_redacted_in_raw_base64_hex_reversed_and_raw_code_too
     [
         "neo_cli.py",
         "neo_tmux.sh",
+        "core/panos/sanctuary.py",
         "core/integrations/secrets.py",
         "core/pipeline/tool_executor.py",
         "web/app.js",
@@ -239,3 +240,190 @@ def test_neo_cli_sanitize_ssh_capture_redacts_credentials():
     assert "LUFRPT123456" not in clean
     assert "[REDACTED_CREDENTIAL_LINE]" in clean
     assert "Number of active sessions: 60" in clean
+
+
+def test_f01_extract_dnat_ip_skips_outbound_snat_but_detects_real_dnat():
+    """Verify F-01: outbound SNAT source-translation IP is never misclassified as DNAT."""
+    from core.panos.ops import _extract_dnat_ip
+
+    snat_only_yaml = {
+        "result": {
+            "rules": "Outbound-Internet-SNAT",
+            "source-translation": {"ip": "203.0.113.2", "dynamic-ip-and-port": {"ip": "203.0.113.2"}},
+        }
+    }
+    assert _extract_dnat_ip(snat_only_yaml, source_ip="10.1.1.5", dest_ip="8.8.8.8") is None
+
+    real_dnat_yaml = {
+        "result": {
+            "rules": "Inbound-HTTPS-DNAT",
+            "ip": "192.168.50.10:443",
+        }
+    }
+    assert _extract_dnat_ip(real_dnat_yaml, source_ip="198.51.100.9", dest_ip="203.0.113.10") == "192.168.50.10"
+
+
+def test_f02_drive_knowledge_uses_singleton_gdrive_client_after_secret_seal():
+    """Verify F-02: drive_knowledge._init_drive_service delegates to GoogleDriveClient.get_instance('readonly')."""
+    from core.integrations import drive_knowledge
+    from core.integrations.gdrive_client import GoogleDriveClient
+
+    fake_service = MagicMock(name="drive_v3_service")
+    fake_wrapper = MagicMock()
+    fake_wrapper.get_service.return_value = (fake_service, None)
+
+    with patch.object(GoogleDriveClient, "get_instance", return_value=fake_wrapper) as mock_get_inst:
+        svc, err = drive_knowledge._init_drive_service()
+        assert svc is fake_service
+        assert err is None
+        mock_get_inst.assert_called_once_with(mode="readonly")
+
+
+def test_f05_apply_dynamic_tag_blocks_mgt_and_active_admin_ips_under_elevated_policy():
+    """Verify F-05: Sanctuary blocks tagging firewall MGT IP and active admin IPs even in READ_WRITE mode."""
+    from core.panos.client import PanOSClient
+    from core.panos.ops import apply_dynamic_tag
+    from core.safety.policy_engine import PolicyEngine
+
+    mock_client = MagicMock(spec=PanOSClient)
+    mock_client.hostname = "192.168.1.254"
+    mock_client.execute_op.return_value = (
+        200,
+        "<response status='success'><result><admins><entry><admin>admin</admin><from>192.168.1.20</from></entry></admins></result></response>",
+    )
+    mock_client.execute_user_id.return_value = (200, "<response status='success'/>")
+
+    mock_pool = MagicMock()
+    mock_pool.get_client.return_value = mock_client
+
+    fake_brain = MagicMock()
+    fake_brain.policy = PolicyEngine(mode="READ_WRITE")
+
+    with patch("core.panos.ops._get_pool", return_value=mock_pool), patch(
+        "core.brain.get_active_brain", return_value=fake_brain
+    ):
+        # 1. Firewall MGT IP blocked
+        res_mgt = apply_dynamic_tag("192.168.1.254", "NEO-Quarantine")
+        assert "Sanctuary Law forbids tagging firewall management IP" in res_mgt
+
+        # 2. Active SSH/WebUI admin IP blocked
+        res_adm = apply_dynamic_tag("192.168.1.20", "NEO-Quarantine")
+        assert "Sanctuary Law forbids tagging active admin session IP" in res_adm
+
+        # 3. Normal host IP succeeds when active brain policy is READ_WRITE
+        res_ok = apply_dynamic_tag("10.50.1.99", "NEO-Quarantine")
+        assert "SUCCESS" in res_ok
+        assert mock_client.execute_user_id.called
+
+
+def test_precommit_sanctuary_catches_lockout_and_active_flow_severance():
+    """Verify Pre-Commit Sanctuary fast-passes clean configs and flags MGT lockout + interzone-default severance."""
+    from core.panos.sanctuary import evaluate_precommit_sanctuary
+
+    mock_client = MagicMock()
+    mock_pool = MagicMock()
+    mock_pool.get_client.return_value = mock_client
+
+    # Case 1: Empty candidate changes -> immediate safe fast-path
+    mock_client.execute_op.return_value = (200, "<response status='success'><result></result></response>")
+    with patch("core.panos.sanctuary.PanOSClientPool.get_instance", return_value=mock_pool):
+        clean_res = evaluate_precommit_sanctuary(target_device="fw-hq")
+    assert clean_res["safe"] is True
+    assert clean_res["changed"] is False
+
+    # Case 2: Candidate permitted-ip excludes active admin 192.168.1.20 + interzone-default flipped to deny
+    def fake_op(cmd):
+        if "<changes" in cmd:
+            return (
+                200,
+                "<response status='success'><result><entry>deviceconfig system permitted-ip</entry>"
+                "<entry>rulebase default-security-rules interzone-default</entry></result></response>",
+            )
+        if "<admins" in cmd:
+            return (
+                200,
+                "<response status='success'><result><admins><entry><admin>admin</admin>"
+                "<from>192.168.1.20</from><type>SSH</type></entry></admins></result></response>",
+            )
+        if "<system><info" in cmd:
+            return (
+                200,
+                "<response status='success'><result><system><ip-address>192.168.1.254</ip-address>"
+                "<netmask>255.255.255.0</netmask><default-gateway>192.168.1.1</default-gateway></system></result></response>",
+            )
+        return (200, "<response status='success'><result/></response>")
+
+    def fake_get(xpath):
+        if xpath.endswith("/deviceconfig/system"):
+            return (
+                200,
+                "<response status='success'><result><system><ip-address>192.168.1.254</ip-address>"
+                "<permitted-ip><entry name='10.99.99.0/24'/></permitted-ip></system></result></response>",
+            )
+        if xpath.endswith("/default-security-rules"):
+            return (
+                200,
+                "<response status='success'><result><default-security-rules><rules>"
+                "<entry name='interzone-default'><action>deny</action></entry>"
+                "</rules></default-security-rules></result></response>",
+            )
+        if xpath.endswith("/rulebase/security"):
+            return (200, "<response status='success'><result><security><rules/></security></result></response>")
+        return (200, "<response status='success'><result/></response>")
+
+    mock_client.execute_op.side_effect = fake_op
+    mock_client.execute_get.side_effect = fake_get
+    mock_client.execute_log.return_value = (
+        200,
+        "<response status='success'><result><log><logs>"
+        "<entry><from>inside</from><to>dmz</to><src>10.1.1.5</src><dst>10.2.2.10</dst><app>dns-base</app></entry>"
+        "</logs></log></result></response>",
+    )
+
+    with patch("core.panos.sanctuary.PanOSClientPool.get_instance", return_value=mock_pool):
+        risk_res = evaluate_precommit_sanctuary(target_device="fw-hq")
+
+    assert risk_res["safe"] is False
+    assert any("MGT SELF-LOCKOUT" in w and "192.168.1.20" in w for w in risk_res["warnings"])
+    assert any("ACTIVE FLOW SEVERANCE" in w and "inside->dmz" in w for w in risk_res["warnings"])
+
+
+def test_neo_cli_symbiotic_ssh_helpers_and_pty_stage_abort():
+    """Verify resolve_ssh_target, extract_echoed_command_after_prompt, and stage_lines_to_pty_master abort."""
+    target_str, alias = neo_cli.resolve_ssh_target("fw-hq")
+    assert target_str == "admin@192.168.1.254"
+    assert alias == "fw-hq"
+
+    custom_str, custom_alias = neo_cli.resolve_ssh_target("netops@fw-hq")
+    assert custom_str == "netops@192.168.1.254"
+    assert custom_alias == "fw-hq"
+
+    mode, echoed = neo_cli.extract_echoed_command_after_prompt("\x1b[0madmin@firewall-a# commit force")
+    assert mode == "config"
+    assert echoed == "commit force"
+
+    written_cmds = []
+    read_chunks = [
+        b"[edit]\r\nadmin@firewall-a# ",
+        b"set rulebase security rules bad-rule\r\nInvalid syntax.\r\nadmin@firewall-a# ",
+    ]
+
+    with patch("neo_cli.os.write", side_effect=lambda fd, data: written_cmds.append(data.decode("utf-8"))), patch(
+        "neo_cli.os.read", side_effect=read_chunks
+    ), patch("select.select", return_value=([99], [], [])):
+        ok, msg = neo_cli.stage_lines_to_pty_master(
+            99,
+            [
+                "set rulebase security rules bad-rule from inside to bogus action allow",
+                "set rulebase default-security-rules rules interzone-default action deny",
+            ],
+            current_mode="config",
+            timeout_per_cmd=0.2,
+        )
+
+    assert ok is False
+    assert "ABORTED at line 1/2" in msg
+    joined_writes = "".join(written_cmds)
+    assert "top\r" in joined_writes
+    assert "bad-rule" in joined_writes
+    assert "interzone-default" not in joined_writes

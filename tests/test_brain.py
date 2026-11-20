@@ -271,59 +271,14 @@ def test_tool_tray_hot_swapping():
     assert state.tool_executor.tools == [tool_a]
 
 
-def test_range_schema_enforcement_markdown_and_fallback():
-    """Verify _enforce_range_schema cleans markdown fences and enforces RangeSimulationPayload."""
-    brain = CoreBrain(model=None, tools=[])
+def test_classify_mode_respects_explicit_diagnostic_and_investigate_modes():
+    """Verify F-11: explicit target_mode ('diagnostic', 'resident', 'investigate', 'advisory') is never overridden by keyword regexes."""
+    from core.pipeline.model_config import classify_mode
 
-    # Case 1: Clean JSON with markdown fences
-    markdown_json = (
-        "```json\n"
-        "{\n"
-        '  "mermaid": "graph TD\\n  A --> B",\n'
-        '  "message": "Simulated breach detected",\n'
-        '  "threats": 3,\n'
-        '  "drops": 1\n'
-        "}\n"
-        "```"
-    )
-    res1 = brain._enforce_range_schema(markdown_json, trace_id="range-1")
-    parsed1 = json.loads(res1)
-    assert parsed1["threats"] == 3
-    assert parsed1["drops"] == 1
-    assert "graph TD" in parsed1["mermaid"]
-
-    # Case 2: Malformed or plain text fallback
-    plain_text = "Analysis complete: no active path found."
-    res2 = brain._enforce_range_schema(plain_text, trace_id="range-2")
-    parsed2 = json.loads(res2)
-    assert "graph TD" in parsed2["mermaid"]
-    assert parsed2["message"] == plain_text
-    assert parsed2["threats"] == 0
-
-    # Case 3: Mermaid edge labels containing parentheses sanitized
-    mermaid_with_parens = (
-        "{\n"
-        '  "mermaid": "graph TD\\n  A -.->|Dropped (Rule: interzone-default)| B",\n'
-        '  "message": "Dropped by policy",\n'
-        '  "threats": 0,\n'
-        '  "drops": 1\n'
-        "}\n"
-    )
-    res3 = brain._enforce_range_schema(mermaid_with_parens, trace_id="range-3")
-    parsed3 = json.loads(res3)
-    assert "(" not in parsed3["mermaid"]
-    assert "Dropped - Rule: interzone-default" in parsed3["mermaid"]
-
-    # Case 4: Conversational preamble before JSON extracted cleanly without triggering fallback
-    raw_with_preamble = (
-        'No text outside the JSON output. { "mermaid": "graph TD\\n  Attacker --> Target", '
-        '"message": "Contained", "threats": 0, "drops": 1 }'
-    )
-    res4 = brain._enforce_range_schema(raw_with_preamble, trace_id="range-4")
-    parsed4 = json.loads(res4)
-    assert parsed4["mermaid"] == "graph TD\n  Attacker --> Target"
-    assert parsed4["message"] == "Contained"
-    assert parsed4["drops"] == 1
+    assert classify_mode("why did 10.0.0.1 drop to 8.8.8.8?", target_mode="diagnostic") == "diagnostic"
+    assert classify_mode("why did 10.0.0.1 drop to 8.8.8.8?", target_mode="resident") == "diagnostic"
+    assert classify_mode("what is App-ID?", target_mode="investigate") == "investigate"
+    assert classify_mode("commit force", target_mode="advisory") == "advisory"
 
 
 def test_investigate_stream_generator_events():
@@ -355,25 +310,18 @@ def test_investigate_stream_generator_events():
     assert "0 vulnerabilities found" in resp_event["content"]
 
 
-def test_gemini_38_flash_generation_config_and_range_mode():
-    """Verify Gemini 3.8 Flash specs: temperature stripped, JSON schema for range, thinking medium."""
+def test_gemini_generation_config_and_mode_classification():
+    """Verify generation config strips temperature, FLASH_MODEL is valid, and word-boundary mode regexes hold."""
     from core.pipeline.model_config import (
         get_generation_config, classify_mode, get_thinking_level,
-        RANGE_PROBE_LIMIT, THINKING_LEVEL_RANGE
+        FLASH_MODEL, MAX_TURNS,
     )
 
-    # 1. Generation config in default mode has stripped temperature
     cfg_default = get_generation_config()
     assert cfg_default.temperature is None
     assert cfg_default.response_mime_type is None
+    assert FLASH_MODEL == "gemini-2.5-flash"
 
-    # 2. Generation config in range mode has stripped temperature and clean mime type
-    cfg_range = get_generation_config(target_mode="range")
-    assert cfg_range.temperature is None
-    assert cfg_range.response_mime_type is None
-
-    # 3. Mode classification and thinking level
-    assert classify_mode("test attack path", target_mode="range") == "range"
     assert classify_mode("Why is traffic from 10.0.1.5 blocked?") == "investigate"
     assert classify_mode("Packets dropped reaching 172.16.20.10 on port 443") == "investigate"
     assert classify_mode("10.0.1.5 to 192.168.1.1") == "investigate"
@@ -388,15 +336,14 @@ def test_gemini_38_flash_generation_config_and_range_mode():
     assert classify_mode("show interface history on 10.0.0.1") == "diagnostic"  # 'history' != 'to'
     assert classify_mode("show root certificate") == "diagnostic"  # 'root' without 'cause' != incident
 
-    assert get_thinking_level("range") == THINKING_LEVEL_RANGE
+    assert get_thinking_level("diagnostic") == "medium"
     assert get_thinking_level("investigate") == "high"
-    assert THINKING_LEVEL_RANGE == "medium"
-    assert RANGE_PROBE_LIMIT == 7
+    assert MAX_TURNS == 14
 
 
-def test_range_probe_ceiling_guard_injection():
-    """Verify ceiling directive is injected and tool_config mode NONE is passed when turn reaches RANGE_PROBE_LIMIT - 1."""
-    from core.pipeline.model_config import RANGE_PROBE_LIMIT
+def test_turn_ceiling_guard_injection():
+    """Verify ceiling directive is injected and tool_config mode NONE is passed when turn reaches MAX_TURNS - 1."""
+    from core.pipeline.model_config import MAX_TURNS
 
     mock_model = MagicMock()
     brain = CoreBrain(model=mock_model, tools=[])
@@ -408,20 +355,22 @@ def test_range_probe_ceiling_guard_injection():
     mock_chat.send_message.return_value = mock_response
 
     state = MagicMock()
-    state.target_mode = "range"
+    state.target_mode = "investigate"
     state.trace_id = "test-ceiling"
     state.prev_turn_tools = ["test_security_policy"]
+    state.receipts = []
+    state.user_query = "why did 10.0.0.1 drop to 8.8.8.8?"
     state.base_config = MagicMock()
 
     turn_result = MagicMock()
     turn_result.tool_parts = [MagicMock()]
 
-    # At turn = RANGE_PROBE_LIMIT - 1 (turn 6), ceiling guard must inject directive and block tools
-    brain._step_tool_feedback(mock_chat, turn_result, state, turn=RANGE_PROBE_LIMIT - 1)
-    
+    # At turn = MAX_TURNS - 1 (turn 13), ceiling guard must inject directive and block tools
+    brain._step_tool_feedback(mock_chat, turn_result, state, turn=MAX_TURNS - 1)
+
     assert mock_chat.send_message.called
     sent_payload = mock_chat.send_message.call_args[0][0]
-    has_ceiling_directive = any("SIMULATION PROBE BUDGET REACHED" in str(item) for item in sent_payload)
+    has_ceiling_directive = any("INVESTIGATION CEILING REACHED" in str(item) for item in sent_payload)
     assert has_ceiling_directive
     call_kwargs = mock_chat.send_message.call_args[1]
     assert call_kwargs.get("tool_config") == {"function_calling_config": {"mode": "NONE"}}

@@ -122,16 +122,38 @@ def execute_report_discovery(target_device: str = None) -> str:
     return "\n".join(log_output) + "\n\nUse: 'show report <name>' to retrieve."
 
 
-def execute_live_app_analytics(target_device: str = None) -> str:
+def execute_live_app_analytics(target_device: str = None, hitl_approved: bool = False) -> str:
     """
     Analyzes live sessions to generate a 'Top Applications' report
     by counting active sessions in the session table.
-    Bypasses the Report Engine (which is disabled on VM-50).
+    Bypasses the Report Engine (which is disabled on VM-50), while enforcing
+    a 2,000-session ceiling on live appliances unless `hitl_approved=True`.
 
     Args:
         target_device (str): Device name from fleet inventory. Uses default if not specified.
+        hitl_approved (bool): Operator override permitting dump when active sessions > 2,000.
     """
     client = _get_pool().get_client(target_device)
+
+    if not hitl_approved:
+        from core.panos.client import PanOSClient
+        if isinstance(client, PanOSClient):
+            try:
+                st_info, info_xml = client.execute_op("show session info")
+                if st_info == 200 and info_xml:
+                    info_root = ET.fromstring(info_xml)
+                    num_el = info_root.find(".//num-active")
+                    if num_el is not None and num_el.text and num_el.text.strip().isdigit():
+                        active_cnt = int(num_el.text.strip())
+                        if active_cnt > 2000:
+                            return (
+                                f"SAFETY INTERCEPTOR: Active session count is {active_cnt} (>2,000 limit). "
+                                "Unbounded 'show session analytics' blocked to protect mgmtsrvr CPU; "
+                                "use 'app_stats' ('show running application-cache statistics') or filtered log queries instead."
+                            )
+            except Exception:
+                pass
+
     cmd = "<show><session><all></all></session></show>"
 
     try:

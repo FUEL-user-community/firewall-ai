@@ -373,9 +373,9 @@ url_cloud_status:
   tags: ["#sec"]
 
 threat_logs:
-  description: "Show recent threat prevention logs"
+  description: "Show recent threat prevention logs (requires active Threat Prevention license)"
   cmd: "show log threat"
-  tags: ["#sec", "#core"]
+  tags: ["#sec"]
 
 sdwan_status:
   description: "Show SD-WAN connection and cluster status"
@@ -405,21 +405,6 @@ botnet_report:
 
 # --- DEBUG & TESTING ---
 
-test_policy_match:
-  description: "Dry run a packet against Security Policy"
-  cmd: "test security-policy-match source {source} destination {destination} protocol {protocol} destination-port {port}"
-  tags: ["#sec", "#troubleshoot"]
-
-test_nat_match:
-  description: "Dry run a packet against NAT Policy"
-  cmd: "test nat-policy-match source {source} destination {destination} destination-port {port} protocol {protocol}"
-  tags: ["#sec", "#troubleshoot"]
-
-test_routing_lookup:
-  description: "Test routing decision for an IP"
-  cmd: "test routing fib-lookup ip {ip} virtual-router {vr_name}"
-  tags: ["#net", "#troubleshoot"]
-
 test_url_category:
   description: "Check URL categorization"
   cmd: "test url {url}"
@@ -436,45 +421,3 @@ find_command:
   description: "Search the help database"
   cmd: "find command keyword {term}"
   tags: ["#core"]
-
-# --- INVESTIGATION TOOLKITS (FAST MODE) ---
-# Configuration-driven toolkit definitions for hybrid architecture
-# Used by panos/toolkits.py ToolkitRegistry
-
-toolkits:
-  health_check:
-    description: "Quick firewall health assessment"
-    mode: "fast"
-    expected_time: 18
-    keywords: ["health", "status", "check", "online", "up"]
-    tools:
-      - system_info
-      - system_resources
-      - hardware_telemetry
-      - session_info
-      - interface_all
-      - license_info
-  
-  security_audit:
-    description: "Security posture and threat assessment"
-    mode: "fast"
-    expected_time: 22
-    keywords: ["security", "threat", "attack", "breach", "intrusion"]
-    tools:
-      - threat_logs
-      - admin_sessions
-      - app_telemetry
-      - user_ip_mapping
-      - license_info
-  
-  network_diagnostic:
-    description: "Network connectivity and routing check"
-    mode: "fast"
-    expected_time: 20
-    keywords: ["network", "routing", "interface", "connectivity", "ping"]
-    tools:
-      - network_base
-      - interface_all
-      - arp_table
-      - session_info
-      - system_resources

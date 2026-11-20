@@ -41,6 +41,7 @@ PROTECTED_EXACT_PATHS: Set[str] = {
     "core/safety/command_filter.py",
     "core/panos/client.py",
     "core/panos/research.py",
+    "core/panos/sanctuary.py",
     "core/integrations/gdrive_client.py",
     "core/integrations/secrets.py",
     "core/utils/startup_validator.py",

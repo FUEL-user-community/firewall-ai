@@ -6,6 +6,7 @@ Contains: search_live_docs
 """
 
 import os
+import re
 import logging
 import requests
 
@@ -47,7 +48,10 @@ def search_live_docs(query: str) -> str:
 
     url = "https://www.googleapis.com/customsearch/v1"
     clean_query = query.strip()
-    refined_query = f"{clean_query} site:docs.paloaltonetworks.com/"
+    refined_query = (
+        f"{clean_query} "
+        "(site:docs.paloaltonetworks.com OR site:security.paloaltonetworks.com OR site:knowledgebase.paloaltonetworks.com)"
+    )
 
     params = {
         'q': refined_query,
@@ -56,14 +60,14 @@ def search_live_docs(query: str) -> str:
         'num': 5
     }
     headers = {
-        "User-Agent": "pan-os-python-nodal/1.0 (LiveResearchDocClient)"
+        "User-Agent": "pan-os-python-nodal/2.0 (NeoResidentResearch)"
     }
 
     try:
         r = requests.get(url, params=params, headers=headers, timeout=10)
         if r.status_code != 200:
-            logger.error(f"Live Research Failed: HTTP {r.status_code} - {r.text}")
-            return f"Live Research Failed: HTTP {r.status_code} (Details in server logs)"
+            logger.error(f"Live Research Failed: HTTP {r.status_code}")
+            return f"Live Research Failed: HTTP {r.status_code} (Details in logs)"
 
         data = r.json()
         items = data.get('items', [])
@@ -82,5 +86,7 @@ def search_live_docs(query: str) -> str:
         return "\n".join(results)
 
     except Exception as e:
-        logger.error(f"Live Research Execution Failed: {e}")
-        return "Live Research Execution Failed. Check server logs for details."
+        from core.safety.scrubber import scrub
+        safe_err = scrub(re.sub(r"key=[^&\s]+", "key=[REDACTED]", str(e))) if 're' in globals() else scrub(str(e))
+        logger.error(f"Live Research Execution Failed: {safe_err}")
+        return "Live Research Execution Failed. Check logs for details."

@@ -36,12 +36,12 @@ class ToxicXmlSanitizer:
     optimized for LLM consumption with PII stripping.
     """
 
-    # Sensitive tags that get fully redacted
+    # Sensitive credential tags that get redacted (excludes bare 'key'/'hash' used by PAN-OS counters & ECMP)
     SENSITIVE_TAGS = {
-        'phash', 'psk', 'password', 'key', 'secret', 'auth-key',
+        'phash', 'psk', 'pre-shared-key', 'password', 'secret', 'auth-key',
         'bind-password', 'certificate-data', 'private-key', 'api-key',
-        'passphrase', 'shared-key', 'community', 'encrypted-password', 
-        'hash', 'bind-dn', 'access-key', 'secret-key', 'rsa-private-key'
+        'passphrase', 'shared-key', 'community', 'encrypted-password',
+        'bind-dn', 'access-key', 'secret-key', 'rsa-private-key'
     }
 
     # Patterns to mask while preserving structural integrity via hashing
@@ -75,6 +75,9 @@ class ToxicXmlSanitizer:
         # which breaks re.sub() with string patterns. Force to plain Python str.
         if not isinstance(text, str):
             text = str(text)
+
+        from core.safety.scrubber import scrub_registered_secrets
+        text = scrub_registered_secrets(text)
 
         for prefix, pattern in self.MASK_PATTERNS.items():
             def replacer(match):

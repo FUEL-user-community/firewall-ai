@@ -140,7 +140,18 @@ def test_security_policy(source: str = None, destination: str = None, port: str 
     source_clean = source.strip()
     destination_clean = destination.strip()
     port_clean = str(port).strip() if port else "443"
-    protocol_clean = str(protocol).strip() if protocol else "6"
+
+    for ip_val, label in ((source_clean, "source"), (destination_clean, "destination")):
+        try:
+            ipaddress.ip_address(ip_val)
+        except ValueError:
+            return f"ERROR: [test_security_policy] Invalid {label} IP address '{ip_val}'."
+
+    proto_map = {"tcp": "6", "udp": "17", "icmp": "1"}
+    proto_raw = str(protocol).strip().lower() if protocol else "6"
+    protocol_clean = proto_map.get(proto_raw, proto_raw)
+    if not re.match(r"^\d+$", protocol_clean) or not (1 <= int(protocol_clean) <= 255):
+        return f"ERROR: [test_security_policy] Invalid protocol '{protocol}'. Must be 1-255 or 'tcp'/'udp'/'icmp'."
 
     # Input validation (H1)
     if not re.match(r'^\d+$', port_clean) or not (1 <= int(port_clean) <= 65535):
@@ -182,7 +193,7 @@ def test_security_policy(source: str = None, destination: str = None, port: str 
 
 def _discover_virtual_router(client, failed_vr: Optional[str] = None) -> Optional[str]:
     """Auto-discovers the active virtual router name from the firewall running config."""
-    cached = getattr(client, "_cached_vr", None)
+    cached = client._cached_vr if hasattr(client, "_cached_vr") else None
     if cached and cached.lower() != "default" and (not failed_vr or cached != failed_vr):
         return cached
 
@@ -202,7 +213,8 @@ def _discover_virtual_router(client, failed_vr: Optional[str] = None) -> Optiona
                 name = entry.get("name")
                 if name and name.strip() and (not failed_vr or name.strip() != failed_vr):
                     client._cached_vr = name.strip()
-                    if getattr(client, "virtual_router", None) in (None, "default"):
+                    cur_vr = client.virtual_router if hasattr(client, "virtual_router") else None
+                    if cur_vr in (None, "default"):
                         client.virtual_router = client._cached_vr
                     return client._cached_vr
     except Exception as e:
@@ -217,7 +229,8 @@ def _discover_virtual_router(client, failed_vr: Optional[str] = None) -> Optiona
                 name = entry.get("name") or (entry.findtext("name") if entry.find("name") is not None else None)
                 if name and name.strip() and (not failed_vr or name.strip() != failed_vr):
                     client._cached_vr = name.strip()
-                    if getattr(client, "virtual_router", None) in (None, "default"):
+                    cur_vr = client.virtual_router if hasattr(client, "virtual_router") else None
+                    if cur_vr in (None, "default"):
                         client.virtual_router = client._cached_vr
                     return client._cached_vr
     except Exception as e:
@@ -249,7 +262,9 @@ def test_routing_fib(ip: str = None, virtual_router: str = "default", target_dev
         client = _get_pool().get_client(target_device)
 
         # Priority: explicit non-default argument -> devices.yaml virtual_router -> cached VR -> "default"
-        raw_vr = getattr(client, "virtual_router", None) or getattr(client, "_cached_vr", None)
+        raw_vr = (client.virtual_router if hasattr(client, "virtual_router") else None) or (
+            client._cached_vr if hasattr(client, "_cached_vr") else None
+        )
         configured_vr = raw_vr if isinstance(raw_vr, str) else None
         if virtual_router and isinstance(virtual_router, str) and virtual_router.strip() and virtual_router.strip().lower() != "default":
             vr_clean = virtual_router.strip()
@@ -405,10 +420,26 @@ def test_nat_policy(source: str, destination: str, port: str,
         to_interface (str): Egress interface (e.g., 'ethernet1/1'). Optional.
         target_device (str): Device name from fleet inventory (e.g., 'fw-hq'). Uses default if not specified.
     """
-    source_clean = source.strip() if source else "10.0.0.5"
-    destination_clean = destination.strip() if destination else "8.8.8.8"
+    if not source or not str(source).strip():
+        return "ERROR: [test_nat_policy] source IP address is required."
+    if not destination or not str(destination).strip():
+        return "ERROR: [test_nat_policy] destination IP address is required."
+
+    source_clean = str(source).strip()
+    destination_clean = str(destination).strip()
     port_clean = str(port).strip() if port else "443"
-    protocol_clean = str(protocol).strip() if protocol else "6"
+
+    for ip_val, label in ((source_clean, "source"), (destination_clean, "destination")):
+        try:
+            ipaddress.ip_address(ip_val)
+        except ValueError:
+            return f"ERROR: [test_nat_policy] Invalid {label} IP address '{ip_val}'."
+
+    proto_map = {"tcp": "6", "udp": "17", "icmp": "1"}
+    proto_raw = str(protocol).strip().lower() if protocol else "6"
+    protocol_clean = proto_map.get(proto_raw, proto_raw)
+    if not re.match(r"^\d+$", protocol_clean) or not (1 <= int(protocol_clean) <= 255):
+        return f"ERROR: [test_nat_policy] Invalid protocol '{protocol}'. Must be 1-255 or 'tcp'/'udp'/'icmp'."
 
     # Input validation (H1)
     if not re.match(r'^\d+$', port_clean) or not (1 <= int(port_clean) <= 65535):
@@ -461,6 +492,51 @@ def _find_yaml_val(obj, key: str):
             if found is not None:
                 return found
     return None
+
+
+def _extract_dnat_ip(obj, source_ip: str, dest_ip: str) -> Optional[str]:
+    """
+    Extract Destination NAT (DNAT) translated IP while explicitly skipping
+    `source-translation` / `src-translation` subtrees so outbound SNAT egress IPs
+    are never misclassified as DNAT.
+    """
+    _SNAT_SKIP_KEYS = frozenset({
+        "source-translation",
+        "src-translation",
+        "source_translation",
+        "dynamic-ip-and-port",
+        "translated-source",
+        "source",
+        "src",
+    })
+    _DNAT_TARGET_KEYS = ("translated-destination", "destination-translation", "destination", "dst", "ip")
+
+    def _walk(node) -> Optional[str]:
+        if isinstance(node, dict):
+            # Prefer explicit destination-translation containers first
+            for dkey in _DNAT_TARGET_KEYS:
+                if dkey in node and isinstance(node[dkey], str):
+                    ip_cand = node[dkey].split(":")[0].split("/")[0].strip()
+                    try:
+                        ipaddress.ip_address(ip_cand)
+                        if ip_cand != dest_ip and ip_cand != source_ip:
+                            return ip_cand
+                    except ValueError:
+                        pass
+            for k, v in node.items():
+                if str(k).lower() in _SNAT_SKIP_KEYS:
+                    continue
+                found = _walk(v)
+                if found:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = _walk(item)
+                if found:
+                    return found
+        return None
+
+    return _walk(obj)
 
 
 def _fetch_interface_zone_map(target_device: Optional[str] = None) -> dict:
@@ -592,20 +668,8 @@ def test_packet_walk(
         elif isinstance(rules_block, str):
             nat_rule = rules_block
 
-    # Detect Destination NAT (DNAT) translated IP if present in NAT output
-    translated_dst_ip = None
-    if isinstance(nat_data, dict):
-        for candidate_key in ("destination", "translated-destination", "dst", "to", "ip"):
-            val = _find_yaml_val(nat_data, candidate_key)
-            if isinstance(val, str):
-                ip_cand = val.split(":")[0].split("/")[0].strip()
-                try:
-                    ipaddress.ip_address(ip_cand)
-                    if ip_cand != destination_clean and ip_cand != source_clean:
-                        translated_dst_ip = ip_cand
-                        break
-                except ValueError:
-                    continue
+    # Detect Destination NAT (DNAT) translated IP while ignoring SNAT source-translation
+    translated_dst_ip = _extract_dnat_ip(nat_data, source_clean, destination_clean) if isinstance(nat_data, dict) else None
 
     # 5. Post-DNAT Re-Routing (SP3 Counter-Logic: if DNAT mutated destination IP, re-evaluate FIB for Post-NAT Zone)
     post_fib_intf = effective_pre_nat_intf
@@ -745,7 +809,7 @@ def execute_operational_command(
         return execute_report_query(report_type, target_device=target_device)
 
     elif route.type == CommandType.LIVE_ANALYTICS:
-        return execute_live_app_analytics(target_device=target_device)
+        return execute_live_app_analytics(target_device=target_device, hitl_approved=hitl_approved)
 
     # OPERATIONAL: Execute standard operational command
     effective_cmd = cmd.strip()
@@ -860,15 +924,50 @@ def get_telemetry_snapshot(target_device: str = None) -> dict:
             if matches:
                 stats['mgmt_cpu'] = float(matches[0])
 
-            # Dataplane CPU regex if available
+            # Fallback MGT user CPU% if dataplane resource-monitor is unavailable
             dp_matches = re.findall(r'Cpu\(s\):\s*(\d+\.\d+)%us', res_out)
             if dp_matches:
                 stats['data_cpu'] = float(dp_matches[0])
+
+        # 3. Query real PAN-OS dataplane CPU when connected to a live PanOSClient
+        from core.panos.client import PanOSClient
+        if isinstance(client, PanOSClient):
+            dp_status, dp_xml = client.execute_op(
+                "<show><running><resource-monitor><second><last>1</last></second></resource-monitor></running></show>"
+            )
+            if dp_status == 200 and dp_xml:
+                try:
+                    dp_root = fromstring(dp_xml)
+                    vals = [
+                        float(v.text.strip())
+                        for v in dp_root.findall(".//cpu-load-average/entry/value")
+                        if v.text and v.text.strip().replace(".", "", 1).isdigit()
+                    ]
+                    if vals:
+                        stats['data_cpu'] = round(max(vals), 1)
+                except Exception:
+                    pass
 
     except Exception as e:
         logger.error(f"[Telemetry] Snapshot Failed: {e}", exc_info=True)
 
     return stats
+
+
+def _resolve_effective_policy():
+    from core.safety.policy_engine import PolicyEngine
+
+    env_policy = PolicyEngine()
+    if env_policy.mode == "READ_WRITE":
+        return env_policy
+    try:
+        from core.brain import get_active_brain
+        active_brain = get_active_brain()
+        if active_brain is not None and active_brain.policy is not None:
+            return active_brain.policy
+    except Exception:
+        pass
+    return env_policy
 
 
 def apply_dynamic_tag(ip: str, tag: str, target_device: str = None) -> str:
@@ -887,11 +986,11 @@ def apply_dynamic_tag(ip: str, tag: str, target_device: str = None) -> str:
     ip_clean = ip.strip() if ip else ""
     tag_clean = tag.strip() if tag else ""
 
-    # POLICY GATE: Check write authorization (C3)
+    # POLICY GATE: Check active PolicyEngine / POLICY_MODE first (C3)
     try:
-        from core.safety.policy_engine import PolicyEngine, PolicyViolationError
+        from core.safety.policy_engine import PolicyViolationError
         try:
-            PolicyEngine().check("apply_dynamic_tag")
+            _resolve_effective_policy().check("apply_dynamic_tag")
         except PolicyViolationError as pve:
             return f"ERROR: Security Policy Block - {pve}"
     except ImportError:
@@ -899,13 +998,36 @@ def apply_dynamic_tag(ip: str, tag: str, target_device: str = None) -> str:
 
     # Strict IP validation using ipaddress module (C1, C3)
     try:
-        ipaddress.ip_address(ip_clean)
+        target_ip_obj = ipaddress.ip_address(ip_clean)
     except ValueError:
         return f"ERROR: [apply_dynamic_tag] Invalid IP address '{ip_clean}' for DAG orchestration."
+
+    if target_ip_obj.is_loopback or target_ip_obj.is_unspecified:
+        return f"ERROR: Security Policy Block - Sanctuary Law forbids tagging loopback/unspecified IP '{ip_clean}'."
 
     # Strict Tag validation: alphanumeric + dashes/underscores/dots
     if not re.match(r'^[a-zA-Z0-9_\-\.]{1,63}$', tag_clean):
         return f"ERROR: [apply_dynamic_tag] Invalid Tag format '{tag_clean}'. Must be alphanumeric identifier (1-63 chars)."
+
+    try:
+        client = _get_pool().get_client(target_device)
+        # SANCTUARY GATE: Never allow DAG quarantine of the firewall's MGT IP or an active admin SSH/HTTPS IP
+        try:
+            fw_host = str(client.hostname or "").strip()
+        except AttributeError:
+            fw_host = ""
+        if fw_host and ip_clean == fw_host:
+            return f"ERROR: Security Policy Block - Sanctuary Law forbids tagging firewall management IP '{ip_clean}'."
+        from core.panos.client import PanOSClient
+        if isinstance(client, PanOSClient):
+            from core.panos.cartographer import Cartographer
+            for adm in Cartographer(target_device=target_device)._fetch_admin_sessions(client):
+                if str(adm.get("from") or "").strip() == ip_clean:
+                    return (
+                        f"ERROR: Security Policy Block - Sanctuary Law forbids tagging active admin session IP '{ip_clean}'."
+                    )
+    except Exception:
+        client = None
 
     root = Element("uid-message")
     SubElement(root, "type").text = "update"
@@ -915,11 +1037,11 @@ def apply_dynamic_tag(ip: str, tag: str, target_device: str = None) -> str:
     tag_node = SubElement(entry, "tag")
     SubElement(tag_node, "member").text = tag_clean
     xml_cmd = tostring(root, encoding="unicode")
-    
+
     logger.info(f"[DAG Orchestration] Applying Tag: {tag_clean} to IP {ip_clean} on {target_device or 'default'}")
-    
+
     try:
-        client = _get_pool().get_client(target_device)
+        client = client or _get_pool().get_client(target_device)
         status, result = client.execute_user_id(xml_cmd)
         
         if status == 200:
@@ -944,11 +1066,11 @@ def capture_pcap(source_ip: str = "10.0.0.1", dest_ip: str = "8.8.8.8", duration
         duration_sec (int): How long to run the capture (1-30s max, default 5s).
         target_device (str): Device name from fleet inventory.
     """
-    # POLICY GATE: Check write authorization (C2)
+    # POLICY GATE: Check active PolicyEngine / POLICY_MODE first (C2)
     try:
-        from core.safety.policy_engine import PolicyEngine, PolicyViolationError
+        from core.safety.policy_engine import PolicyViolationError
         try:
-            PolicyEngine().check("capture_pcap")
+            _resolve_effective_policy().check("capture_pcap")
         except PolicyViolationError as pve:
             return f"ERROR: Security Policy Block - {pve}"
     except ImportError:
@@ -1004,7 +1126,10 @@ def capture_pcap(source_ip: str = "10.0.0.1", dest_ip: str = "8.8.8.8", duration
             _, data = client.execute_export(category="pcap", **{"from": "rx.pcap"})
         else:
             client.fw.xapi.export(category="pcap", **{"from": "rx.pcap"})
-            data = getattr(client.fw.xapi, "export_result", b"")
+            try:
+                data = client.fw.xapi.export_result
+            except AttributeError:
+                data = b""
         
         # 7. Basic ASCII parsing for the LLM
         data = data[:2048] if data else b""

@@ -58,6 +58,12 @@ class GoogleDriveClient:
             if self._service is not None:
                 return self._service, None
             creds_file = os.getenv("GCP_SERVICE_ACCOUNT_FILE", "").strip()
+            if not creds_file:
+                try:
+                    from core.integrations.secrets import get_secret
+                    creds_file = get_secret("gcp_service_account_file").strip()
+                except Exception:
+                    creds_file = ""
             try:
                 from googleapiclient.discovery import build
                 from google.oauth2 import service_account

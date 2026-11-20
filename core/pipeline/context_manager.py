@@ -36,37 +36,24 @@ class ContextManager:
         """
         Mid-Investigation Context Checkpoint.
         Fires at CHECKPOINT_TURN if tools have been called.
-        Suppressed in Range simulation mode to avoid re-triggering exploratory tool probing.
-        Returns the prompt string to append to the payload, or None.
+        Counter-Logic: NEVER ask the model to emit standalone prose here (which causes
+        tool_parts == [] and aborts the loop prematurely); keep correlation inside <REASONING>.
         """
-        if target_mode == "range":
-            return None
-
         if turn != self.CHECKPOINT_TURN or not prev_turn_tools:
             return None
 
         logger.info(f"[{trace_id}] [CHECKPOINT] Injecting mid-investigation correlation checkpoint at Turn {turn}")
         return (
-            f"\n\n[SYSTEM: MID-INVESTIGATION CHECKPOINT — Turn {turn} of {MAX_TURNS}]\n"
-            "Before continuing, output a brief correlation summary:\n"
-            "1. SHARED KEYS: List any IP addresses, usernames, rule names, or timestamps "
-            "that have appeared in 2+ tool outputs.\n"
-            "2. CORRELATIONS: Any causal chains identified so far.\n"
-            "3. OPEN HYPOTHESES: What remains untested.\n"
-            "4. NEXT PRIORITY: Most important tool to call next and why.\n"
-            "Then continue the investigation."
+            f"\n\n[SYSTEM: MID-INVESTIGATION CHECKPOINT — Turn {turn} of {MAX_TURNS}. "
+            "Do NOT stop calling tools just to print a scratchpad. Reconcile shared IPs/rules/sessions "
+            "silently inside <REASONING> and either dispatch your next targeted tool batch or deliver "
+            "your final synthesis if all hypotheses are already proven.]"
         )
 
     def get_compression_prompt(self, turn, history_length, trace_id, target_mode: str = "default"):
         """
-        Context summarization every N turns.
-        Fires when turn > 0, turn divisible by COMPRESS_INTERVAL, and history is substantial.
-        Suppressed in Range simulation mode to preserve raw schema focus.
-        Returns the prompt string to append to the payload, or None.
+        Context focus anchor every COMPRESS_INTERVAL turns when history grows long.
         """
-        if target_mode == "range":
-            return None
-
         if turn <= 0 or turn == self.CHECKPOINT_TURN or turn % self.COMPRESS_INTERVAL != 0 or history_length <= 6:
             return None
 
